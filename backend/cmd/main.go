@@ -54,6 +54,7 @@ func main() {
 		protected.GET("/templates", api.ListTemplates)
 		protected.POST("/templates", api.SaveTemplate)
 		protected.POST("/templates/test", api.TestCode)
+		protected.POST("/templates/:id/toggle", api.ToggleTemplateEnabled)
 		protected.DELETE("/templates/:id", api.DeleteTemplate)
 		protected.POST("/templates/publish", api.PublishTemplate)
 		protected.POST("/templates/reference", api.ReferenceTemplate)

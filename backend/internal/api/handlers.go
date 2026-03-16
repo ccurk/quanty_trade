@@ -476,16 +476,44 @@ func ListTemplates(c *gin.Context) {
 	var templates []models.StrategyTemplate
 	userID, _ := c.Get("user_id")
 	userRole, _ := c.Get("role")
+	onlyEnabled := c.Query("only_enabled") == "true"
 
 	query := database.DB.Preload("Author")
 	if userRole != "admin" {
 		// Users see public templates OR their own templates
 		query = query.Where("is_public = ? OR author_id = ?", true, userID.(uint))
 	}
+
+	if onlyEnabled {
+		query = query.Where("is_enabled = ?", true)
+	}
 	// Admin sees everything
 
 	query.Order("created_at desc").Find(&templates)
 	c.JSON(http.StatusOK, templates)
+}
+
+func ToggleTemplateEnabled(c *gin.Context) {
+	id := c.Param("id")
+	userID, _ := c.Get("user_id")
+	userRole, _ := c.Get("role")
+
+	var template models.StrategyTemplate
+	if err := database.DB.First(&template, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+		return
+	}
+
+	// Permission check
+	if template.AuthorID != userID.(uint) && userRole != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Permission denied"})
+		return
+	}
+
+	template.IsEnabled = !template.IsEnabled
+	database.DB.Save(&template)
+
+	c.JSON(http.StatusOK, gin.H{"status": "success", "is_enabled": template.IsEnabled})
 }
 
 func ListPublicTemplates(c *gin.Context) {

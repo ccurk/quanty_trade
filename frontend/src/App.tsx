@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Play, Square, RefreshCw, Activity, Terminal, List, LayoutDashboard, ShoppingBag, Users, LogOut, ShieldCheck, Share2, PlusCircle, Trash2, Menu, X, Sun, Moon, Settings, Code, Search } from 'lucide-react';
+import { Play, Square, RefreshCw, Activity, Terminal, List, LayoutDashboard, ShoppingBag, Users, LogOut, ShieldCheck, Share2, PlusCircle, Trash2, Menu, X, Sun, Moon, Settings, Code, Search, Info, CheckCircle, AlertCircle } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import Login from './Login';
 import Register from './Register';
@@ -19,6 +19,7 @@ interface Strategy {
   name: string;
   status: 'running' | 'stopped' | 'error';
   config: any;
+  template_id?: number;
 }
 
 interface Template {
@@ -29,6 +30,7 @@ interface Template {
   code?: string;
   is_public: boolean;
   is_draft: boolean;
+  is_enabled: boolean;
   author: { id: number, username: string };
 }
 
@@ -41,6 +43,22 @@ interface Position {
   status: string;
   open_time: string;
   close_time?: string;
+}
+
+interface Toast {
+  id: number;
+  message: string;
+  type: 'success' | 'error' | 'info' | 'warning';
+}
+
+interface ConfirmOptions {
+  show: boolean;
+  title: string;
+  message: string;
+  onConfirm: () => void;
+  onCancel?: () => void;
+  confirmText?: string;
+  cancelText?: string;
 }
 
 const DEFAULT_STRATEGY_CODE = `from base_strategy import BaseStrategy
@@ -79,10 +97,11 @@ const App: React.FC = () => {
   const [positionStatus, setPositionStatus] = useState<'active' | 'closed'>('active');
   const [logs, setLogs] = useState<string[]>([]);
   const [users, setUsers] = useState<User[]>([]);
-  const [activeTab, setActiveTab] = useState<'strategies' | 'positions' | 'logs' | 'square' | 'admin' | 'develop'>('strategies');
+  const [activeTab, setActiveTab] = useState<'strategies' | 'templates' | 'positions' | 'logs' | 'square' | 'admin' | 'develop'>('strategies');
   
   // Search States
   const [stratSearch, setStratSearch] = useState('');
+  const [templateSearch, setTemplateSearch] = useState('');
   const [squareSearch, setSquareSearch] = useState('');
   const [posSearch, setPosSearch] = useState('');
   const [userSearch, setUserSearch] = useState('');
@@ -94,6 +113,8 @@ const App: React.FC = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showDeleteTemplateConfirm, setShowDeleteTemplateConfirm] = useState(false);
   const [showEditConfigModal, setShowEditConfigModal] = useState(false);
+  const [showPositionDetailModal, setShowPositionDetailModal] = useState(false);
+  const [selectedPosition, setSelectedPosition] = useState<Position | null>(null);
   const [strategyToPublish, setStrategyToPublish] = useState<Strategy | null>(null);
   const [strategyToDelete, setStrategyToDelete] = useState<Strategy | null>(null);
   const [templateToDelete, setTemplateToDelete] = useState<Template | null>(null);
@@ -102,14 +123,53 @@ const App: React.FC = () => {
   const [newStratName, setNewStratName] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState<number>(0);
   
+  // UI Enhancements
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [confirm, setConfirm] = useState<ConfirmOptions>({
+    show: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3000);
+  };
+
+  const customConfirm = (title: string, message: string, onConfirm: () => void, confirmText = '确定', cancelText = '取消') => {
+    setConfirm({
+      show: true,
+      title,
+      message,
+      onConfirm: () => {
+        onConfirm();
+        setConfirm(prev => ({ ...prev, show: false }));
+      },
+      onCancel: () => setConfirm(prev => ({ ...prev, show: false })),
+      confirmText,
+      cancelText,
+    });
+  };
+  
   // Develop Tab State
-  const [devCode, setDevCode] = useState(DEFAULT_STRATEGY_CODE);
-  const [devName, setDevCodeName] = useState('');
-  const [devDesc, setDevCodeDesc] = useState('');
+  const [devCode, setDevCode] = useState(() => localStorage.getItem('dev_code') || DEFAULT_STRATEGY_CODE);
+  const [devName, setDevCodeName] = useState(() => localStorage.getItem('dev_name') || '');
+  const [devDesc, setDevCodeDesc] = useState(() => localStorage.getItem('dev_desc') || '');
   const [isTestingCode, setIsTestingCode] = useState(false);
   const [testResult, setDevTestResult] = useState<{valid: boolean, error?: string} | null>(null);
   
   const ws = useRef<WebSocket | null>(null);
+
+  // Auto-save Develop Tab State to localStorage
+  useEffect(() => {
+    localStorage.setItem('dev_code', devCode);
+    localStorage.setItem('dev_name', devName);
+    localStorage.setItem('dev_desc', devDesc);
+  }, [devCode, devName, devDesc]);
 
   useEffect(() => {
     if (isDarkMode) {
@@ -150,13 +210,16 @@ const App: React.FC = () => {
   };
 
   const deleteUser = async (id: number) => {
-    if (!window.confirm('确定要删除该用户吗？')) return;
-    try {
-      await axios.delete(`/api/admin/users/${id}`);
-      fetchUsers();
-    } catch (err) {
-      console.error('Failed to delete user', err);
-    }
+    customConfirm('删除用户', '确定要删除该用户吗？', async () => {
+      try {
+        await axios.delete(`/api/admin/users/${id}`);
+        fetchUsers();
+        showToast('用户已删除', 'success');
+      } catch (err) {
+        console.error('Failed to delete user', err);
+        showToast('删除失败', 'error');
+      }
+    });
   };
 
   const updateStrategyConfig = async () => {
@@ -168,8 +231,9 @@ const App: React.FC = () => {
       fetchStrategies();
       setShowEditConfigModal(false);
       setStrategyToEdit(null);
+      showToast('配置更新成功', 'success');
     } catch (err: any) {
-      alert(err.response?.data?.error || '更新失败');
+      showToast(err.response?.data?.error || '更新失败', 'error');
     }
   };
 
@@ -186,9 +250,9 @@ const App: React.FC = () => {
     }
   };
 
-  const saveStrategyTemplate = async (isDraft: boolean) => {
+  const saveStrategyTemplate = async () => {
     if (!devName) {
-      alert('请输入模板名称');
+      showToast('请输入模板名称', 'warning');
       return;
     }
     try {
@@ -196,17 +260,21 @@ const App: React.FC = () => {
         name: devName,
         description: devDesc,
         code: devCode,
-        is_draft: isDraft
+        is_draft: false
       });
-      fetchTemplates();
-      if (!isDraft) {
-        setActiveTab('strategies');
-        alert('策略已保存到“我的策略”。');
-      } else {
-        alert('草稿已暂存。');
-      }
+      await fetchTemplates();
+      await fetchStrategies();
+      setActiveTab('templates');
+      showToast('策略模板已保存', 'success');
+      // Clear draft after successful save
+      setDevCodeName('');
+      setDevCodeDesc('');
+      setDevCode(DEFAULT_STRATEGY_CODE);
+      localStorage.removeItem('dev_name');
+      localStorage.removeItem('dev_desc');
+      localStorage.removeItem('dev_code');
     } catch (err: any) {
-      alert(err.response?.data?.error || '保存失败');
+      showToast(err.response?.data?.error || '保存失败', 'error');
     }
   };
 
@@ -219,12 +287,21 @@ const App: React.FC = () => {
     }
   };
 
-  const fetchTemplates = async () => {
+  const fetchTemplates = async (onlyEnabled = false) => {
     try {
-      const res = await axios.get('/api/templates');
+      const res = await axios.get(`/api/templates${onlyEnabled ? '?only_enabled=true' : ''}`);
       setTemplates(res.data);
     } catch (err) {
       console.error('Failed to fetch templates', err);
+    }
+  };
+
+  const toggleTemplateEnabled = async (t: Template) => {
+    try {
+      await axios.post(`/api/templates/${t.id}/toggle`);
+      fetchTemplates();
+    } catch (err) {
+      console.error('Failed to toggle template', err);
     }
   };
 
@@ -269,6 +346,12 @@ const App: React.FC = () => {
     setShowLanding(true);
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    localStorage.removeItem('dev_name');
+    localStorage.removeItem('dev_desc');
+    localStorage.removeItem('dev_code');
+    setDevCodeName('');
+    setDevCodeDesc('');
+    setDevCode(DEFAULT_STRATEGY_CODE);
     delete axios.defaults.headers.common['Authorization'];
   };
 
@@ -286,6 +369,14 @@ const App: React.FC = () => {
   };
 
   const createStrategy = async () => {
+    if (!newStratName.trim()) {
+      showToast('请输入策略名称', 'warning');
+      return;
+    }
+    if (strategies.some(s => s.name === newStratName)) {
+      showToast('策略名称已存在，请换一个名称', 'warning');
+      return;
+    }
     try {
       await axios.post('/api/strategies', {
         name: newStratName,
@@ -295,8 +386,11 @@ const App: React.FC = () => {
       fetchStrategies();
       setShowCreateModal(false);
       setNewStratName('');
-    } catch (err) {
-      console.error('Failed to create strategy', err);
+      setSelectedTemplate(0);
+      setActiveTab('strategies');
+      showToast('策略创建成功', 'success');
+    } catch (err: any) {
+      showToast(err.response?.data?.error || '创建失败', 'error');
     }
   };
 
@@ -335,25 +429,17 @@ const App: React.FC = () => {
       fetchTemplates();
       setShowPublishConfirm(false);
       setStrategyToPublish(null);
-      alert('发布成功！');
+      showToast('发布成功！', 'success');
     } catch (err) {
       console.error('Failed to publish', err);
+      showToast('发布失败', 'error');
     }
   };
 
-  const referenceFromSquare = async (t: Template) => {
-    try {
-      await axios.post('/api/templates/reference', {
-        template_id: t.id,
-        name: `${t.name} (来自广场)`,
-        config: JSON.stringify({ symbol: 'BTC/USDT', window: 20 })
-      });
-      fetchStrategies();
-      setActiveTab('strategies');
-      alert('已成功引用到我的策略！');
-    } catch (err) {
-      console.error('Failed to reference', err);
-    }
+  const referenceFromSquare = (t: Template) => {
+    setSelectedTemplate(t.id);
+    setNewStratName(`${t.name}_copy`);
+    setShowCreateModal(true);
   };
 
   if (showLanding && !token) {
@@ -415,6 +501,7 @@ const App: React.FC = () => {
 
         <nav className="flex-1 px-4 py-4 md:py-0 space-y-2">
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'strategies'} onClick={() => { setActiveTab('strategies'); setIsSidebarOpen(false); }} icon={<LayoutDashboard size={20} />} label="我的策略" />
+          <NavItem isDarkMode={isDarkMode} active={activeTab === 'templates'} onClick={() => { setActiveTab('templates'); setIsSidebarOpen(false); }} icon={<ShoppingBag size={20} />} label="策略模板" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'develop'} onClick={() => { setActiveTab('develop'); setIsSidebarOpen(false); }} icon={<Code size={20} />} label="代码开发" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'square'} onClick={() => { setActiveTab('square'); setIsSidebarOpen(false); }} icon={<ShoppingBag size={20} />} label="策略广场" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'positions'} onClick={() => { setActiveTab('positions'); setIsSidebarOpen(false); }} icon={<List size={20} />} label="仓位管理" />
@@ -437,6 +524,7 @@ const App: React.FC = () => {
           <button
             onClick={() => setIsDarkMode(!isDarkMode)}
             className={`w-full flex items-center gap-2 px-4 py-2 mb-2 rounded-lg transition ${isDarkMode ? 'hover:bg-gray-800 text-gray-300' : 'hover:bg-gray-100 text-gray-600'}`}
+            title={isDarkMode ? "切换到明亮模式" : "切换到黑暗模式"}
           >
             {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
             <span className="text-sm">{isDarkMode ? '明亮模式' : '黑暗模式'}</span>
@@ -444,6 +532,7 @@ const App: React.FC = () => {
           <button
             onClick={handleLogout}
             className="w-full flex items-center gap-2 px-4 py-2 text-red-400 hover:bg-red-900/20 rounded-lg transition"
+            title="退出登录：清除本地会话并返回登录界面"
           >
             <LogOut size={18} /> <span className="text-sm">退出登录</span>
           </button>
@@ -455,21 +544,33 @@ const App: React.FC = () => {
         <header className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 mb-6 md:mb-8">
           <div className="flex flex-col md:flex-row md:items-center gap-4 flex-1">
             {activeTab === 'strategies' && (
-              <div className="relative w-full max-w-xs">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-500">
-                  <Search size={16} />
+              <>
+                <div className="relative w-full max-w-xs">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-500">
+                    <Search size={16} />
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="搜索名称、交易对或参数..."
+                    value={stratSearch}
+                    onChange={(e) => setStratSearch(e.target.value)}
+                    className={`w-full pl-10 pr-4 py-2 rounded-xl border text-sm transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                  />
                 </div>
-                <input
-                  type="text"
-                  placeholder="搜索名称、交易对或参数..."
-                  value={stratSearch}
-                  onChange={(e) => setStratSearch(e.target.value)}
-                  className={`w-full pl-10 pr-4 py-2 rounded-xl border text-sm transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
-                />
-              </div>
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-gray-800 bg-gray-900/50">
+                  <span className="text-xs text-gray-500 font-bold uppercase tracking-widest">显示已禁用脚本</span>
+                  <button 
+                    onClick={() => fetchTemplates(false)} 
+                    className={`w-8 h-4 rounded-full transition relative ${templates.some(t => !t.is_enabled) ? 'bg-blue-600' : 'bg-gray-700'}`}
+                  >
+                    <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${templates.some(t => !t.is_enabled) ? 'left-4.5' : 'left-0.5'}`} />
+                  </button>
+                </div>
+              </>
             )}
             <h2 className="text-xl md:text-2xl font-bold min-w-fit">
               {activeTab === 'strategies' && '我的策略'}
+              {activeTab === 'templates' && '策略模板'}
               {activeTab === 'develop' && '策略代码开发'}
               {activeTab === 'square' && '策略广场'}
               {activeTab === 'positions' && '实时持仓'}
@@ -480,7 +581,7 @@ const App: React.FC = () => {
 
           
           <div className="flex max-w-md gap-4 items-center">
-            {['square', 'positions', 'admin'].includes(activeTab) && (
+            {['templates', 'square', 'positions', 'admin'].includes(activeTab) && (
               <div className="relative flex-1">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-500">
                   <Search size={16} />
@@ -489,12 +590,14 @@ const App: React.FC = () => {
                   type="text"
                   placeholder="搜索..."
                   value={
+                    activeTab === 'templates' ? templateSearch :
                     activeTab === 'square' ? squareSearch :
                     activeTab === 'positions' ? posSearch : userSearch
                   }
                   onChange={(e) => {
                     const val = e.target.value;
-                    if (activeTab === 'square') setSquareSearch(val);
+                    if (activeTab === 'templates') setTemplateSearch(val);
+                    else if (activeTab === 'square') setSquareSearch(val);
                     else if (activeTab === 'positions') setPosSearch(val);
                     else setUserSearch(val);
                   }}
@@ -502,7 +605,11 @@ const App: React.FC = () => {
                 />
               </div>
             )}
-            <button onClick={() => { fetchStrategies(); fetchTemplates(); fetchPositions(positionStatus); if (user.role === 'admin') fetchUsers(); }} className={`p-2 rounded-lg transition shadow-sm border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}>
+            <button 
+              onClick={() => { fetchStrategies(); fetchTemplates(); fetchPositions(positionStatus); if (user.role === 'admin') fetchUsers(); }} 
+              className={`p-2 rounded-lg transition shadow-sm border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
+              title="立即刷新：手动同步后端最新策略、持仓和模板数据"
+            >
               <RefreshCw size={18} className="md:w-5 md:h-5" />
             </button>
           </div>
@@ -550,13 +657,7 @@ const App: React.FC = () => {
                    <Code size={18} /> {isTestingCode ? '测试中...' : '语法检查'}
                  </button>
                  <button 
-                   onClick={() => saveStrategyTemplate(true)}
-                   className="flex items-center gap-2 px-6 py-2.5 bg-gray-800 border border-gray-700 hover:bg-gray-700 text-white rounded-xl font-bold transition"
-                 >
-                   暂存草稿
-                 </button>
-                 <button 
-                   onClick={() => saveStrategyTemplate(false)}
+                   onClick={saveStrategyTemplate}
                    className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition shadow-lg shadow-blue-900/20"
                  >
                    <PlusCircle size={18} /> 保存到我的策略
@@ -573,29 +674,35 @@ const App: React.FC = () => {
 
         {activeTab === 'strategies' && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {/* Deploy New Instance Button */}
-            <div 
-              onClick={() => setShowCreateModal(true)}
-              className={`p-6 rounded-2xl border-2 border-dashed flex flex-col items-center justify-center transition cursor-pointer group order-first ${isDarkMode ? 'bg-gray-900/30 border-gray-800 text-gray-600 hover:border-gray-700 hover:text-gray-400' : 'bg-white border-gray-200 text-gray-400 hover:border-blue-200 hover:text-blue-400'}`}
-            >
-              <PlusCircle size={40} className="mb-2 group-hover:scale-110 transition" />
-              <p className="font-bold">部署新实例</p>
-            </div>
-
-            {/* Combined List: Instances and Private Templates */}
+            {/* Combined List: Instances and Local Draft */}
             {[
               ...strategies.map(s => ({ ...s, type: 'instance' as const })),
-              ...templates.filter(t => t.author?.id === user.id && !t.is_public).map(t => ({ ...t, type: 'template' as const }))
+              // Add Local Draft if it exists and is not the default state
+              ...((devName || (devCode && devCode !== DEFAULT_STRATEGY_CODE)) ? [{
+                id: 0,
+                name: devName || '未命名草稿',
+                description: devDesc || '本地自动保存的草稿',
+                code: devCode,
+                path: '',
+                is_public: false,
+                is_draft: true,
+                is_enabled: true,
+                author: { id: user?.id || 0, username: user?.username || '' },
+                type: 'template' as const,
+                is_local: true
+              }] : [])
             ]
             .filter(item => {
               const search = stratSearch.toLowerCase();
               if (item.type === 'instance') {
                 return item.name.toLowerCase().includes(search) || JSON.stringify(item.config).toLowerCase().includes(search);
               } else {
-                return item.name.toLowerCase().includes(search) || item.description.toLowerCase().includes(search);
+                return item.name.toLowerCase().includes(search) || (item.description || '').toLowerCase().includes(search);
               }
             })
             .sort((a, b) => {
+              if ((a as any).is_local) return -1;
+              if ((b as any).is_local) return 1;
               const idA = typeof a.id === 'string' ? parseInt(a.id) || 0 : a.id;
               const idB = typeof b.id === 'string' ? parseInt(b.id) || 0 : b.id;
               return idB - idA;
@@ -619,13 +726,14 @@ const App: React.FC = () => {
                       <button
                         onClick={() => toggleStrategy(s)}
                         className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold transition shadow-lg ${s.status === 'running' ? 'bg-red-600 hover:bg-red-700 shadow-red-900/20 text-white' : 'bg-green-600 hover:bg-green-700 shadow-green-900/20 text-white'}`}
+                        title={s.status === 'running' ? "停止运行：立即中断此策略的自动化交易" : "启动运行：开始执行此策略的自动化交易逻辑"}
                       >
-                        {s.status === 'running' ? <><Square size={16} /> 禁用</> : <><Play size={16} /> 启用</>}
+                        {s.status === 'running' ? <><Square size={16} /> 停止</> : <><Play size={16} /> 启动</>}
                       </button>
                       <button
                         onClick={() => { setStrategyToPublish(s); setShowPublishConfirm(true); }}
                         className={`p-2.5 rounded-xl transition border text-blue-400 ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
-                        title="发布到广场"
+                        title="发布：将此策略共享到广场，供他人参考引用"
                       >
                         <Share2 size={20} />
                       </button>
@@ -636,14 +744,14 @@ const App: React.FC = () => {
                           setShowEditConfigModal(true); 
                         }}
                         className={`p-2.5 rounded-xl transition border text-gray-400 ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
-                        title="修改配置"
+                        title="配置参数：修改交易对、窗口期等策略运行参数"
                       >
                         <Settings size={20} />
                       </button>
                       <button
                         onClick={() => { setStrategyToDelete(s); setShowDeleteConfirm(true); }}
                         className={`p-2.5 rounded-xl transition border text-red-400 ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
-                        title="删除策略"
+                        title="删除策略：停止运行并永久删除此策略实例"
                       >
                         <Trash2 size={20} />
                       </button>
@@ -651,20 +759,39 @@ const App: React.FC = () => {
                   </div>
                 );
               } else {
-                const t = item as Template & { type: 'template' };
+                const t = item as Template & { type: 'template', is_local?: boolean };
                 return (
-                  <div key={`template-${t.id}`} className={`p-6 rounded-2xl border shadow-xl transition relative group ${isDarkMode ? 'bg-gray-900/50 border-gray-800 hover:border-gray-700' : 'bg-white border-gray-200 hover:border-purple-200'}`}>
+                  <div key={t.is_local ? 'local-draft' : `template-${t.id}`} className={`p-6 rounded-2xl border shadow-xl transition relative group ${isDarkMode ? 'bg-gray-900/50 border-gray-800 hover:border-gray-700' : 'bg-white border-gray-200 hover:border-purple-200'} ${t.is_local ? 'border-blue-500/50 bg-blue-500/5' : ''}`}>
                     <div className="flex justify-between items-start mb-4">
                       <div>
                         <h3 className="text-lg font-bold">{t.name}</h3>
-                        <p className="text-xs text-purple-500 font-medium">{t.is_draft ? '📝 草稿' : '✅ 已就绪'}</p>
+                        <div className="flex gap-2 items-center">
+                          <p className={`text-xs font-medium ${t.is_local ? 'text-blue-500' : 'text-purple-500'}`}>
+                            {t.is_local ? '✨ 本地草稿' : (t.is_draft ? '📝 草稿' : '✅ 已就绪')}
+                          </p>
+                        </div>
                       </div>
-                      <button 
-                        onClick={() => { setTemplateToDelete(t); setShowDeleteTemplateConfirm(true); }}
-                        className="text-red-500 hover:text-red-600 transition p-1"
-                      >
-                        <Trash2 size={18} />
-                      </button>
+                      <div className="flex gap-1">
+                        {t.is_local && (
+                          <button 
+                            onClick={() => {
+                              customConfirm('清除草稿', '确定要放弃本地草稿吗？', () => {
+                                setDevCodeName('');
+                                setDevCodeDesc('');
+                                setDevCode(DEFAULT_STRATEGY_CODE);
+                                localStorage.removeItem('dev_name');
+                                localStorage.removeItem('dev_desc');
+                                localStorage.removeItem('dev_code');
+                                showToast('草稿已清除', 'info');
+                              });
+                            }}
+                            className="text-gray-500 hover:text-red-500 transition p-1.5"
+                            title="清除草稿：永久放弃当前未保存的开发进度"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <p className="text-sm text-gray-500 mb-8 line-clamp-2">{t.description || '暂无描述'}</p>
                     <div className="flex gap-2">
@@ -672,24 +799,96 @@ const App: React.FC = () => {
                         onClick={() => {
                           setDevCode(t.code || '');
                           setDevCodeName(t.name);
-                          setDevCodeDesc(t.description);
+                          setDevCodeDesc(t.description || '');
                           setActiveTab('develop');
                         }}
                         className={`flex-1 py-2 rounded-xl font-bold border transition ${isDarkMode ? 'bg-gray-800 border-gray-700 hover:bg-gray-700' : 'bg-white border-gray-200 hover:bg-gray-100'}`}
+                        title="继续编辑：跳转到开发页面继续编写此草稿"
                       >
-                        继续开发
-                      </button>
-                      <button
-                        onClick={() => referenceFromSquare(t)}
-                        className="flex-1 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold transition shadow-lg shadow-purple-900/20"
-                      >
-                        部署运行
+                        {t.is_local ? '继续编辑' : '继续开发'}
                       </button>
                     </div>
                   </div>
                 );
               }
             })}
+          </div>
+        )}
+
+        {activeTab === 'templates' && (
+          <div className={`rounded-2xl border overflow-hidden shadow-2xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+            <table className="w-full text-left">
+              <thead className={`text-xs uppercase tracking-wider ${isDarkMode ? 'bg-gray-800/50 text-gray-400' : 'bg-gray-50 text-gray-500'}`}>
+                <tr>
+                  <th className="px-6 py-4">模板名称</th>
+                  <th className="px-6 py-4">描述</th>
+                  <th className="px-6 py-4">状态</th>
+                  <th className="px-6 py-4 text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody className={`divide-y ${isDarkMode ? 'divide-gray-800' : 'divide-gray-100'}`}>
+                {templates.filter(t => 
+                  (t.author?.id === user?.id || user?.role === 'admin') && 
+                  !t.is_public && !t.is_draft &&
+                  (t.name.toLowerCase().includes(templateSearch.toLowerCase()) || 
+                   (t.description || '').toLowerCase().includes(templateSearch.toLowerCase()))
+                ).map(t => (
+                  <tr key={t.id} className={`transition ${isDarkMode ? 'hover:bg-gray-800/30' : 'hover:bg-gray-50'}`}>
+                    <td className="px-6 py-4 font-bold">{t.name}</td>
+                    <td className="px-6 py-4 text-sm text-gray-500 truncate max-w-xs">{t.description || '暂无描述'}</td>
+                    <td className="px-6 py-4">
+                      <div className="flex flex-col gap-1">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider w-fit ${t.is_enabled ? 'bg-green-900/30 text-green-400' : 'bg-gray-800 text-gray-500'}`}>
+                          {t.is_enabled ? '已启用' : '已禁用'}
+                        </span>
+                        {strategies.some(s => s.template_id === t.id) && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-blue-900/30 text-blue-400 w-fit">
+                            已在运行
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex justify-end gap-2">
+                        <button 
+                          onClick={() => toggleTemplateEnabled(t)}
+                          className={`p-1.5 rounded-lg transition ${t.is_enabled ? 'text-orange-400 hover:bg-orange-900/20' : 'text-green-400 hover:bg-green-900/20'}`}
+                          title={t.is_enabled ? "禁用模板：此模板将无法用于部署新策略" : "启用模板：启用后可用于部署新策略"}
+                        >
+                          {t.is_enabled ? <Square size={16} /> : <Play size={16} />}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setDevCode(t.code || '');
+                            setDevCodeName(t.name);
+                            setDevCodeDesc(t.description || '');
+                            setActiveTab('develop');
+                          }}
+                          className="p-1.5 text-blue-400 hover:bg-blue-900/20 rounded-lg transition"
+                          title="编辑代码：跳转到开发页面修改此模板源码"
+                        >
+                          <Code size={18} />
+                        </button>
+                        <button
+                          onClick={() => referenceFromSquare(t)}
+                          className="p-1.5 text-purple-400 hover:bg-purple-900/20 rounded-lg transition"
+                          title="部署运行：基于此模板创建一个新的交易实例"
+                        >
+                          <PlusCircle size={18} />
+                        </button>
+                        <button 
+                          onClick={() => { setTemplateToDelete(t); setShowDeleteTemplateConfirm(true); }}
+                          className="p-1.5 text-red-500 hover:bg-red-900/20 rounded-lg transition"
+                          title="删除模板：永久移除此模板文件及配置"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 
@@ -711,7 +910,7 @@ const App: React.FC = () => {
                       <button 
                         onClick={() => { setTemplateToDelete(t); setShowDeleteTemplateConfirm(true); }}
                         className="text-red-500 hover:text-red-600 transition p-1"
-                        title="下架策略"
+                        title="下架策略：从公共广场移除此策略，但保留原作者的私有副本"
                       >
                         <Trash2 size={18} />
                       </button>
@@ -733,6 +932,7 @@ const App: React.FC = () => {
                 <button
                   onClick={() => referenceFromSquare(t)}
                   className="w-full flex items-center justify-center gap-2 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition shadow-lg shadow-blue-900/20"
+                  title="引用此策略：将此公开策略复制到我的模板并准备部署"
                 >
                   <PlusCircle size={18} /> 引用此策略
                 </button>
@@ -770,6 +970,7 @@ const App: React.FC = () => {
                     <th className="px-4 md:px-6 py-4">均价</th>
                     <th className="px-4 md:px-6 py-4">{positionStatus === 'active' ? '开仓时间' : '平仓时间'}</th>
                     <th className="px-4 md:px-6 py-4">状态</th>
+                    <th className="px-4 md:px-6 py-4 text-right">操作</th>
                   </tr>
                 </thead>
                 <tbody className={`divide-y ${isDarkMode ? 'divide-gray-800' : 'divide-gray-100'}`}>
@@ -791,6 +992,15 @@ const App: React.FC = () => {
                         <span className={`px-2 py-1 rounded text-[10px] font-black uppercase ${p.status === 'active' ? 'bg-green-900/30 text-green-500' : 'bg-gray-800 text-gray-400'}`}>
                           {p.status}
                         </span>
+                      </td>
+                      <td className="px-4 md:px-6 py-4 text-right">
+                        <button 
+                          onClick={() => { setSelectedPosition(p); setShowPositionDetailModal(true); }}
+                          className={`p-2 rounded-lg transition ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 text-blue-400' : 'bg-gray-100 hover:bg-gray-200 text-blue-600'}`}
+                          title="查看详情：打开模态框查看此持仓的完整入场、价值及时间明细"
+                        >
+                          <Info size={18} />
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -884,13 +1094,18 @@ const App: React.FC = () => {
                   className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                 >
                   <option value={0}>请选择一个模板</option>
-                  {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  {templates.filter(t => t.is_enabled).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
               </div>
               {selectedTemplate !== 0 && (
                 <div className={`p-4 rounded-xl border text-sm ${isDarkMode ? 'bg-blue-900/20 border-blue-800 text-blue-200' : 'bg-blue-50 border-blue-100 text-blue-700'}`}>
                   <p className="font-bold mb-1">策略说明:</p>
-                  <p className="leading-relaxed">{templates.find(t => t.id === selectedTemplate)?.description || '暂无详细说明'}</p>
+                  <p className="leading-relaxed mb-2">{templates.find(t => t.id === selectedTemplate)?.description || '暂无详细说明'}</p>
+                  {strategies.some(s => s.template_id === selectedTemplate) && (
+                    <p className="text-xs text-orange-400 font-bold border-t border-blue-800/30 pt-2 flex items-center gap-1">
+                      <Info size={12} /> 该模板已有一个运行中的实例，请确保使用不同的名称。
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -1036,9 +1251,120 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Position Detail Modal */}
+      {showPositionDetailModal && selectedPosition && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className={`w-full max-w-2xl p-8 rounded-2xl shadow-2xl ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
+            <div className="flex items-center justify-between mb-8">
+              <div className="flex items-center gap-3 text-blue-500">
+                <Info size={28} />
+                <h3 className="text-2xl font-bold">仓位详细信息</h3>
+              </div>
+              <button 
+                onClick={() => { setShowPositionDetailModal(false); setSelectedPosition(null); }}
+                className={`p-2 rounded-lg transition ${isDarkMode ? 'hover:bg-gray-800' : 'hover:bg-gray-100'}`}
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+              <DetailItem label="交易对" value={selectedPosition.symbol} isDarkMode={isDarkMode} highlight />
+              <DetailItem label="策略名称" value={selectedPosition.strategy_name} isDarkMode={isDarkMode} />
+              <DetailItem label="交易所" value={selectedPosition.exchange_name} isDarkMode={isDarkMode} />
+              <DetailItem label="仓位状态" value={selectedPosition.status} isDarkMode={isDarkMode} isStatus status={selectedPosition.status} />
+              <DetailItem label="持有数量" value={selectedPosition.amount.toString()} isDarkMode={isDarkMode} />
+              <DetailItem label="入场均价" value={`$${selectedPosition.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}`} isDarkMode={isDarkMode} />
+              <DetailItem label="开仓时间" value={new Date(selectedPosition.open_time).toLocaleString()} isDarkMode={isDarkMode} />
+              {selectedPosition.close_time && (
+                <DetailItem label="平仓时间" value={new Date(selectedPosition.close_time).toLocaleString()} isDarkMode={isDarkMode} />
+              )}
+              <DetailItem 
+                label="当前价值" 
+                value={`$${(selectedPosition.amount * selectedPosition.price).toLocaleString(undefined, { minimumFractionDigits: 2 })}`} 
+                isDarkMode={isDarkMode} 
+                highlight 
+              />
+            </div>
+
+            <div className="flex justify-end">
+              <button 
+                onClick={() => { setShowPositionDetailModal(false); setSelectedPosition(null); }}
+                className={`px-8 py-3 rounded-xl font-bold transition ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-gray-100 hover:bg-gray-200'}`}
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Confirm Modal */}
+      {confirm.show && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+          <div className={`w-full max-w-md p-8 rounded-2xl shadow-2xl animate-in fade-in zoom-in duration-200 ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
+            <h3 className="text-2xl font-bold mb-4">{confirm.title}</h3>
+            <p className={`mb-8 leading-relaxed ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              {confirm.message}
+            </p>
+            <div className="flex gap-4">
+              <button 
+                onClick={confirm.onCancel}
+                className={`flex-1 py-3 rounded-xl font-bold transition ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-gray-100 hover:bg-gray-200'}`}
+              >
+                {confirm.cancelText || '取消'}
+              </button>
+              <button 
+                onClick={confirm.onConfirm}
+                className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition shadow-lg shadow-blue-900/20"
+              >
+                {confirm.confirmText || '确定'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toasts */}
+      <div className="fixed bottom-8 right-8 z-[110] flex flex-col gap-3 pointer-events-none">
+        {toasts.map(toast => (
+          <div 
+            key={toast.id}
+            className={`
+              flex items-center gap-3 px-6 py-4 rounded-2xl shadow-2xl pointer-events-auto animate-in slide-in-from-right-full duration-300
+              ${toast.type === 'success' ? (isDarkMode ? 'bg-green-900/90 text-green-100 border border-green-800' : 'bg-green-50 text-green-800 border border-green-100') : ''}
+              ${toast.type === 'error' ? (isDarkMode ? 'bg-red-900/90 text-red-100 border border-red-800' : 'bg-red-50 text-red-800 border border-red-100') : ''}
+              ${toast.type === 'warning' ? (isDarkMode ? 'bg-yellow-900/90 text-yellow-100 border border-yellow-800' : 'bg-yellow-50 text-yellow-800 border border-yellow-100') : ''}
+              ${toast.type === 'info' ? (isDarkMode ? 'bg-blue-900/90 text-blue-100 border border-blue-800' : 'bg-blue-50 text-blue-800 border border-blue-100') : ''}
+            `}
+          >
+            {toast.type === 'success' && <CheckCircle size={20} />}
+            {toast.type === 'error' && <AlertCircle size={20} />}
+            {toast.type === 'warning' && <AlertCircle size={20} />}
+            {toast.type === 'info' && <Info size={20} />}
+            <span className="font-bold text-sm">{toast.message}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 };
+
+const DetailItem = ({ label, value, isDarkMode, highlight, isStatus, status }: { label: string, value: string, isDarkMode: boolean, highlight?: boolean, isStatus?: boolean, status?: string }) => (
+  <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-black/20 border-gray-800' : 'bg-gray-50 border-gray-100'}`}>
+    <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">{label}</p>
+    {isStatus ? (
+      <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-black uppercase ${status === 'active' ? 'bg-green-900/30 text-green-500' : 'bg-gray-800 text-gray-400'}`}>
+        {value}
+      </span>
+    ) : (
+      <p className={`text-lg font-mono ${highlight ? 'text-blue-500 font-black' : isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+        {value}
+      </p>
+    )}
+  </div>
+);
 
 
 

@@ -171,27 +171,12 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGoToLogin, onGoToRegister }
               </div>
             </div>
 
-            {/* Navigation Buttons */}
-            <button 
-              onClick={prevSlide}
-              className="absolute left-4 top-1/2 -translate-y-1/2 p-3 rounded-full bg-gray-900/80 border border-gray-800 text-white hover:bg-gray-800 transition opacity-0 group-hover:opacity-100"
-            >
-              <ChevronLeft size={24} />
-            </button>
-            <button 
-              onClick={nextSlide}
-              className="absolute right-4 top-1/2 -translate-y-1/2 p-3 rounded-full bg-gray-900/80 border border-gray-800 text-white hover:bg-gray-800 transition opacity-0 group-hover:opacity-100"
-            >
-              <ChevronRight size={24} />
-            </button>
-
-            {/* Indicators */}
+            {/* Indicators (Non-clickable dots) */}
             <div className="flex justify-center gap-2 mt-8">
               {allStrategies.map((_, idx) => (
-                <button
+                <div
                   key={idx}
-                  onClick={() => setCurrentSlide(idx)}
-                  className={`h-1.5 rounded-full transition-all duration-300 ${currentSlide === idx ? 'w-8 bg-blue-600' : 'w-2 bg-gray-800'}`}
+                  className={`h-1.5 rounded-full transition-all duration-500 ${currentSlide === idx ? 'w-8 bg-blue-600' : 'w-2 bg-gray-800'}`}
                 />
               ))}
             </div>

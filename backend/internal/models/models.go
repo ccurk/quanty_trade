@@ -38,6 +38,7 @@ type StrategyTemplate struct {
 	Author      User           `gorm:"foreignKey:AuthorID" json:"author"`
 	IsPublic    bool           `gorm:"default:false" json:"is_public"`
 	IsDraft     bool           `gorm:"default:false" json:"is_draft"`
+	IsEnabled   bool           `gorm:"default:true" json:"is_enabled"`
 	Code        string         `gorm:"type:text" json:"code"` // Store source code for editing
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
