@@ -22,6 +22,44 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
+type RegisterRequest struct {
+	Username string                 `json:"username" binding:"required"`
+	Password string                 `json:"password" binding:"required"`
+	Configs  map[string]interface{} `json:"configs"` // e.g. {"binance": {"apiKey": "...", "secret": "..."}}
+}
+
+func Register(c *gin.Context) {
+	var req RegisterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Check if user already exists
+	var existingUser models.User
+	if err := database.DB.Where("username = ?", req.Username).First(&existingUser).Error; err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "User already exists"})
+		return
+	}
+
+	hashedPassword, _ := auth.HashPassword(req.Password)
+	configsJSON, _ := json.Marshal(req.Configs)
+
+	user := models.User{
+		Username: req.Username,
+		Password: hashedPassword,
+		Role:     models.RoleUser,
+		Configs:  string(configsJSON),
+	}
+
+	if err := database.DB.Create(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register user"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "registered"})
+}
+
 func Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -87,10 +125,60 @@ func ListUsers(c *gin.Context) {
 }
 
 func ListStrategies(c *gin.Context) {
-	c.JSON(http.StatusOK, stratMgr.ListStrategies())
+	userID, _ := c.Get("user_id")
+	c.JSON(http.StatusOK, stratMgr.ListStrategies(userID.(uint)))
+}
+
+type CreateStrategyRequest struct {
+	Name       string `json:"name" binding:"required"`
+	TemplateID uint   `json:"template_id" binding:"required"`
+	Config     string `json:"config" binding:"required"`
+}
+
+func CreateStrategy(c *gin.Context) {
+	var req CreateStrategyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+	instance := models.StrategyInstance{
+		ID:         models.GenerateUUID(),
+		Name:       req.Name,
+		TemplateID: req.TemplateID,
+		OwnerID:    userID.(uint),
+		Config:     req.Config,
+		Status:     "stopped",
+	}
+
+	if err := database.DB.Create(&instance).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create strategy"})
+		return
+	}
+
+	var config map[string]interface{}
+	json.Unmarshal([]byte(instance.Config), &config)
+
+	var template models.StrategyTemplate
+	database.DB.First(&template, instance.TemplateID)
+
+	stratMgr.AddStrategy(instance.ID, instance.Name, template.Path, userID.(uint), config)
+
+	c.JSON(http.StatusOK, instance)
+}
+
+func ListPositions(c *gin.Context) {
+	positions, err := stratMgr.GetExchange().FetchPositions()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, positions)
 }
 
 func StartStrategy(c *gin.Context) {
+
 	id := c.Param("id")
 	if err := stratMgr.StartStrategy(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -108,12 +196,63 @@ func StopStrategy(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "stopped"})
 }
 
+func DeleteStrategy(c *gin.Context) {
+	id := c.Param("id")
+	userID, _ := c.Get("user_id")
+	userRole, _ := c.Get("role")
+
+	var instance models.StrategyInstance
+	if err := database.DB.Where("id = ?", id).First(&instance).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Strategy not found"})
+		return
+	}
+
+	// Permission check: owner or admin
+	if instance.OwnerID != userID.(uint) && userRole != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Permission denied"})
+		return
+	}
+
+	if err := database.DB.Delete(&instance).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete from DB"})
+		return
+	}
+
+	stratMgr.RemoveStrategy(id)
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
 // Strategy Square (Templates)
 
 func ListTemplates(c *gin.Context) {
 	var templates []models.StrategyTemplate
 	database.DB.Preload("Author").Where("is_public = ?", true).Find(&templates)
 	c.JSON(http.StatusOK, templates)
+}
+
+func DeleteTemplate(c *gin.Context) {
+	id := c.Param("id")
+	userID, _ := c.Get("user_id")
+	userRole, _ := c.Get("role")
+
+	var template models.StrategyTemplate
+	if err := database.DB.Where("id = ?", id).First(&template).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+		return
+	}
+
+	// Permission check: author or admin
+	if template.AuthorID != userID.(uint) && userRole != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Permission denied"})
+		return
+	}
+
+	if err := database.DB.Delete(&template).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete template"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
 type PublishTemplateRequest struct {
@@ -182,7 +321,7 @@ func ReferenceTemplate(c *gin.Context) {
 	var template models.StrategyTemplate
 	database.DB.First(&template, instance.TemplateID)
 
-	stratMgr.AddStrategy(instance.ID, instance.Name, template.Path, config)
+	stratMgr.AddStrategy(instance.ID, instance.Name, template.Path, userID.(uint), config)
 
 	c.JSON(http.StatusOK, instance)
 }

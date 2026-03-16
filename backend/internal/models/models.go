@@ -23,6 +23,7 @@ type User struct {
 	Username  string         `gorm:"unique;not null" json:"username"`
 	Password  string         `gorm:"not null" json:"-"`
 	Role      UserRole       `gorm:"default:'user'" json:"role"`
+	Configs   string         `gorm:"type:text" json:"configs"` // JSON string for exchange API keys
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`

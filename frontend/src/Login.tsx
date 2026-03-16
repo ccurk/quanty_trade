@@ -4,9 +4,10 @@ import { Lock, User, Activity } from 'lucide-react';
 
 interface LoginProps {
   onLogin: (token: string, user: any) => void;
+  onGoToRegister: () => void;
 }
 
-const Login: React.FC<LoginProps> = ({ onLogin }) => {
+const Login: React.FC<LoginProps> = ({ onLogin, onGoToRegister }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -84,6 +85,14 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
             className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? '正在登录...' : '登录'}
+          </button>
+
+          <button
+            type="button"
+            onClick={onGoToRegister}
+            className="w-full py-2 text-sm text-gray-500 hover:text-gray-300 transition"
+          >
+            没有账号？立即注册
           </button>
         </form>
 

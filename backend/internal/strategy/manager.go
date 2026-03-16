@@ -30,6 +30,7 @@ type StrategyInstance struct {
 	Path     string                 `json:"path"`
 	Config   map[string]interface{} `json:"config"`
 	Status   StrategyStatus         `json:"status"`
+	OwnerID  uint                   `json:"owner_id"`
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
 	stdout   io.ReadCloser
@@ -53,7 +54,7 @@ func NewManager(hub *ws.Hub, ex exchange.Exchange) *Manager {
 	}
 }
 
-func (m *Manager) AddStrategy(id, name, path string, config map[string]interface{}) *StrategyInstance {
+func (m *Manager) AddStrategy(id, name, path string, ownerID uint, config map[string]interface{}) *StrategyInstance {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	inst := &StrategyInstance{
@@ -62,6 +63,7 @@ func (m *Manager) AddStrategy(id, name, path string, config map[string]interface
 		Path:     path,
 		Config:   config,
 		Status:   StatusStopped,
+		OwnerID:  ownerID,
 		hub:      m.hub,
 		exchange: m.exchange,
 	}
@@ -161,7 +163,26 @@ func (m *Manager) StopStrategy(id string) error {
 	return nil
 }
 
+func (m *Manager) RemoveStrategy(id string) error {
+	m.mu.Lock()
+	inst, ok := m.instances[id]
+	if !ok {
+		m.mu.Unlock()
+		return nil
+	}
+	delete(m.instances, id)
+	m.mu.Unlock()
+
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	if inst.Status == StatusRunning {
+		inst.cmd.Process.Kill()
+	}
+	return nil
+}
+
 func (inst *StrategyInstance) SendData(dataType string, data interface{}) error {
+
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 
@@ -245,6 +266,7 @@ func (m *Manager) SyncFromDB(db *gorm.DB) error {
 				Path:     inst.Template.Path,
 				Config:   config,
 				Status:   StatusStopped,
+				OwnerID:  inst.OwnerID,
 				hub:      m.hub,
 				exchange: m.exchange,
 			}
@@ -253,15 +275,21 @@ func (m *Manager) SyncFromDB(db *gorm.DB) error {
 	return nil
 }
 
-func (m *Manager) ListStrategies() []*StrategyInstance {
+func (m *Manager) ListStrategies(ownerID uint) []*StrategyInstance {
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	list := make([]*StrategyInstance, 0, len(m.instances))
+	list := make([]*StrategyInstance, 0)
 	for _, inst := range m.instances {
-		list = append(list, inst)
+		if inst.OwnerID == ownerID {
+			list = append(list, inst)
+		}
 	}
 	return list
+}
+
+func (m *Manager) GetExchange() exchange.Exchange {
+	return m.exchange
 }
 
 func (m *Manager) Clear() {

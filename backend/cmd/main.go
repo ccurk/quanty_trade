@@ -27,8 +27,9 @@ func main() {
 	mgr.SyncFromDB(database.DB)
 	api.SetManager(mgr)
 
-	// API Routes
+	// Auth Routes
 	r.POST("/api/login", api.Login)
+	r.POST("/api/register", api.Register)
 
 	// Protected Routes
 	protected := r.Group("/api")
@@ -36,11 +37,17 @@ func main() {
 	{
 		// Strategies
 		protected.GET("/strategies", api.ListStrategies)
+		protected.POST("/strategies", api.CreateStrategy)
 		protected.POST("/strategies/:id/start", api.StartStrategy)
 		protected.POST("/strategies/:id/stop", api.StopStrategy)
+		protected.DELETE("/strategies/:id", api.DeleteStrategy)
+
+		// Positions
+		protected.GET("/positions", api.ListPositions)
 
 		// Strategy Square
 		protected.GET("/templates", api.ListTemplates)
+		protected.DELETE("/templates/:id", api.DeleteTemplate)
 		protected.POST("/templates/publish", api.PublishTemplate)
 		protected.POST("/templates/reference", api.ReferenceTemplate)
 
