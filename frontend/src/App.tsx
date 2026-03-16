@@ -82,7 +82,8 @@ const App: React.FC = () => {
   };
 
   const connectWS = () => {
-    ws.current = new WebSocket(`ws://${window.location.hostname}:8080/ws`);
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws.current = new WebSocket(`${protocol}//${window.location.host}/ws`);
     ws.current.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       if (msg.type === 'order') {
