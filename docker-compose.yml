@@ -1,22 +1,29 @@
 version: '3.8'
-services:
-  # MySQL 数据库服务 (可选迁移)
-  mysql:
-    image: mysql:8.0
-    container_name: quanty_mysql
-    ports:
-      - "3306:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: root_password
-      MYSQL_DATABASE: quanty_trade
-    volumes:
-      - ./data/mysql:/var/lib/mysql
 
-  # Redis 缓存与发布订阅 (可选迁移)
-  redis:
-    image: redis:7.0
-    container_name: quanty_redis
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     ports:
-      - "6379:6379"
+      - "8080:8080"
     volumes:
-      - ./data/redis:/data
+      - backend_data:/app/backend/data
+    environment:
+      - PORT=8080
+      # - DB_DRIVER=mysql # Uncomment if using MySQL
+      # - DB_DSN=user:pass@tcp(db:3306)/quanty?charset=utf8mb4&parseTime=True&loc=Local
+    restart: always
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: always
+
+volumes:
+  backend_data:

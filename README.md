@@ -22,6 +22,16 @@
 ```bash
 cd backend
 go mod tidy
+# 默认使用 SQLite (本地 quanty.db)
+go run cmd/main.go
+
+# 连接云端 MySQL 数据库 (示例)
+export DB_TYPE=mysql
+export DB_HOST=your-cloud-db-host
+export DB_PORT=3306
+export DB_USER=your-user
+export DB_PASS=your-password
+export DB_NAME=quanty_trade
 go run cmd/main.go
 ```
 *默认管理员账号: `admin` / `admin123`*

@@ -41,13 +41,13 @@ const Register: React.FC<RegisterProps> = ({ onBackToLogin }) => {
 
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-gray-900 rounded-2xl shadow-2xl border border-gray-800 p-8">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center p-3 bg-blue-600 rounded-xl mb-4">
-            <Activity className="text-white" size={32} />
+      <div className="max-w-md w-full bg-gray-900 rounded-2xl shadow-2xl border border-gray-800 p-6 md:p-8 overflow-y-auto max-h-[95vh]">
+        <div className="text-center mb-6 md:mb-8">
+          <div className="inline-flex items-center justify-center p-2.5 md:p-3 bg-blue-600 rounded-xl mb-4">
+            <Activity className="text-white" size={28} />
           </div>
-          <h2 className="text-3xl font-bold text-white">创建账户</h2>
-          <p className="text-gray-400 mt-2">加入 QuantyTrade 并配置交易所 API</p>
+          <h2 className="text-2xl md:text-3xl font-bold text-white">创建账户</h2>
+          <p className="text-gray-400 mt-2 text-sm md:text-base">加入 QuantyTrade 并配置交易所 API</p>
         </div>
 
         {error && (

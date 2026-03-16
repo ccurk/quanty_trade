@@ -7,11 +7,13 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
-
 	"quanty_trade/internal/models"
 	"quanty_trade/internal/ws"
+	"sort"
 	"sync"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -25,18 +27,19 @@ const (
 )
 
 type StrategyInstance struct {
-	ID       string                 `json:"id"`
-	Name     string                 `json:"name"`
-	Path     string                 `json:"path"`
-	Config   map[string]interface{} `json:"config"`
-	Status   StrategyStatus         `json:"status"`
-	OwnerID  uint                   `json:"owner_id"`
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   io.ReadCloser
-	mu       sync.Mutex
-	hub      *ws.Hub
-	exchange exchange.Exchange
+	ID        string                 `json:"id"`
+	Name      string                 `json:"name"`
+	Path      string                 `json:"path"`
+	Config    map[string]interface{} `json:"config"`
+	Status    StrategyStatus         `json:"status"`
+	OwnerID   uint                   `json:"owner_id"`
+	CreatedAt time.Time              `json:"created_at"`
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    io.ReadCloser
+	mu        sync.Mutex
+	hub       *ws.Hub
+	exchange  exchange.Exchange
 }
 
 type Manager struct {
@@ -58,14 +61,15 @@ func (m *Manager) AddStrategy(id, name, path string, ownerID uint, config map[st
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	inst := &StrategyInstance{
-		ID:       id,
-		Name:     name,
-		Path:     path,
-		Config:   config,
-		Status:   StatusStopped,
-		OwnerID:  ownerID,
-		hub:      m.hub,
-		exchange: m.exchange,
+		ID:        id,
+		Name:      name,
+		Path:      path,
+		Config:    config,
+		Status:    StatusStopped,
+		OwnerID:   ownerID,
+		CreatedAt: time.Now(),
+		hub:       m.hub,
+		exchange:  m.exchange,
 	}
 	m.instances[id] = inst
 	return inst
@@ -181,6 +185,22 @@ func (m *Manager) RemoveStrategy(id string) error {
 	return nil
 }
 
+func (m *Manager) UpdateStrategyConfig(id string, config map[string]interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	inst, ok := m.instances[id]
+	if !ok {
+		return fmt.Errorf("strategy %s not found", id)
+	}
+
+	if inst.Status == StatusRunning {
+		return fmt.Errorf("cannot update config while strategy is running")
+	}
+
+	inst.Config = config
+	return nil
+}
+
 func (inst *StrategyInstance) SendData(dataType string, data interface{}) error {
 
 	inst.mu.Lock()
@@ -232,6 +252,16 @@ func (inst *StrategyInstance) readStdout() {
 			}
 		case "log":
 			fmt.Printf("[%s LOG] %v\n", inst.Name, data)
+
+			// Save to DB
+			logMsg, _ := data.(string)
+			database.DB.Create(&models.StrategyLog{
+				StrategyID: inst.ID,
+				Level:      "info",
+				Message:    logMsg,
+				CreatedAt:  time.Now(),
+			})
+
 			inst.hub.BroadcastJSON(map[string]interface{}{
 				"type": "log",
 				"data": data,
@@ -261,30 +291,38 @@ func (m *Manager) SyncFromDB(db *gorm.DB) error {
 			json.Unmarshal([]byte(inst.Config), &config)
 
 			m.instances[inst.ID] = &StrategyInstance{
-				ID:       inst.ID,
-				Name:     inst.Name,
-				Path:     inst.Template.Path,
-				Config:   config,
-				Status:   StatusStopped,
-				OwnerID:  inst.OwnerID,
-				hub:      m.hub,
-				exchange: m.exchange,
+				ID:        inst.ID,
+				Name:      inst.Name,
+				Path:      inst.Template.Path,
+				Config:    config,
+				Status:    StatusStopped,
+				OwnerID:   inst.OwnerID,
+				CreatedAt: inst.CreatedAt,
+				hub:       m.hub,
+				exchange:  m.exchange,
 			}
+
 		}
 	}
 	return nil
 }
 
-func (m *Manager) ListStrategies(ownerID uint) []*StrategyInstance {
+func (m *Manager) ListStrategies(ownerID uint, isAdmin bool) []*StrategyInstance {
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	list := make([]*StrategyInstance, 0)
 	for _, inst := range m.instances {
-		if inst.OwnerID == ownerID {
+		if isAdmin || inst.OwnerID == ownerID {
 			list = append(list, inst)
 		}
 	}
+
+	// Sort by CreatedAt Desc
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].CreatedAt.After(list[j].CreatedAt)
+	})
+
 	return list
 }
 

@@ -31,12 +31,14 @@ type User struct {
 
 type StrategyTemplate struct {
 	ID          uint           `gorm:"primaryKey" json:"id"`
-	Name        string         `gorm:"not null" json:"name"`
+	Name        string         `gorm:"unique;not null" json:"name"`
 	Description string         `json:"description"`
 	Path        string         `gorm:"not null" json:"path"` // Python file path
 	AuthorID    uint           `json:"author_id"`
 	Author      User           `gorm:"foreignKey:AuthorID" json:"author"`
 	IsPublic    bool           `gorm:"default:false" json:"is_public"`
+	IsDraft     bool           `gorm:"default:false" json:"is_draft"`
+	Code        string         `gorm:"type:text" json:"code"` // Store source code for editing
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
@@ -53,4 +55,24 @@ type StrategyInstance struct {
 	Status     string           `json:"status"` // running, stopped, error
 	CreatedAt  time.Time        `json:"created_at"`
 	UpdatedAt  time.Time        `json:"updated_at"`
+}
+
+type StrategyLog struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	StrategyID string    `gorm:"index" json:"strategy_id"`
+	Level      string    `json:"level"` // info, error
+	Message    string    `json:"message"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type APILog struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	StatusCode int       `json:"status_code"`
+	Latency    int64     `json:"latency"` // nanoseconds
+	ClientIP   string    `json:"client_ip"`
+	UserID     uint      `json:"user_id"`
+	Username   string    `json:"username"`
+	CreatedAt  time.Time `json:"created_at"`
 }

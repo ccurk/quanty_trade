@@ -24,9 +24,15 @@ type Order struct {
 }
 
 type Position struct {
-	Symbol string  `json:"symbol"`
-	Amount float64 `json:"amount"`
-	Price  float64 `json:"price"`
+	Symbol       string    `json:"symbol"`
+	Amount       float64   `json:"amount"`
+	Price        float64   `json:"price"`
+	StrategyName string    `json:"strategy_name"`
+	ExchangeName string    `json:"exchange_name"`
+	Status       string    `json:"status"` // "active", "closed"
+	OwnerID      uint      `json:"owner_id"`
+	OpenTime     time.Time `json:"open_time"`
+	CloseTime    time.Time `json:"close_time,omitempty"`
 }
 
 type Exchange interface {
@@ -34,7 +40,7 @@ type Exchange interface {
 	FetchCandles(symbol string, timeframe string, limit int) ([]Candle, error)
 	PlaceOrder(symbol string, side string, amount float64, price float64) (*Order, error)
 	FetchOrders(symbol string) ([]Order, error)
-	FetchPositions() ([]Position, error)
+	FetchPositions(status string) ([]Position, error) // status: "active" or "closed"
 	SubscribeCandles(symbol string, callback func(Candle)) error
 }
 
@@ -65,8 +71,45 @@ func (m *MockExchange) FetchOrders(symbol string) ([]Order, error) {
 	return []Order{}, nil
 }
 
-func (m *MockExchange) FetchPositions() ([]Position, error) {
-	return []Position{}, nil
+func (m *MockExchange) FetchPositions(status string) ([]Position, error) {
+	if status == "active" {
+		return []Position{
+			{
+				Symbol:       "BTC/USDT",
+				Amount:       0.05,
+				Price:        62000.0,
+				StrategyName: "均线趋势策略",
+				ExchangeName: m.Name,
+				Status:       "active",
+				OwnerID:      1, // admin
+				OpenTime:     time.Now().Add(-2 * time.Hour),
+			},
+			{
+				Symbol:       "ETH/USDT",
+				Amount:       1.5,
+				Price:        2500.0,
+				StrategyName: "用户A策略",
+				ExchangeName: m.Name,
+				Status:       "active",
+				OwnerID:      2, // user A
+				OpenTime:     time.Now().Add(-1 * time.Hour),
+			},
+		}, nil
+	} else {
+		return []Position{
+			{
+				Symbol:       "ETH/USDT",
+				Amount:       1.2,
+				Price:        2450.0,
+				StrategyName: "网格套利",
+				ExchangeName: m.Name,
+				Status:       "closed",
+				OwnerID:      1, // admin
+				OpenTime:     time.Now().Add(-24 * time.Hour),
+				CloseTime:    time.Now().Add(-22 * time.Hour),
+			},
+		}, nil
+	}
 }
 
 func (m *MockExchange) SubscribeCandles(symbol string, callback func(Candle)) error {

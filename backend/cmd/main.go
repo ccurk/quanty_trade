@@ -18,6 +18,8 @@ func main() {
 	database.InitDB()
 
 	r := gin.Default()
+	r.Use(api.APILogger()) // Global API Logging
+	r.Use(api.CORSMiddleware())
 
 	hub := ws.NewHub()
 	go hub.Run()
@@ -30,6 +32,7 @@ func main() {
 	// Auth Routes
 	r.POST("/api/login", api.Login)
 	r.POST("/api/register", api.Register)
+	r.GET("/api/public/templates", api.ListPublicTemplates)
 
 	// Protected Routes
 	protected := r.Group("/api")
@@ -40,6 +43,8 @@ func main() {
 		protected.POST("/strategies", api.CreateStrategy)
 		protected.POST("/strategies/:id/start", api.StartStrategy)
 		protected.POST("/strategies/:id/stop", api.StopStrategy)
+		protected.PUT("/strategies/:id/config", api.UpdateStrategyConfig)
+		protected.GET("/strategies/:id/logs", api.GetStrategyLogs)
 		protected.DELETE("/strategies/:id", api.DeleteStrategy)
 
 		// Positions
@@ -47,6 +52,8 @@ func main() {
 
 		// Strategy Square
 		protected.GET("/templates", api.ListTemplates)
+		protected.POST("/templates", api.SaveTemplate)
+		protected.POST("/templates/test", api.TestCode)
 		protected.DELETE("/templates/:id", api.DeleteTemplate)
 		protected.POST("/templates/publish", api.PublishTemplate)
 		protected.POST("/templates/reference", api.ReferenceTemplate)
@@ -57,6 +64,7 @@ func main() {
 		{
 			admin.GET("/users", api.ListUsers)
 			admin.POST("/users", api.CreateUser)
+			admin.DELETE("/users/:id", api.DeleteUser)
 		}
 	}
 

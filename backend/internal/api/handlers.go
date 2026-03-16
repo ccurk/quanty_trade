@@ -1,10 +1,20 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
 	"quanty_trade/internal/auth"
 	"quanty_trade/internal/database"
+	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/models"
 	"quanty_trade/internal/strategy"
 
@@ -120,13 +130,91 @@ func CreateUser(c *gin.Context) {
 
 func ListUsers(c *gin.Context) {
 	var users []models.User
-	database.DB.Find(&users)
+	database.DB.Order("id desc").Find(&users)
 	c.JSON(http.StatusOK, users)
+}
+
+func CORSMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	}
+}
+
+func APILogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+		raw := c.Request.URL.RawQuery
+
+		// Process request
+		c.Next()
+
+		// Stop timer
+		latency := time.Since(start)
+
+		if raw != "" {
+			path = path + "?" + raw
+		}
+
+		userID, _ := c.Get("user_id")
+		username, _ := c.Get("username")
+
+		var uID uint
+		if id, ok := userID.(uint); ok {
+			uID = id
+		}
+
+		var uName string
+		if name, ok := username.(string); ok {
+			uName = name
+		}
+
+		logEntry := models.APILog{
+			Method:     c.Request.Method,
+			Path:       path,
+			StatusCode: c.Writer.Status(),
+			Latency:    latency.Nanoseconds(),
+			ClientIP:   c.ClientIP(),
+			UserID:     uID,
+			Username:   uName,
+			CreatedAt:  time.Now(),
+		}
+
+		// Save to DB asynchronously to avoid blocking the request
+		go func(entry models.APILog) {
+			database.DB.Create(&entry)
+		}(logEntry)
+	}
+}
+
+func DeleteUser(c *gin.Context) {
+	id := c.Param("id")
+	if id == "1" { // Prevent deleting the initial admin
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot delete main admin"})
+		return
+	}
+	if err := database.DB.Delete(&models.User{}, id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete user"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
 func ListStrategies(c *gin.Context) {
 	userID, _ := c.Get("user_id")
-	c.JSON(http.StatusOK, stratMgr.ListStrategies(userID.(uint)))
+	userRole, _ := c.Get("role")
+	isAdmin := userRole == "admin"
+	c.JSON(http.StatusOK, stratMgr.ListStrategies(userID.(uint), isAdmin))
 }
 
 type CreateStrategyRequest struct {
@@ -169,12 +257,30 @@ func CreateStrategy(c *gin.Context) {
 }
 
 func ListPositions(c *gin.Context) {
-	positions, err := stratMgr.GetExchange().FetchPositions()
+	status := c.DefaultQuery("status", "active") // active or closed
+	positions, err := stratMgr.GetExchange().FetchPositions(status)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, positions)
+
+	userID, _ := c.Get("user_id")
+	userRole, _ := c.Get("role")
+
+	// Filter by user unless admin
+	var filtered []exchange.Position
+	for _, p := range positions {
+		if userRole == "admin" || p.OwnerID == userID.(uint) {
+			filtered = append(filtered, p)
+		}
+	}
+
+	// Sort by OpenTime Desc
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].OpenTime.After(filtered[j].OpenTime)
+	})
+
+	c.JSON(http.StatusOK, filtered)
 }
 
 func StartStrategy(c *gin.Context) {
@@ -185,6 +291,148 @@ func StartStrategy(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "started"})
+}
+
+type UpdateConfigRequest struct {
+	Config string `json:"config" binding:"required"`
+}
+
+func UpdateStrategyConfig(c *gin.Context) {
+	id := c.Param("id")
+	var req UpdateConfigRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Permission check
+	userID, _ := c.Get("user_id")
+	userRole, _ := c.Get("role")
+	var instance models.StrategyInstance
+	if err := database.DB.Where("id = ?", id).First(&instance).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Strategy not found"})
+		return
+	}
+	if instance.OwnerID != userID.(uint) && userRole != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Permission denied"})
+		return
+	}
+
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(req.Config), &config); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON config"})
+		return
+	}
+
+	if err := stratMgr.UpdateStrategyConfig(id, config); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Update DB
+	instance.Config = req.Config
+	database.DB.Save(&instance)
+
+	c.JSON(http.StatusOK, gin.H{"status": "updated"})
+}
+
+func GetStrategyLogs(c *gin.Context) {
+	id := c.Param("id")
+	var logs []models.StrategyLog
+	database.DB.Where("strategy_id = ?", id).Order("created_at desc").Limit(100).Find(&logs)
+	c.JSON(http.StatusOK, logs)
+}
+
+type SaveTemplateRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+	Code        string `json:"code" binding:"required"`
+	IsDraft     bool   `json:"is_draft"`
+}
+
+func SaveTemplate(c *gin.Context) {
+	var req SaveTemplateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+
+	// Find if existing template with same name by same author
+	var template models.StrategyTemplate
+	err := database.DB.Where("name = ? AND author_id = ?", req.Name, userID.(uint)).First(&template).Error
+
+	// Save code to file
+	filename := fmt.Sprintf("%s_%d.py", req.Name, userID.(uint))
+	filename = strings.ReplaceAll(filename, " ", "_")
+	relPath := filepath.Join("../strategies", filename)
+	absPath, _ := filepath.Abs(relPath)
+
+	if err := os.WriteFile(absPath, []byte(req.Code), 0644); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save code file"})
+		return
+	}
+
+	if err == nil {
+		// Update existing
+		template.Description = req.Description
+		template.Code = req.Code
+		template.IsDraft = req.IsDraft
+		template.Path = relPath
+		database.DB.Save(&template)
+	} else {
+		// Create new
+		template = models.StrategyTemplate{
+			Name:        req.Name,
+			Description: req.Description,
+			Path:        relPath,
+			AuthorID:    userID.(uint),
+			IsPublic:    false,
+			IsDraft:     req.IsDraft,
+			Code:        req.Code,
+		}
+		if err := database.DB.Create(&template).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save template"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, template)
+}
+
+type TestCodeRequest struct {
+	Code string `json:"code" binding:"required"`
+}
+
+func TestCode(c *gin.Context) {
+	var req TestCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Temporary file for testing
+	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("test_%d.py", time.Now().UnixNano()))
+	if err := os.WriteFile(tmpFile, []byte(req.Code), 0644); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create temp test file"})
+		return
+	}
+	defer os.Remove(tmpFile)
+
+	// Run python -m py_compile to check syntax
+	cmd := exec.Command("python3", "-m", "py_compile", tmpFile)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"valid": false,
+			"error": stderr.String(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"valid": true})
 }
 
 func StopStrategy(c *gin.Context) {
@@ -226,7 +474,23 @@ func DeleteStrategy(c *gin.Context) {
 
 func ListTemplates(c *gin.Context) {
 	var templates []models.StrategyTemplate
-	database.DB.Preload("Author").Where("is_public = ?", true).Find(&templates)
+	userID, _ := c.Get("user_id")
+	userRole, _ := c.Get("role")
+
+	query := database.DB.Preload("Author")
+	if userRole != "admin" {
+		// Users see public templates OR their own templates
+		query = query.Where("is_public = ? OR author_id = ?", true, userID.(uint))
+	}
+	// Admin sees everything
+
+	query.Order("created_at desc").Find(&templates)
+	c.JSON(http.StatusOK, templates)
+}
+
+func ListPublicTemplates(c *gin.Context) {
+	var templates []models.StrategyTemplate
+	database.DB.Preload("Author").Where("is_public = ?", true).Order("created_at desc").Find(&templates)
 	c.JSON(http.StatusOK, templates)
 }
 

@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  backend:
+    image: ${DOCKER_HUB_ID:-your-id}/quanty-backend:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/backend/data
+    environment:
+      - PORT=8080
+      - DB_DRIVER=sqlite
+    restart: always
+
+  frontend:
+    image: ${DOCKER_HUB_ID:-your-id}/quanty-frontend:latest
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: always
