@@ -1,0 +1,22 @@
+version: '3.8'
+services:
+  # MySQL 数据库服务 (可选迁移)
+  mysql:
+    image: mysql:8.0
+    container_name: quanty_mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: quanty_trade
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+
+  # Redis 缓存与发布订阅 (可选迁移)
+  redis:
+    image: redis:7.0
+    container_name: quanty_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
