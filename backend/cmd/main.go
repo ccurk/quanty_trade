@@ -43,12 +43,16 @@ func main() {
 		protected.POST("/strategies", api.CreateStrategy)
 		protected.POST("/strategies/:id/start", api.StartStrategy)
 		protected.POST("/strategies/:id/stop", api.StopStrategy)
+		protected.POST("/strategies/:id/backtest", api.BacktestStrategy)
+		protected.GET("/backtests", api.ListBacktests)
+		protected.GET("/backtests/:id", api.GetBacktest)
 		protected.PUT("/strategies/:id/config", api.UpdateStrategyConfig)
 		protected.GET("/strategies/:id/logs", api.GetStrategyLogs)
 		protected.DELETE("/strategies/:id", api.DeleteStrategy)
 
 		// Positions
 		protected.GET("/positions", api.ListPositions)
+		protected.POST("/positions/close", api.ClosePosition)
 
 		// Strategy Square
 		protected.GET("/templates", api.ListTemplates)

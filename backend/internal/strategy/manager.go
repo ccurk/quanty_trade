@@ -49,6 +49,20 @@ type Manager struct {
 	exchange  exchange.Exchange
 }
 
+type BacktestResult struct {
+	TotalTrades    int           `json:"total_trades"`
+	TotalProfit    float64       `json:"total_profit"`
+	ReturnRate     float64       `json:"return_rate"`
+	InitialBalance float64       `json:"initial_balance"`
+	FinalBalance   float64       `json:"final_balance"`
+	EquityCurve    []EquityPoint `json:"equity_curve"`
+}
+
+type EquityPoint struct {
+	Timestamp time.Time `json:"timestamp"`
+	Equity    float64   `json:"equity"`
+}
+
 func NewManager(hub *ws.Hub, ex exchange.Exchange) *Manager {
 	return &Manager{
 		instances: make(map[string]*StrategyInstance),
@@ -339,4 +353,216 @@ func (m *Manager) Clear() {
 		}
 	}
 	m.instances = make(map[string]*StrategyInstance)
+}
+
+func (m *Manager) StartBacktest(id string, startTime, endTime time.Time, initialBalance float64, userID uint) (uint, error) {
+	// 1. Check if instance exists
+	m.mu.RLock()
+	_, ok := m.instances[id]
+	m.mu.RUnlock()
+	if !ok {
+		return 0, fmt.Errorf("strategy %s not found", id)
+	}
+
+	// 2. Create a record in database first
+	bt := &models.Backtest{
+		StrategyID:     id,
+		StartTime:      startTime,
+		EndTime:        endTime,
+		InitialBalance: initialBalance,
+		Status:         "pending",
+		UserID:         userID,
+		CreatedAt:      time.Now(),
+	}
+	database.DB.Create(bt)
+
+	// 3. Run in background
+	go func() {
+		bt.Status = "running"
+		database.DB.Save(bt)
+
+		result, err := m.runBacktestSimulation(id, startTime, endTime, initialBalance)
+		if err != nil {
+			bt.Status = "failed"
+			database.DB.Save(bt)
+			return
+		}
+
+		resJSON, _ := json.Marshal(result)
+		bt.Status = "completed"
+		bt.FinalBalance = result.FinalBalance
+		bt.TotalTrades = result.TotalTrades
+		bt.TotalProfit = result.TotalProfit
+		bt.ReturnRate = result.ReturnRate
+		bt.Result = string(resJSON)
+		database.DB.Save(bt)
+	}()
+
+	return bt.ID, nil
+}
+
+func (m *Manager) Backtest(id string, startTime, endTime time.Time, initialBalance float64, userID uint) (*BacktestResult, error) {
+	// 1. Check if instance exists
+	m.mu.RLock()
+	_, ok := m.instances[id]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("strategy %s not found", id)
+	}
+
+	// 2. Create a record in database first
+	bt := &models.Backtest{
+		StrategyID:     id,
+		StartTime:      startTime,
+		EndTime:        endTime,
+		InitialBalance: initialBalance,
+		Status:         "running",
+		UserID:         userID,
+		CreatedAt:      time.Now(),
+	}
+	database.DB.Create(bt)
+
+	result, err := m.runBacktestSimulation(id, startTime, endTime, initialBalance)
+	if err != nil {
+		bt.Status = "failed"
+		database.DB.Save(bt)
+		return nil, err
+	}
+
+	// 3. Update database record with results
+	resJSON, _ := json.Marshal(result)
+	bt.Status = "completed"
+	bt.FinalBalance = result.FinalBalance
+	bt.TotalTrades = result.TotalTrades
+	bt.TotalProfit = result.TotalProfit
+	bt.ReturnRate = result.ReturnRate
+	bt.Result = string(resJSON)
+	database.DB.Save(bt)
+
+	return result, nil
+}
+
+func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time, initialBalance float64) (*BacktestResult, error) {
+	m.mu.RLock()
+	inst, ok := m.instances[id]
+	m.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("strategy %s not found", id)
+	}
+
+	symbol, _ := inst.Config["symbol"].(string)
+	if symbol == "" {
+		return nil, fmt.Errorf("strategy config must have a symbol")
+	}
+
+	// 1. Fetch historical data
+	candles, err := m.exchange.FetchHistoricalCandles(symbol, "1h", startTime, endTime)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch historical data: %v", err)
+	}
+
+	if len(candles) == 0 {
+		return nil, fmt.Errorf("no historical data found for the given time range")
+	}
+
+	// 2. Setup Backtest Environment
+	configJSON, _ := json.Marshal(inst.Config)
+	absPath, _ := filepath.Abs(inst.Path)
+	cmd := exec.Command("python3", absPath, string(configJSON))
+	cmd.Dir = filepath.Dir(absPath)
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	defer cmd.Process.Kill()
+
+	// 3. Simulation Variables
+	balance := initialBalance
+	positionAmount := 0.0
+	totalTrades := 0
+	totalProfit := 0.0
+	equityCurve := make([]EquityPoint, 0)
+
+	// Channel to receive orders from strategy
+	orderChan := make(chan map[string]interface{}, 10)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			var msg map[string]interface{}
+			if err := json.Unmarshal(scanner.Bytes(), &msg); err == nil {
+				if msg["type"] == "order" {
+					orderChan <- msg["data"].(map[string]interface{})
+				}
+			}
+		}
+	}()
+
+	// 4. Run Simulation
+	for _, candle := range candles {
+		// Send candle to strategy
+		candleMsg := map[string]interface{}{
+			"type": "candle",
+			"data": candle,
+		}
+		json.NewEncoder(stdin).Encode(candleMsg)
+
+		// Brief pause to allow strategy to process and potentially send an order
+		// In a real backtester, we would wait for a "done" signal, but here we'll use a small timeout
+		time.Sleep(10 * time.Millisecond)
+
+		// Check for orders
+		select {
+		case orderReq := <-orderChan:
+			side, _ := orderReq["side"].(string)
+			amount, _ := orderReq["amount"].(float64)
+			price := candle.Close // Simplified: execute at current candle close
+
+			if side == "buy" {
+				cost := amount * price
+				if balance >= cost {
+					balance -= cost
+					positionAmount += amount
+					totalTrades++
+				}
+			} else if side == "sell" {
+				if positionAmount >= amount {
+					balance += amount * price
+					positionAmount -= amount
+					totalTrades++
+				}
+			}
+		default:
+			// No order this time
+		}
+
+		// Calculate current equity
+		currentEquity := balance + (positionAmount * candle.Close)
+		equityCurve = append(equityCurve, EquityPoint{
+			Timestamp: candle.Timestamp,
+			Equity:    currentEquity,
+		})
+	}
+
+	finalBalance := balance + (positionAmount * candles[len(candles)-1].Close)
+	totalProfit = finalBalance - initialBalance
+	returnRate := (totalProfit / initialBalance) * 100
+
+	return &BacktestResult{
+		TotalTrades:    totalTrades,
+		TotalProfit:    totalProfit,
+		ReturnRate:     returnRate,
+		InitialBalance: initialBalance,
+		FinalBalance:   finalBalance,
+		EquityCurve:    equityCurve,
+	}, nil
 }

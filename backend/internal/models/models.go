@@ -66,6 +66,22 @@ type StrategyLog struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+type Backtest struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	StrategyID     string    `gorm:"index" json:"strategy_id"`
+	StartTime      time.Time `json:"start_time"`
+	EndTime        time.Time `json:"end_time"`
+	InitialBalance float64   `json:"initial_balance"`
+	FinalBalance   float64   `json:"final_balance"`
+	TotalTrades    int       `json:"total_trades"`
+	TotalProfit    float64   `json:"total_profit"`
+	ReturnRate     float64   `json:"return_rate"`
+	Status         string    `json:"status"`                  // pending, running, completed, failed
+	Result         string    `gorm:"type:text" json:"result"` // Full JSON result
+	UserID         uint      `gorm:"index" json:"user_id"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 type APILog struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
 	Method     string    `json:"method"`

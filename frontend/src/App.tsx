@@ -140,6 +140,20 @@ const App: React.FC = () => {
   });
   const [selectedTemplate, setSelectedTemplate] = useState<number>(0);
   
+  // Backtest State
+  const [showBacktestModal, setShowBacktestModal] = useState(false);
+  const [strategyToBacktest, setStrategyToBacktest] = useState<Strategy | null>(null);
+  const [isBacktesting, setIsBacktesting] = useState(false);
+  const [backtestResult, setBacktestResult] = useState<any>(null);
+  const [isAsyncBacktest, setIsAsyncBacktest] = useState(false);
+  const [backtestHistory, setBacktestHistory] = useState<any[]>([]);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [backtestConfig, setBacktestConfig] = useState({
+    start_time: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    end_time: new Date().toISOString().split('T')[0],
+    initial_balance: 10000
+  });
+
   // UI Enhancements
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [confirm, setConfirm] = useState<ConfirmOptions>({
@@ -254,6 +268,39 @@ const App: React.FC = () => {
     }
   };
 
+  const runBacktest = async () => {
+    if (!strategyToBacktest) return;
+    setIsBacktesting(true);
+    setBacktestResult(null);
+    try {
+      const res = await axios.post(`/api/strategies/${strategyToBacktest.id}/backtest${isAsyncBacktest ? '?async=true' : ''}`, {
+        start_time: new Date(backtestConfig.start_time).toISOString(),
+        end_time: new Date(backtestConfig.end_time).toISOString(),
+        initial_balance: backtestConfig.initial_balance
+      });
+      if (isAsyncBacktest) {
+        showToast('回测任务已加入后台队列', 'info');
+        setShowBacktestModal(false);
+      } else {
+        setBacktestResult(res.data);
+        showToast('回测完成', 'success');
+      }
+    } catch (err: any) {
+      showToast(err.response?.data?.error || '回测失败', 'error');
+    } finally {
+      setIsBacktesting(false);
+    }
+  };
+
+  const fetchBacktestHistory = async (strategyId?: string) => {
+    try {
+      const res = await axios.get(`/api/backtests${strategyId ? `?strategy_id=${strategyId}` : ''}`);
+      setBacktestHistory(res.data);
+    } catch (err) {
+      console.error('Failed to fetch backtest history', err);
+    }
+  };
+
   const testStrategyCode = async () => {
     setIsTestingCode(true);
     setDevTestResult(null);
@@ -329,6 +376,18 @@ const App: React.FC = () => {
     } catch (err) {
       console.error('Failed to fetch positions', err);
     }
+  };
+
+  const closePosition = async (symbol: string) => {
+    customConfirm('手动平仓', `确定要手动平仓 ${symbol} 吗？此操作将立即在交易所下单。`, async () => {
+      try {
+        await axios.post(`/api/positions/close?symbol=${symbol}`);
+        showToast(`已请求平仓 ${symbol}`, 'success');
+        fetchPositions(positionStatus);
+      } catch (err: any) {
+        showToast(err.response?.data?.error || '平仓失败', 'error');
+      }
+    });
   };
 
 
@@ -532,7 +591,7 @@ const App: React.FC = () => {
 
         <nav className="flex-1 px-4 py-4 md:py-0 space-y-2">
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'strategies'} onClick={() => { setActiveTab('strategies'); setIsSidebarOpen(false); }} icon={<LayoutDashboard size={20} />} label="我的策略" />
-          <NavItem isDarkMode={isDarkMode} active={activeTab === 'templates'} onClick={() => { setActiveTab('templates'); setIsSidebarOpen(false); }} icon={<ShoppingBag size={20} />} label="模板列表" />
+          <NavItem isDarkMode={isDarkMode} active={activeTab === 'templates'} onClick={() => { setActiveTab('templates'); setIsSidebarOpen(false); }} icon={<List size={20} />} label="模板列表" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'develop'} onClick={() => { setActiveTab('develop'); setIsSidebarOpen(false); }} icon={<Code size={20} />} label="代码开发" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'square'} onClick={() => { setActiveTab('square'); setIsSidebarOpen(false); }} icon={<ShoppingBag size={20} />} label="策略广场" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'positions'} onClick={() => { setActiveTab('positions'); setIsSidebarOpen(false); }} icon={<List size={20} />} label="仓位管理" />
@@ -726,65 +785,40 @@ const App: React.FC = () => {
               <p className="font-bold">新建策略</p>
             </div>
 
-            {/* Combined List: Instances and Local Draft */}
-            {[
-              ...strategies.map(s => ({ ...s, type: 'instance' as const })),
-              // Add Local Draft if it exists and is not the default state
-              ...((devName || (devCode && devCode !== DEFAULT_STRATEGY_CODE)) ? [{
-                id: 0,
-                name: devName || '未命名草稿',
-                description: devDesc || '本地自动保存的草稿',
-                code: devCode,
-                path: '',
-                is_public: false,
-                is_draft: true,
-                is_enabled: true,
-                author: { id: user?.id || 0, username: user?.username || '' },
-                type: 'template' as const,
-                is_local: true
-              }] : [])
-            ]
+            {/* Combined List: Instances */}
+            {strategies.map(s => ({ ...s, type: 'instance' as const }))
             .filter(item => {
               const search = stratSearch.toLowerCase();
-              if (item.type === 'instance') {
-                return item.name.toLowerCase().includes(search) || JSON.stringify(item.config).toLowerCase().includes(search);
-              } else {
-                return item.name.toLowerCase().includes(search) || (item.description || '').toLowerCase().includes(search);
-              }
+              return item.name.toLowerCase().includes(search) || JSON.stringify(item.config).toLowerCase().includes(search);
             })
             .sort((a, b) => {
-              if ((a as any).is_local) return -1;
-              if ((b as any).is_local) return 1;
               const idA = typeof a.id === 'string' ? parseInt(a.id) || 0 : a.id;
               const idB = typeof b.id === 'string' ? parseInt(b.id) || 0 : b.id;
               return idB - idA;
             })
-            .map(item => {
-              if (item.type === 'instance') {
-                const s = item as Strategy & { type: 'instance' };
-                return (
-                  <div key={`instance-${s.id}`} className={`p-6 rounded-2xl border shadow-xl transition ${isDarkMode ? 'bg-gray-900/50 border-gray-800 hover:border-gray-700' : 'bg-white border-gray-200 hover:border-blue-200'}`}>
-                    <div className="flex justify-between items-start mb-4">
-                      <h3 className="text-lg font-bold">{s.name}</h3>
-                      <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${s.status === 'running' ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'}`}>
-                        {s.status}
-                      </span>
-                    </div>
-                    <div className="text-sm text-gray-500 mb-8 space-y-1">
-                      <p className="flex justify-between"><span>交易对</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.symbol}</span></p>
-                      <p className="flex justify-between"><span>仓位占比</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.position_pct}%</span></p>
-                      <p className="flex justify-between"><span>止盈/止损</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.take_profit}% / {s.config.stop_loss}%</span></p>
-                      <p className="flex justify-between"><span>平仓收益</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.close_yield}%</span></p>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => toggleStrategy(s)}
-                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold transition shadow-lg ${s.status === 'running' ? 'bg-red-600 hover:bg-red-700 shadow-red-900/20 text-white' : 'bg-green-600 hover:bg-green-700 shadow-green-900/20 text-white'}`}
-                        title={s.status === 'running' ? "停止运行：立即中断此策略的自动化交易" : "启动运行：开始执行此策略的自动化交易逻辑"}
-                      >
-                        {s.status === 'running' ? <><Square size={16} /> 停止</> : <><Play size={16} /> 启动</>}
-                      </button>
-                      <button
+            .map(s => (
+              <div key={`instance-${s.id}`} className={`p-6 rounded-2xl border shadow-xl transition ${isDarkMode ? 'bg-gray-900/50 border-gray-800 hover:border-gray-700' : 'bg-white border-gray-200 hover:border-blue-200'}`}>
+                <div className="flex justify-between items-start mb-4">
+                  <h3 className="text-lg font-bold">{s.name}</h3>
+                  <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${s.status === 'running' ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'}`}>
+                    {s.status}
+                  </span>
+                </div>
+                <div className="text-sm text-gray-500 mb-8 space-y-1">
+                  <p className="flex justify-between"><span>交易对</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.symbol}</span></p>
+                  <p className="flex justify-between"><span>仓位占比</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.position_pct}%</span></p>
+                  <p className="flex justify-between"><span>止盈/止损</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.take_profit}% / {s.config.stop_loss}%</span></p>
+                  <p className="flex justify-between"><span>平仓收益</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.close_yield}%</span></p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => toggleStrategy(s)}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold transition shadow-lg ${s.status === 'running' ? 'bg-red-600 hover:bg-red-700 shadow-red-900/20 text-white' : 'bg-green-600 hover:bg-green-700 shadow-green-900/20 text-white'}`}
+                    title={s.status === 'running' ? "停止运行：立即中断此策略的自动化交易" : "启动运行：开始执行此策略的自动化交易逻辑"}
+                  >
+                    {s.status === 'running' ? <><Square size={16} /> 停止</> : <><Play size={16} /> 启动</>}
+                  </button>
+                  <button
                         onClick={() => { setStrategyToPublish(s); setShowPublishConfirm(true); }}
                         className={`p-2.5 rounded-xl transition border text-blue-400 ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
                         title="发布：将此策略共享到广场，供他人参考引用"
@@ -793,6 +827,27 @@ const App: React.FC = () => {
                       </button>
                       <button
                         onClick={() => { 
+                          setStrategyToBacktest(s);
+                          setBacktestResult(null);
+                          setShowBacktestModal(true);
+                        }}
+                        className={`p-2.5 rounded-xl transition border text-green-400 ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
+                        title="回测：模拟历史数据运行并计算盈亏"
+                      >
+                        <Activity size={20} />
+                      </button>
+                      <button
+                        onClick={() => { 
+                          if (s.status === 'running') {
+                            showToast('策略正在运行中，无法修改配置。请先停止策略。', 'warning');
+                            return;
+                          }
+                          const hasActivePositions = positions.some(p => p.strategy_name === s.name && p.status === 'active');
+                          if (hasActivePositions) {
+                            showToast('该策略尚有未平仓位，请先在“仓位管理”中手动平仓后再修改配置。', 'warning');
+                            return;
+                          }
+
                           setStrategyToEdit(s); 
                           setEditConfigJson(JSON.stringify(s.config, null, 2)); 
                           setNewStratConfig({
@@ -804,75 +859,29 @@ const App: React.FC = () => {
                           });
                           setShowEditConfigModal(true); 
                         }}
-                        className={`p-2.5 rounded-xl transition border text-gray-400 ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
-                        title="配置参数：修改交易对、窗口期等策略运行参数"
+                        className={`p-2.5 rounded-xl transition border ${s.status === 'running' ? 'opacity-50 cursor-not-allowed text-gray-600' : 'text-gray-400 hover:bg-gray-50 border-gray-200'} ${isDarkMode ? (s.status === 'running' ? 'bg-gray-900 border-gray-800' : 'bg-gray-800 hover:bg-gray-700 border-gray-700') : ''}`}
+                        title={s.status === 'running' ? "运行中的策略无法修改配置" : "配置参数：修改交易对、仓位比例等运行参数"}
                       >
                         <Settings size={20} />
                       </button>
-                      <button
-                        onClick={() => { setStrategyToDelete(s); setShowDeleteConfirm(true); }}
-                        className={`p-2.5 rounded-xl transition border text-red-400 ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
-                        title="删除策略：停止运行并永久删除此策略实例"
-                      >
-                        <Trash2 size={20} />
-                      </button>
-                    </div>
-                  </div>
-                );
-              } else {
-                const t = item as Template & { type: 'template', is_local?: boolean };
-                return (
-                  <div key={t.is_local ? 'local-draft' : `template-${t.id}`} className={`p-6 rounded-2xl border shadow-xl transition relative group ${isDarkMode ? 'bg-gray-900/50 border-gray-800 hover:border-gray-700' : 'bg-white border-gray-200 hover:border-purple-200'} ${t.is_local ? 'border-blue-500/50 bg-blue-500/5' : ''}`}>
-                    <div className="flex justify-between items-start mb-4">
-                      <div>
-                        <h3 className="text-lg font-bold">{t.name}</h3>
-                        <div className="flex gap-2 items-center">
-                          <p className={`text-xs font-medium ${t.is_local ? 'text-blue-500' : 'text-purple-500'}`}>
-                            {t.is_local ? '✨ 本地草稿' : (t.is_draft ? '📝 草稿' : '✅ 已就绪')}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex gap-1">
-                        {t.is_local && (
-                          <button 
-                            onClick={() => {
-                              customConfirm('清除草稿', '确定要放弃本地草稿吗？', () => {
-                                setDevCodeName('');
-                                setDevCodeDesc('');
-                                setDevCode(DEFAULT_STRATEGY_CODE);
-                                localStorage.removeItem('dev_name');
-                                localStorage.removeItem('dev_desc');
-                                localStorage.removeItem('dev_code');
-                                showToast('草稿已清除', 'info');
-                              });
-                            }}
-                            className="text-gray-500 hover:text-red-500 transition p-1.5"
-                            title="清除草稿：永久放弃当前未保存的开发进度"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    <p className="text-sm text-gray-500 mb-8 line-clamp-2">{t.description || '暂无描述'}</p>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => {
-                          setDevCode(t.code || '');
-                          setDevCodeName(t.name);
-                          setDevCodeDesc(t.description || '');
-                          setActiveTab('develop');
-                        }}
-                        className={`flex-1 py-2 rounded-xl font-bold border transition ${isDarkMode ? 'bg-gray-800 border-gray-700 hover:bg-gray-700' : 'bg-white border-gray-200 hover:bg-gray-100'}`}
-                        title="继续编辑：跳转到开发页面继续编写此草稿"
-                      >
-                        {t.is_local ? '继续编辑' : '继续开发'}
-                      </button>
-                    </div>
-                  </div>
-                );
-              }
-            })}
+                  <button
+                    onClick={() => { 
+                      const hasActivePositions = positions.some(p => p.strategy_name === s.name && p.status === 'active');
+                      if (hasActivePositions) {
+                        showToast('该策略尚有未平仓位，请先在“仓位管理”中手动平仓后再删除。', 'warning');
+                        return;
+                      }
+                      setStrategyToDelete(s); 
+                      setShowDeleteConfirm(true); 
+                    }}
+                    className={`p-2.5 rounded-xl transition border text-red-400 ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
+                    title="删除策略：停止运行并永久删除此策略实例"
+                  >
+                    <Trash2 size={20} />
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
@@ -930,13 +939,6 @@ const App: React.FC = () => {
                         >
                           <Code size={18} />
                         </button>
-                        <button
-                          onClick={() => referenceFromSquare(t)}
-                          className="p-1.5 text-purple-400 hover:bg-purple-900/20 rounded-lg transition"
-                          title="部署运行：基于此模板创建一个新的交易实例"
-                        >
-                          <PlusCircle size={18} />
-                        </button>
                         <button 
                           onClick={() => { setTemplateToDelete(t); setShowDeleteTemplateConfirm(true); }}
                           className="p-1.5 text-red-500 hover:bg-red-900/20 rounded-lg transition"
@@ -990,13 +992,7 @@ const App: React.FC = () => {
                     </div>
                   )}
                 </div>
-                <button
-                  onClick={() => referenceFromSquare(t)}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition shadow-lg shadow-blue-900/20"
-                  title="引用此策略：将此公开策略复制到我的模板并准备部署"
-                >
-                  <PlusCircle size={18} /> 引用此策略
-                </button>
+                {/* Deployment button removed as per user instruction. All deployments should happen in My Strategies. */}
               </div>
             ))}
           </div>
@@ -1055,13 +1051,24 @@ const App: React.FC = () => {
                         </span>
                       </td>
                       <td className="px-4 md:px-6 py-4 text-right">
-                        <button 
-                          onClick={() => { setSelectedPosition(p); setShowPositionDetailModal(true); }}
-                          className={`p-2 rounded-lg transition ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 text-blue-400' : 'bg-gray-100 hover:bg-gray-200 text-blue-600'}`}
-                          title="查看详情：打开模态框查看此持仓的完整入场、价值及时间明细"
-                        >
-                          <Info size={18} />
-                        </button>
+                        <div className="flex justify-end gap-2">
+                          <button 
+                            onClick={() => { setSelectedPosition(p); setShowPositionDetailModal(true); }}
+                            className={`p-2 rounded-lg transition ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 text-blue-400' : 'bg-gray-100 hover:bg-gray-200 text-blue-600'}`}
+                            title="查看详情：打开模态框查看此持仓的完整入场、价值及时间明细"
+                          >
+                            <Info size={18} />
+                          </button>
+                          {p.status === 'active' && (
+                            <button 
+                              onClick={() => closePosition(p.symbol)}
+                              className={`p-2 rounded-lg transition ${isDarkMode ? 'bg-red-900/20 hover:bg-red-900/40 text-red-400' : 'bg-red-50 hover:bg-red-100 text-red-600'}`}
+                              title="手动平仓：立即在交易所下对冲单平掉此持仓"
+                            >
+                              <Square size={18} />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1403,6 +1410,224 @@ const App: React.FC = () => {
                 确认下架
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Backtest History Modal */}
+      {showHistoryModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+          <div className={`w-full max-w-5xl p-8 rounded-2xl shadow-2xl overflow-y-auto max-h-[90vh] ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
+            <div className="flex items-center justify-between mb-8">
+              <div className="flex items-center gap-3 text-purple-500">
+                <List size={28} />
+                <h3 className="text-2xl font-bold">回测历史记录</h3>
+              </div>
+              <button 
+                onClick={() => setShowHistoryModal(false)}
+                className={`p-2 rounded-lg transition ${isDarkMode ? 'hover:bg-gray-800' : 'hover:bg-gray-100'}`}
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {backtestHistory.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">暂无回测历史</div>
+              ) : (
+                <div className={`rounded-2xl border overflow-hidden ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
+                  <table className="w-full text-left">
+                    <thead className={`text-xs uppercase tracking-wider ${isDarkMode ? 'bg-gray-800/50 text-gray-400' : 'bg-gray-50 text-gray-500'}`}>
+                      <tr>
+                        <th className="px-6 py-4">时间范围</th>
+                        <th className="px-6 py-4">状态</th>
+                        <th className="px-6 py-4">盈亏 / 收益率</th>
+                        <th className="px-6 py-4">交易次数</th>
+                        <th className="px-6 py-4 text-right">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className={`divide-y ${isDarkMode ? 'divide-gray-800' : 'divide-gray-100'}`}>
+                      {backtestHistory.map((bt) => (
+                        <tr key={bt.id} className={`transition ${isDarkMode ? 'hover:bg-gray-800/30' : 'hover:bg-gray-50'}`}>
+                          <td className="px-6 py-4 text-sm">
+                            <div className="font-medium">{new Date(bt.start_time).toLocaleDateString()} - {new Date(bt.end_time).toLocaleDateString()}</div>
+                            <div className="text-[10px] text-gray-500">创建于 {new Date(bt.created_at).toLocaleString()}</div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                              bt.status === 'completed' ? 'bg-green-900/30 text-green-400' :
+                              bt.status === 'running' ? 'bg-blue-900/30 text-blue-400' :
+                              bt.status === 'failed' ? 'bg-red-900/30 text-red-400' : 'bg-gray-800 text-gray-400'
+                            }`}>
+                              {bt.status}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 font-mono text-sm">
+                            {bt.status === 'completed' ? (
+                              <div className={bt.total_profit >= 0 ? 'text-green-500' : 'text-red-500'}>
+                                ${bt.total_profit.toLocaleString()} ({bt.return_rate.toFixed(2)}%)
+                              </div>
+                            ) : '-'}
+                          </td>
+                          <td className="px-6 py-4 text-sm font-mono">{bt.status === 'completed' ? bt.total_trades : '-'}</td>
+                          <td className="px-6 py-4 text-right">
+                            {bt.status === 'completed' && (
+                              <button 
+                                onClick={() => {
+                                  const result = JSON.parse(bt.result);
+                                  setBacktestResult(result);
+                                  setShowHistoryModal(false);
+                                }}
+                                className={`p-2 rounded-lg transition ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 text-blue-400' : 'bg-gray-100 hover:bg-gray-200 text-blue-600'}`}
+                                title="查看详细结果"
+                              >
+                                <Activity size={18} />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Backtest Modal */}
+      {showBacktestModal && strategyToBacktest && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className={`w-full max-w-4xl p-8 rounded-2xl shadow-2xl overflow-y-auto max-h-[90vh] ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
+            <div className="flex items-center justify-between mb-8">
+              <div className="flex items-center gap-3 text-green-500">
+                <Activity size={28} />
+                <h3 className="text-2xl font-bold">策略回测: {strategyToBacktest.name}</h3>
+              </div>
+              <button 
+                onClick={() => { setShowBacktestModal(false); setBacktestResult(null); }}
+                className={`p-2 rounded-lg transition ${isDarkMode ? 'hover:bg-gray-800' : 'hover:bg-gray-100'}`}
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              <div>
+                <label className="block text-sm font-medium text-gray-500 mb-2">开始时间</label>
+                <input 
+                  type="date" 
+                  value={backtestConfig.start_time}
+                  onChange={(e) => setBacktestConfig({ ...backtestConfig, start_time: e.target.value })}
+                  className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-500 mb-2">结束时间</label>
+                <input 
+                  type="date" 
+                  value={backtestConfig.end_time}
+                  onChange={(e) => setBacktestConfig({ ...backtestConfig, end_time: e.target.value })}
+                  className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-500 mb-2">初始本金 (USDT)</label>
+                <input 
+                  type="number" 
+                  value={backtestConfig.initial_balance}
+                  onChange={(e) => setBacktestConfig({ ...backtestConfig, initial_balance: Number(e.target.value) })}
+                  className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-4 mb-8">
+              <button 
+                onClick={runBacktest}
+                disabled={isBacktesting}
+                className="flex-[2] py-3 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold transition shadow-lg shadow-green-900/20 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isBacktesting ? <><RefreshCw size={20} className="animate-spin" /> 回测运行中...</> : '开始回测'}
+              </button>
+              <button 
+                onClick={() => {
+                  fetchBacktestHistory(strategyToBacktest.id);
+                  setShowHistoryModal(true);
+                }}
+                className={`flex-1 py-3 rounded-xl font-bold transition flex items-center justify-center gap-2 ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-gray-100 hover:bg-gray-200'}`}
+              >
+                <List size={20} /> 历史记录
+              </button>
+            </div>
+
+            <div className="flex items-center gap-3 mb-8">
+              <input 
+                type="checkbox" 
+                id="asyncBacktest" 
+                checked={isAsyncBacktest}
+                onChange={(e) => setIsAsyncBacktest(e.target.checked)}
+                className="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <label htmlFor="asyncBacktest" className={`text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                后台运行 (任务将在完成后自动保存，您可以随时关闭此窗口)
+              </label>
+            </div>
+
+            {backtestResult && (
+              <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-black/20 border-gray-800' : 'bg-gray-50 border-gray-100'}`}>
+                    <p className="text-xs text-gray-500 uppercase font-bold mb-1">总交易次数</p>
+                    <p className="text-2xl font-mono font-bold">{backtestResult.total_trades}</p>
+                  </div>
+                  <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-black/20 border-gray-800' : 'bg-gray-50 border-gray-100'}`}>
+                    <p className="text-xs text-gray-500 uppercase font-bold mb-1">净利润</p>
+                    <p className={`text-2xl font-mono font-bold ${backtestResult.total_profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      ${backtestResult.total_profit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                  <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-black/20 border-gray-800' : 'bg-gray-50 border-gray-100'}`}>
+                    <p className="text-xs text-gray-500 uppercase font-bold mb-1">收益率</p>
+                    <p className={`text-2xl font-mono font-bold ${backtestResult.return_rate >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      {backtestResult.return_rate.toFixed(2)}%
+                    </p>
+                  </div>
+                  <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-black/20 border-gray-800' : 'bg-gray-50 border-gray-100'}`}>
+                    <p className="text-xs text-gray-500 uppercase font-bold mb-1">最终余额</p>
+                    <p className="text-2xl font-mono font-bold">${backtestResult.final_balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                  </div>
+                </div>
+
+                <div className={`p-6 rounded-2xl border ${isDarkMode ? 'bg-black/40 border-gray-800' : 'bg-gray-50 border-gray-200'}`}>
+                  <h4 className="text-sm font-bold text-gray-500 uppercase mb-6">资产净值曲线 (Equity Curve)</h4>
+                  <div className="h-64 w-full relative">
+                    {/* Simple SVG Line Chart */}
+                    <svg className="w-full h-full" preserveAspectRatio="none">
+                      <polyline
+                        fill="none"
+                        stroke="#3b82f6"
+                        strokeWidth="2"
+                        points={backtestResult.equity_curve.map((p: any, i: number) => {
+                          const x = (i / (backtestResult.equity_curve.length - 1)) * 100;
+                          const minEquity = Math.min(...backtestResult.equity_curve.map((ep: any) => ep.equity));
+                          const maxEquity = Math.max(...backtestResult.equity_curve.map((ep: any) => ep.equity));
+                          const range = maxEquity - minEquity || 1;
+                          const y = 100 - ((p.equity - minEquity) / range) * 100;
+                          return `${x},${y}`;
+                        }).join(' ')}
+                        style={{ vectorEffect: 'non-scaling-stroke' }}
+                      />
+                    </svg>
+                    <div className="flex justify-between mt-2 text-[10px] text-gray-500 font-mono">
+                      <span>{new Date(backtestResult.equity_curve[0].timestamp).toLocaleDateString()}</span>
+                      <span>{new Date(backtestResult.equity_curve[backtestResult.equity_curve.length - 1].timestamp).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

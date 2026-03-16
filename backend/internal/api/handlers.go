@@ -283,6 +283,22 @@ func ListPositions(c *gin.Context) {
 	c.JSON(http.StatusOK, filtered)
 }
 
+func ClosePosition(c *gin.Context) {
+	symbol := c.Query("symbol")
+	if symbol == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Symbol is required"})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+	if err := stratMgr.GetExchange().ClosePosition(symbol, userID.(uint)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
 func StartStrategy(c *gin.Context) {
 
 	id := c.Param("id")
@@ -291,6 +307,79 @@ func StartStrategy(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "started"})
+}
+
+type BacktestRequest struct {
+	StartTime      time.Time `json:"start_time"`
+	EndTime        time.Time `json:"end_time"`
+	InitialBalance float64   `json:"initial_balance"`
+}
+
+func BacktestStrategy(c *gin.Context) {
+	id := c.Param("id")
+	async := c.Query("async") == "true"
+	var req BacktestRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.StartTime.IsZero() {
+		req.StartTime = time.Now().AddDate(0, 0, -7) // Default 7 days ago
+	}
+	if req.EndTime.IsZero() {
+		req.EndTime = time.Now()
+	}
+	if req.InitialBalance <= 0 {
+		req.InitialBalance = 10000.0 // Default 10000 USDT
+	}
+
+	userID, _ := c.Get("user_id")
+
+	if async {
+		taskID, err := stratMgr.StartBacktest(id, req.StartTime, req.EndTime, req.InitialBalance, userID.(uint))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "queued", "task_id": taskID})
+		return
+	}
+
+	result, err := stratMgr.Backtest(id, req.StartTime, req.EndTime, req.InitialBalance, userID.(uint))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func ListBacktests(c *gin.Context) {
+	strategyID := c.Query("strategy_id")
+	userID, _ := c.Get("user_id")
+
+	var backtests []models.Backtest
+	query := database.DB.Where("user_id = ?", userID)
+	if strategyID != "" {
+		query = query.Where("strategy_id = ?", strategyID)
+	}
+	query.Order("created_at desc").Find(&backtests)
+
+	c.JSON(http.StatusOK, backtests)
+}
+
+func GetBacktest(c *gin.Context) {
+	id := c.Param("id")
+	userID, _ := c.Get("user_id")
+
+	var bt models.Backtest
+	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&bt).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Backtest not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, bt)
 }
 
 type UpdateConfigRequest struct {

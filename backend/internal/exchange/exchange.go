@@ -42,6 +42,8 @@ type Exchange interface {
 	FetchOrders(symbol string) ([]Order, error)
 	FetchPositions(status string) ([]Position, error) // status: "active" or "closed"
 	SubscribeCandles(symbol string, callback func(Candle)) error
+	ClosePosition(symbol string, ownerID uint) error
+	FetchHistoricalCandles(symbol string, timeframe string, startTime, endTime time.Time) ([]Candle, error)
 }
 
 type MockExchange struct {
@@ -130,4 +132,29 @@ func (m *MockExchange) SubscribeCandles(symbol string, callback func(Candle)) er
 		}
 	}()
 	return nil
+}
+
+func (m *MockExchange) ClosePosition(symbol string, ownerID uint) error {
+	// In mock, we just return success
+	return nil
+}
+
+func (m *MockExchange) FetchHistoricalCandles(symbol string, timeframe string, startTime, endTime time.Time) ([]Candle, error) {
+	// Generate some mock historical data
+	var candles []Candle
+	current := startTime
+	price := 60000.0
+	for current.Before(endTime) {
+		price += float64((current.UnixNano() % 100) - 50)
+		candles = append(candles, Candle{
+			Timestamp: current,
+			Open:      price,
+			High:      price + 10,
+			Low:       price - 10,
+			Close:     price,
+			Volume:    1.0,
+		})
+		current = current.Add(time.Hour)
+	}
+	return candles, nil
 }
