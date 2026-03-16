@@ -67,16 +67,26 @@ import json
 class MyStrategy(BaseStrategy):
     def __init__(self, config):
         super().__init__(config)
+        # 获取基础交易配置
+        self.symbol = config.get("symbol", "BTC/USDT")
+        self.position_pct = config.get("position_pct", 10)
+        self.take_profit = config.get("take_profit", 5)
+        self.stop_loss = config.get("stop_loss", 2)
+        self.close_yield = config.get("close_yield", 10)
+        
+        # 策略特定参数
         self.window = config.get("window", 20)
 
     def on_candle(self, candle):
-        self.log(f"Received candle: {candle['close']}")
-        # Add your logic here
+        self.log(f"收到 K 线: {candle['close']} (交易对: {self.symbol})")
+        # 在这里添加您的交易逻辑
+        # 例如: if self.should_buy(): self.buy(self.symbol, amount)
 
     def on_order(self, order):
-        self.log(f"Order updated: {order['id']}")
+        self.log(f"订单状态更新: {order['id']} - {order['status']}")
 
     def on_position(self, position):
+        # 处理持仓变动，检查止盈止损
         pass
 
 if __name__ == "__main__":
@@ -121,6 +131,13 @@ const App: React.FC = () => {
   const [strategyToEdit, setStrategyToEdit] = useState<Strategy | null>(null);
   const [editConfigJson, setEditConfigJson] = useState('');
   const [newStratName, setNewStratName] = useState('');
+  const [newStratConfig, setNewStratConfig] = useState({
+    symbol: 'BTC/USDT',
+    position_pct: 10,
+    take_profit: 5,
+    stop_loss: 2,
+    close_yield: 10
+  });
   const [selectedTemplate, setSelectedTemplate] = useState<number>(0);
   
   // UI Enhancements
@@ -226,7 +243,7 @@ const App: React.FC = () => {
     if (!strategyToEdit) return;
     try {
       await axios.put(`/api/strategies/${strategyToEdit.id}/config`, {
-        config: editConfigJson
+        config: JSON.stringify(newStratConfig)
       });
       fetchStrategies();
       setShowEditConfigModal(false);
@@ -381,11 +398,18 @@ const App: React.FC = () => {
       await axios.post('/api/strategies', {
         name: newStratName,
         template_id: selectedTemplate,
-        config: JSON.stringify({ symbol: 'BTC/USDT', window: 20 })
+        config: JSON.stringify(newStratConfig)
       });
       fetchStrategies();
       setShowCreateModal(false);
       setNewStratName('');
+      setNewStratConfig({
+        symbol: 'BTC/USDT',
+        position_pct: 10,
+        take_profit: 5,
+        stop_loss: 2,
+        close_yield: 10
+      });
       setSelectedTemplate(0);
       setActiveTab('strategies');
       showToast('策略创建成功', 'success');
@@ -437,10 +461,17 @@ const App: React.FC = () => {
   };
 
   const referenceFromSquare = (t: Template) => {
-    setSelectedTemplate(t.id);
-    setNewStratName(`${t.name}_copy`);
-    setShowCreateModal(true);
-  };
+     setSelectedTemplate(t.id);
+     setNewStratName(`${t.name}_copy`);
+     setNewStratConfig({
+       symbol: 'BTC/USDT',
+       position_pct: 10,
+       take_profit: 5,
+       stop_loss: 2,
+       close_yield: 10
+     });
+     setShowCreateModal(true);
+   };
 
   if (showLanding && !token) {
     return (
@@ -501,7 +532,7 @@ const App: React.FC = () => {
 
         <nav className="flex-1 px-4 py-4 md:py-0 space-y-2">
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'strategies'} onClick={() => { setActiveTab('strategies'); setIsSidebarOpen(false); }} icon={<LayoutDashboard size={20} />} label="我的策略" />
-          <NavItem isDarkMode={isDarkMode} active={activeTab === 'templates'} onClick={() => { setActiveTab('templates'); setIsSidebarOpen(false); }} icon={<ShoppingBag size={20} />} label="策略模板" />
+          <NavItem isDarkMode={isDarkMode} active={activeTab === 'templates'} onClick={() => { setActiveTab('templates'); setIsSidebarOpen(false); }} icon={<ShoppingBag size={20} />} label="模板列表" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'develop'} onClick={() => { setActiveTab('develop'); setIsSidebarOpen(false); }} icon={<Code size={20} />} label="代码开发" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'square'} onClick={() => { setActiveTab('square'); setIsSidebarOpen(false); }} icon={<ShoppingBag size={20} />} label="策略广场" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'positions'} onClick={() => { setActiveTab('positions'); setIsSidebarOpen(false); }} icon={<List size={20} />} label="仓位管理" />
@@ -570,7 +601,7 @@ const App: React.FC = () => {
             )}
             <h2 className="text-xl md:text-2xl font-bold min-w-fit">
               {activeTab === 'strategies' && '我的策略'}
-              {activeTab === 'templates' && '策略模板'}
+              {activeTab === 'templates' && '模板列表'}
               {activeTab === 'develop' && '策略代码开发'}
               {activeTab === 'square' && '策略广场'}
               {activeTab === 'positions' && '实时持仓'}
@@ -674,6 +705,27 @@ const App: React.FC = () => {
 
         {activeTab === 'strategies' && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {/* Deploy New Instance Button */}
+            <div 
+              onClick={() => {
+                setSelectedTemplate(0);
+                setNewStratName('');
+                setNewStratConfig({
+                  symbol: 'BTC/USDT',
+                  position_pct: 10,
+                  take_profit: 5,
+                  stop_loss: 2,
+                  close_yield: 10
+                });
+                setShowCreateModal(true);
+              }}
+              className={`p-6 rounded-2xl border-2 border-dashed flex flex-col items-center justify-center transition cursor-pointer group order-first ${isDarkMode ? 'bg-gray-900/30 border-gray-800 text-gray-600 hover:border-gray-700 hover:text-gray-400' : 'bg-white border-gray-200 text-gray-400 hover:border-blue-200 hover:text-blue-400'}`}
+              title="新建策略：从已启用的模板中选择并部署一个新的交易实例"
+            >
+              <PlusCircle size={40} className="mb-2 group-hover:scale-110 transition" />
+              <p className="font-bold">新建策略</p>
+            </div>
+
             {/* Combined List: Instances and Local Draft */}
             {[
               ...strategies.map(s => ({ ...s, type: 'instance' as const })),
@@ -720,7 +772,9 @@ const App: React.FC = () => {
                     </div>
                     <div className="text-sm text-gray-500 mb-8 space-y-1">
                       <p className="flex justify-between"><span>交易对</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.symbol}</span></p>
-                      <p className="flex justify-between"><span>窗口期</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.window}</span></p>
+                      <p className="flex justify-between"><span>仓位占比</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.position_pct}%</span></p>
+                      <p className="flex justify-between"><span>止盈/止损</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.take_profit}% / {s.config.stop_loss}%</span></p>
+                      <p className="flex justify-between"><span>平仓收益</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.close_yield}%</span></p>
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -741,6 +795,13 @@ const App: React.FC = () => {
                         onClick={() => { 
                           setStrategyToEdit(s); 
                           setEditConfigJson(JSON.stringify(s.config, null, 2)); 
+                          setNewStratConfig({
+                            symbol: s.config.symbol || 'BTC/USDT',
+                            position_pct: s.config.position_pct || 10,
+                            take_profit: s.config.take_profit || 5,
+                            stop_loss: s.config.stop_loss || 2,
+                            close_yield: s.config.close_yield || 10
+                          });
                           setShowEditConfigModal(true); 
                         }}
                         className={`p-2.5 rounded-xl transition border text-gray-400 ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
@@ -1073,19 +1134,71 @@ const App: React.FC = () => {
       {/* Create Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className={`w-full max-w-md p-8 rounded-2xl shadow-2xl ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
+          <div className={`w-full max-w-xl p-8 rounded-2xl shadow-2xl ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
             <h3 className="text-2xl font-bold mb-6">新建交易策略</h3>
             <div className="space-y-4 mb-8">
-              <div>
-                <label className="block text-sm font-medium text-gray-500 mb-2">策略名称</label>
-                <input 
-                  type="text" 
-                  value={newStratName}
-                  onChange={(e) => setNewStratName(e.target.value)}
-                  placeholder="例如: BTC 均线回归"
-                  className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
-                />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">策略名称</label>
+                  <input 
+                    type="text" 
+                    value={newStratName}
+                    onChange={(e) => setNewStratName(e.target.value)}
+                    placeholder="例如: BTC 均线回归"
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">交易对</label>
+                  <input 
+                    type="text" 
+                    value={newStratConfig.symbol}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, symbol: e.target.value })}
+                    placeholder="例如: BTC/USDT"
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
               </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">仓位占比 (%)</label>
+                  <input 
+                    type="number" 
+                    value={newStratConfig.position_pct}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, position_pct: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">止盈比例 (%)</label>
+                  <input 
+                    type="number" 
+                    value={newStratConfig.take_profit}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, take_profit: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">止损比例 (%)</label>
+                  <input 
+                    type="number" 
+                    value={newStratConfig.stop_loss}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, stop_loss: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">平仓收益 (%)</label>
+                  <input 
+                    type="number" 
+                    value={newStratConfig.close_yield}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, close_yield: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-500 mb-2">选择模板</label>
                 <select 
@@ -1160,21 +1273,63 @@ const App: React.FC = () => {
       {/* Edit Config Modal */}
       {showEditConfigModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className={`w-full max-w-lg p-8 rounded-2xl shadow-2xl ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
+          <div className={`w-full max-w-xl p-8 rounded-2xl shadow-2xl ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
             <div className="flex items-center gap-3 text-gray-400 mb-6">
               <Settings size={28} />
               <h3 className="text-2xl font-bold">编辑策略配置</h3>
             </div>
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-500 mb-2">JSON 配置</label>
-              <textarea 
-                value={editConfigJson}
-                onChange={(e) => setEditConfigJson(e.target.value)}
-                rows={10}
-                className={`w-full px-4 py-3 rounded-xl border font-mono text-sm transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-black/50 border-gray-700 text-green-400' : 'bg-gray-50 border-gray-200'}`}
-                placeholder='{"symbol": "BTC/USDT", "window": 20}'
-              />
-              <p className="mt-2 text-xs text-gray-500">提示: 只有在策略停止状态下才能修改配置。</p>
+            <div className="space-y-4 mb-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">交易对</label>
+                  <input 
+                    type="text" 
+                    value={newStratConfig.symbol}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, symbol: e.target.value })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">仓位占比 (%)</label>
+                  <input 
+                    type="number" 
+                    value={newStratConfig.position_pct}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, position_pct: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">止盈比例 (%)</label>
+                  <input 
+                    type="number" 
+                    value={newStratConfig.take_profit}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, take_profit: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">止损比例 (%)</label>
+                  <input 
+                    type="number" 
+                    value={newStratConfig.stop_loss}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, stop_loss: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">平仓收益 (%)</label>
+                  <input 
+                    type="number" 
+                    value={newStratConfig.close_yield}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, close_yield: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+              </div>
+              <p className="mt-2 text-xs text-gray-500 italic">提示: 只有在策略停止状态下修改配置才会生效。</p>
             </div>
             <div className="flex gap-4">
               <button 
