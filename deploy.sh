@@ -43,19 +43,14 @@ generate_version() {
         return
     fi
 
-    if [ -f "$VERSION_FILE" ]; then
-        cat "$VERSION_FILE"
-        return
-    fi
-
     TS=$(date +%Y%m%d%H%M%S)
+    RAND=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 6)
     if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
         GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null)
-        echo "${TS}-${GIT_SHA}-${COMPONENT_SUFFIX}"
+        echo "${TS}-${GIT_SHA}-${RAND}-${COMPONENT_SUFFIX}"
         return
     fi
 
-    RAND=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 8)
     echo "${TS}-${RAND}-${COMPONENT_SUFFIX}"
 }
 
@@ -70,7 +65,9 @@ echo "  - backend:  $BACKEND_VERSION"
 echo "  - frontend: $FRONTEND_VERSION"
 
 docker buildx version >/dev/null
-docker buildx inspect >/dev/null 2>&1 || docker buildx create --use >/dev/null
+docker buildx inspect >/dev/null 2>&1 || docker buildx create --name quanty-multi --driver docker-container --use >/dev/null
+docker buildx use quanty-multi >/dev/null 2>&1 || true
+docker buildx inspect --bootstrap >/dev/null
 
 if [ "$COMPONENT" = "backend" ] || [ "$COMPONENT" = "all" ]; then
     echo "📦 构建后端镜像..."
