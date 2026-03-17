@@ -6,7 +6,6 @@
 
 # 1. 配置您的 Docker Hub ID
 DOCKER_HUB_ID="zhaoxianxinclimber108"
-PROJECT_NAMESPACE="quanty_trade"
 VERSION_INPUT="$1"
 
 if [ -z "$DOCKER_HUB_ID" ]; then
@@ -37,21 +36,20 @@ echo "🚀 开始构建镜像版本: $VERSION"
 
 # 2. 构建并推送后端镜像
 echo "📦 构建后端镜像..."
-docker build -t $DOCKER_HUB_ID/$PROJECT_NAMESPACE/quanty-backend:$VERSION -f backend/Dockerfile .
+docker build -t $DOCKER_HUB_ID/quanty_trade-backend:$VERSION -f backend/Dockerfile .
 echo "📤 推送后端镜像到 Docker Hub..."
-docker push $DOCKER_HUB_ID/$PROJECT_NAMESPACE/quanty-backend:$VERSION
+docker push $DOCKER_HUB_ID/quanty_trade-backend:$VERSION
 
 # 3. 构建并推送前端镜像
 echo "📦 构建前端镜像..."
-docker build -t $DOCKER_HUB_ID/$PROJECT_NAMESPACE/quanty-frontend:$VERSION -f frontend/Dockerfile .
+docker build -t $DOCKER_HUB_ID/quanty_trade-frontend:$VERSION -f frontend/Dockerfile .
 echo "📤 推送前端镜像到 Docker Hub..."
-docker push $DOCKER_HUB_ID/$PROJECT_NAMESPACE/quanty-frontend:$VERSION
+docker push $DOCKER_HUB_ID/quanty_trade-frontend:$VERSION
 
 echo "✅ 镜像发布成功！版本: $VERSION"
 echo "------------------------------------------"
 echo "🌐 服务器更新命令:"
 echo "export DOCKER_HUB_ID=$DOCKER_HUB_ID"
-echo "export PROJECT_NAMESPACE=$PROJECT_NAMESPACE"
 echo "export APP_VERSION=$VERSION"
 echo "docker-compose -f docker-compose.prod.yml pull"
 echo "docker-compose -f docker-compose.prod.yml up -d"

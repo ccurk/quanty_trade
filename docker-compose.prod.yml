@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   backend:
-    image: ${DOCKER_HUB_ID:-your-id}/${PROJECT_NAMESPACE:-quanty_trade}/quanty-backend:${APP_VERSION:-dev}
+    image: ${DOCKER_HUB_ID:-your-id}/quanty_trade-backend:${APP_VERSION:-dev}
     ports:
       - "8080:8080"
     volumes:
@@ -13,7 +13,7 @@ services:
     restart: always
 
   frontend:
-    image: ${DOCKER_HUB_ID:-your-id}/${PROJECT_NAMESPACE:-quanty_trade}/quanty-frontend:${APP_VERSION:-dev}
+    image: ${DOCKER_HUB_ID:-your-id}/quanty_trade-frontend:${APP_VERSION:-dev}
     ports:
       - "80:80"
     depends_on:
