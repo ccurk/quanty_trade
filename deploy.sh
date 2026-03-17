@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # ==========================================
 # QuantyTrade 一键部署推送脚本
@@ -54,19 +55,28 @@ generate_version() {
     echo "${TS}-${RAND}-${COMPONENT_SUFFIX}"
 }
 
-BACKEND_VERSION="$(generate_version backend "$BACKEND_VERSION_FILE")"
-FRONTEND_VERSION="$(generate_version frontend "$FRONTEND_VERSION_FILE")"
-
-echo "$BACKEND_VERSION" > "$BACKEND_VERSION_FILE"
-echo "$FRONTEND_VERSION" > "$FRONTEND_VERSION_FILE"
+BACKEND_VERSION=""
+FRONTEND_VERSION=""
+if [ "$COMPONENT" = "backend" ] || [ "$COMPONENT" = "all" ]; then
+    BACKEND_VERSION="$(generate_version backend "$BACKEND_VERSION_FILE")"
+    echo "$BACKEND_VERSION" > "$BACKEND_VERSION_FILE"
+fi
+if [ "$COMPONENT" = "frontend" ] || [ "$COMPONENT" = "all" ]; then
+    FRONTEND_VERSION="$(generate_version frontend "$FRONTEND_VERSION_FILE")"
+    echo "$FRONTEND_VERSION" > "$FRONTEND_VERSION_FILE"
+fi
 
 echo "🚀 开始构建并推送: $COMPONENT"
-echo "  - backend:  $BACKEND_VERSION"
-echo "  - frontend: $FRONTEND_VERSION"
+if [ -n "$BACKEND_VERSION" ]; then
+    echo "  - backend:  $BACKEND_VERSION"
+fi
+if [ -n "$FRONTEND_VERSION" ]; then
+    echo "  - frontend: $FRONTEND_VERSION"
+fi
 
 docker buildx version >/dev/null
-docker buildx inspect >/dev/null 2>&1 || docker buildx create --name quanty-multi --driver docker-container --use >/dev/null
-docker buildx use quanty-multi >/dev/null 2>&1 || true
+docker buildx inspect quanty-multi >/dev/null 2>&1 || docker buildx create --name quanty-multi --driver docker-container --use >/dev/null
+docker buildx use quanty-multi >/dev/null 2>&1
 docker buildx inspect --bootstrap >/dev/null
 
 if [ "$COMPONENT" = "backend" ] || [ "$COMPONENT" = "all" ]; then
@@ -95,8 +105,12 @@ echo "✅ 镜像发布成功！"
 echo "------------------------------------------"
 echo "🌐 服务器更新命令:"
 echo "export DOCKER_HUB_ID=$DOCKER_HUB_ID"
-echo "export BACKEND_VERSION=$BACKEND_VERSION"
-echo "export FRONTEND_VERSION=$FRONTEND_VERSION"
+if [ -n "$BACKEND_VERSION" ]; then
+    echo "export BACKEND_VERSION=$BACKEND_VERSION"
+fi
+if [ -n "$FRONTEND_VERSION" ]; then
+    echo "export FRONTEND_VERSION=$FRONTEND_VERSION"
+fi
 echo "docker compose -f docker-compose.prod.yml pull"
 echo "docker compose -f docker-compose.prod.yml up -d"
 echo "------------------------------------------"
