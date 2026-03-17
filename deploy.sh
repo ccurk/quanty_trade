@@ -7,8 +7,8 @@ set -euo pipefail
 
 # 1. 配置您的 Docker Hub ID
 DOCKER_HUB_ID="zhaoxianxinclimber108"
-COMPONENT="$1"        # backend | frontend | all
-VERSION_INPUT="$2"    # optional
+COMPONENT="${1:-all}"        # backend | frontend | all
+VERSION_INPUT="${2:-}"       # optional
 BACKEND_VERSION_FILE=".deploy_version_backend"
 FRONTEND_VERSION_FILE=".deploy_version_frontend"
 PLATFORMS="linux/amd64,linux/arm64"
