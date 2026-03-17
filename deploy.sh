@@ -5,7 +5,7 @@
 # ==========================================
 
 # 1. 配置您的 Docker Hub ID
-DOCKER_HUB_ID="<YOUR_DOCKERHUB_ID>"
+DOCKER_HUB_ID="zhaoxianxinclimber108"
 
 if [ "$DOCKER_HUB_ID" == "<YOUR_DOCKERHUB_ID>" ]; then
     echo "❌ 错误: 请先在 deploy.sh 中配置您的 DOCKER_HUB_ID"

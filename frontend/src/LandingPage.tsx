@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Activity, Shield, TrendingUp, Cpu, Mail, ArrowRight, Zap, Globe, Github, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Activity, Shield, TrendingUp, Cpu, Mail, ArrowRight, Zap, Globe, Github } from 'lucide-react';
 
 interface LandingPageProps {
   onGoToLogin: () => void;
@@ -54,10 +54,6 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGoToLogin, onGoToRegister }
 
   const nextSlide = () => {
     setCurrentSlide((prev) => (prev + 1) % allStrategies.length);
-  };
-
-  const prevSlide = () => {
-    setCurrentSlide((prev) => (prev - 1 + allStrategies.length) % allStrategies.length);
   };
 
   // Auto-play

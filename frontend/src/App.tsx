@@ -129,7 +129,6 @@ const App: React.FC = () => {
   const [strategyToDelete, setStrategyToDelete] = useState<Strategy | null>(null);
   const [templateToDelete, setTemplateToDelete] = useState<Template | null>(null);
   const [strategyToEdit, setStrategyToEdit] = useState<Strategy | null>(null);
-  const [editConfigJson, setEditConfigJson] = useState('');
   const [newStratName, setNewStratName] = useState('');
   const [newStratConfig, setNewStratConfig] = useState({
     symbol: 'BTC/USDT',
@@ -519,19 +518,6 @@ const App: React.FC = () => {
     }
   };
 
-  const referenceFromSquare = (t: Template) => {
-     setSelectedTemplate(t.id);
-     setNewStratName(`${t.name}_copy`);
-     setNewStratConfig({
-       symbol: 'BTC/USDT',
-       position_pct: 10,
-       take_profit: 5,
-       stop_loss: 2,
-       close_yield: 10
-     });
-     setShowCreateModal(true);
-   };
-
   if (showLanding && !token) {
     return (
       <LandingPage 
@@ -849,7 +835,6 @@ const App: React.FC = () => {
                           }
 
                           setStrategyToEdit(s); 
-                          setEditConfigJson(JSON.stringify(s.config, null, 2)); 
                           setNewStratConfig({
                             symbol: s.config.symbol || 'BTC/USDT',
                             position_pct: s.config.position_pct || 10,
