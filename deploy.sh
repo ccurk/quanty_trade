@@ -11,7 +11,29 @@ COMPONENT="${1:-all}"        # backend | frontend | all
 VERSION_INPUT="${2:-}"       # optional
 BACKEND_VERSION_FILE=".deploy_version_backend"
 FRONTEND_VERSION_FILE=".deploy_version_frontend"
-PLATFORMS="linux/amd64,linux/arm64"
+PLATFORMS_INPUT="${3:-}"     # optional, e.g. linux/amd64 or linux/amd64,linux/arm64
+
+detect_platforms() {
+    if [ -n "$PLATFORMS_INPUT" ]; then
+        echo "$PLATFORMS_INPUT"
+        return
+    fi
+
+    ARCH="$(uname -m)"
+    case "$ARCH" in
+        x86_64|amd64)
+            echo "linux/amd64"
+            ;;
+        aarch64|arm64)
+            echo "linux/amd64,linux/arm64"
+            ;;
+        *)
+            echo "linux/amd64"
+            ;;
+    esac
+}
+
+PLATFORMS="$(detect_platforms)"
 
 if [ -z "$DOCKER_HUB_ID" ]; then
     echo "❌ 错误: 请先在 deploy.sh 中配置您的 DOCKER_HUB_ID"
@@ -73,6 +95,7 @@ fi
 if [ -n "$FRONTEND_VERSION" ]; then
     echo "  - frontend: $FRONTEND_VERSION"
 fi
+echo "  - platforms: $PLATFORMS"
 
 docker buildx version >/dev/null
 docker buildx inspect quanty-multi >/dev/null 2>&1 || docker buildx create --name quanty-multi --driver docker-container --use >/dev/null
