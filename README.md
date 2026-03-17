@@ -62,3 +62,10 @@ python3 scripts/test_api.py
 - **Python**: JSON-based IPC
 - **Frontend**: Vite, React, TypeScript, Tailwind CSS, Lucide Icons
 - **Database**: SQLite (可扩展至 MySQL)
+
+## 启动
+ - export DOCKER_HUB_ID=zhaoxianxinclimber108
+ - export BACKEND_VERSION=后端版本号
+ - export FRONTEND_VERSION=前端版本号
+ - docker-compose -f docker-compose.prod.yml pull
+ - docker-compose -f docker-compose.prod.yml up -d
