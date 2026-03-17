@@ -65,7 +65,7 @@ python3 scripts/test_api.py
 
 ## 启动
  - export DOCKER_HUB_ID=zhaoxianxinclimber108
- - export BACKEND_VERSION=后端版本号
- - export FRONTEND_VERSION=前端版本号
+ - export BACKEND_VERSION=20260317212705-0f0724e-backend
+ - export FRONTEND_VERSION=20260317212705-0f0724e-frontend
  - docker-compose -f docker-compose.prod.yml pull
  - docker-compose -f docker-compose.prod.yml up -d
