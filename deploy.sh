@@ -10,6 +10,7 @@ COMPONENT="$1"        # backend | frontend | all
 VERSION_INPUT="$2"    # optional
 BACKEND_VERSION_FILE=".deploy_version_backend"
 FRONTEND_VERSION_FILE=".deploy_version_frontend"
+PLATFORMS="linux/amd64,linux/arm64"
 
 if [ -z "$DOCKER_HUB_ID" ]; then
     echo "❌ 错误: 请先在 deploy.sh 中配置您的 DOCKER_HUB_ID"
@@ -68,18 +69,29 @@ echo "🚀 开始构建并推送: $COMPONENT"
 echo "  - backend:  $BACKEND_VERSION"
 echo "  - frontend: $FRONTEND_VERSION"
 
+docker buildx version >/dev/null
+docker buildx inspect >/dev/null 2>&1 || docker buildx create --use >/dev/null
+
 if [ "$COMPONENT" = "backend" ] || [ "$COMPONENT" = "all" ]; then
     echo "📦 构建后端镜像..."
-    docker build -t $DOCKER_HUB_ID/quanty_trade-backend:$BACKEND_VERSION -f backend/Dockerfile .
     echo "📤 推送后端镜像到 Docker Hub..."
-    docker push $DOCKER_HUB_ID/quanty_trade-backend:$BACKEND_VERSION
+    docker buildx build \
+      --platform "$PLATFORMS" \
+      -t $DOCKER_HUB_ID/quanty_trade-backend:$BACKEND_VERSION \
+      -f backend/Dockerfile \
+      --push \
+      .
 fi
 
 if [ "$COMPONENT" = "frontend" ] || [ "$COMPONENT" = "all" ]; then
     echo "📦 构建前端镜像..."
-    docker build -t $DOCKER_HUB_ID/quanty_trade-frontend:$FRONTEND_VERSION -f frontend/Dockerfile .
     echo "📤 推送前端镜像到 Docker Hub..."
-    docker push $DOCKER_HUB_ID/quanty_trade-frontend:$FRONTEND_VERSION
+    docker buildx build \
+      --platform "$PLATFORMS" \
+      -t $DOCKER_HUB_ID/quanty_trade-frontend:$FRONTEND_VERSION \
+      -f frontend/Dockerfile \
+      --push \
+      .
 fi
 
 echo "✅ 镜像发布成功！"
@@ -88,6 +100,6 @@ echo "🌐 服务器更新命令:"
 echo "export DOCKER_HUB_ID=$DOCKER_HUB_ID"
 echo "export BACKEND_VERSION=$BACKEND_VERSION"
 echo "export FRONTEND_VERSION=$FRONTEND_VERSION"
-echo "docker-compose -f docker-compose.prod.yml pull"
-echo "docker-compose -f docker-compose.prod.yml up -d"
+echo "docker compose -f docker-compose.prod.yml pull"
+echo "docker compose -f docker-compose.prod.yml up -d"
 echo "------------------------------------------"
