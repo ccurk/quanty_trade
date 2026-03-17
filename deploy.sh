@@ -6,16 +6,36 @@
 
 # 1. 配置您的 Docker Hub ID
 DOCKER_HUB_ID="zhaoxianxinclimber108"
-VERSION_INPUT="$1"
+COMPONENT="$1"        # backend | frontend | all
+VERSION_INPUT="$2"    # optional
+VERSION_FILE=".deploy_version"
 
 if [ -z "$DOCKER_HUB_ID" ]; then
     echo "❌ 错误: 请先在 deploy.sh 中配置您的 DOCKER_HUB_ID"
     exit 1
 fi
 
+if [ -z "$COMPONENT" ]; then
+    COMPONENT="all"
+fi
+
+if [ "$COMPONENT" != "backend" ] && [ "$COMPONENT" != "frontend" ] && [ "$COMPONENT" != "all" ]; then
+    echo "❌ 错误: 参数不合法。用法："
+    echo "  ./deploy.sh all"
+    echo "  ./deploy.sh backend"
+    echo "  ./deploy.sh frontend"
+    echo "可选：指定版本号：./deploy.sh backend 20260317010101-abc123"
+    exit 1
+fi
+
 generate_version() {
     if [ -n "$VERSION_INPUT" ]; then
         echo "$VERSION_INPUT"
+        return
+    fi
+
+    if [ -f "$VERSION_FILE" ]; then
+        cat "$VERSION_FILE"
         return
     fi
 
@@ -31,20 +51,23 @@ generate_version() {
 }
 
 VERSION="$(generate_version)"
+echo "$VERSION" > "$VERSION_FILE"
 
-echo "🚀 开始构建镜像版本: $VERSION"
+echo "🚀 开始构建并推送: $COMPONENT (版本: $VERSION)"
 
-# 2. 构建并推送后端镜像
-echo "📦 构建后端镜像..."
-docker build -t $DOCKER_HUB_ID/quanty_trade-backend:$VERSION -f backend/Dockerfile .
-echo "📤 推送后端镜像到 Docker Hub..."
-docker push $DOCKER_HUB_ID/quanty_trade-backend:$VERSION
+if [ "$COMPONENT" = "backend" ] || [ "$COMPONENT" = "all" ]; then
+    echo "📦 构建后端镜像..."
+    docker build -t $DOCKER_HUB_ID/quanty_trade-backend:$VERSION -f backend/Dockerfile .
+    echo "📤 推送后端镜像到 Docker Hub..."
+    docker push $DOCKER_HUB_ID/quanty_trade-backend:$VERSION
+fi
 
-# 3. 构建并推送前端镜像
-echo "📦 构建前端镜像..."
-docker build -t $DOCKER_HUB_ID/quanty_trade-frontend:$VERSION -f frontend/Dockerfile .
-echo "📤 推送前端镜像到 Docker Hub..."
-docker push $DOCKER_HUB_ID/quanty_trade-frontend:$VERSION
+if [ "$COMPONENT" = "frontend" ] || [ "$COMPONENT" = "all" ]; then
+    echo "📦 构建前端镜像..."
+    docker build -t $DOCKER_HUB_ID/quanty_trade-frontend:$VERSION -f frontend/Dockerfile .
+    echo "📤 推送前端镜像到 Docker Hub..."
+    docker push $DOCKER_HUB_ID/quanty_trade-frontend:$VERSION
+fi
 
 echo "✅ 镜像发布成功！版本: $VERSION"
 echo "------------------------------------------"
