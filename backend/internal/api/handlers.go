@@ -455,8 +455,21 @@ func SaveTemplate(c *gin.Context) {
 	// Save code to file
 	filename := fmt.Sprintf("%s_%d.py", req.Name, userID.(uint))
 	filename = strings.ReplaceAll(filename, " ", "_")
-	relPath := filepath.Join("../strategies", filename)
-	absPath, _ := filepath.Abs(relPath)
+	filename = filepath.Base(filename)
+	strategiesDir := os.Getenv("STRATEGIES_DIR")
+	if strategiesDir == "" {
+		strategiesDir = filepath.Join("..", "strategies")
+	}
+	absStrategiesDir, err := filepath.Abs(strategiesDir)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to resolve strategies dir. err: %v", err)})
+		return
+	}
+	if err := os.MkdirAll(absStrategiesDir, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create strategies dir. err: %v", err)})
+		return
+	}
+	absPath := filepath.Join(absStrategiesDir, filename)
 
 	if err := os.WriteFile(absPath, []byte(req.Code), 0644); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save code file. err: %v", err)})
@@ -468,14 +481,14 @@ func SaveTemplate(c *gin.Context) {
 		template.Description = req.Description
 		template.Code = req.Code
 		template.IsDraft = req.IsDraft
-		template.Path = relPath
+		template.Path = absPath
 		database.DB.Save(&template)
 	} else {
 		// Create new
 		template = models.StrategyTemplate{
 			Name:        req.Name,
 			Description: req.Description,
-			Path:        relPath,
+			Path:        absPath,
 			AuthorID:    userID.(uint),
 			IsPublic:    false,
 			IsDraft:     req.IsDraft,

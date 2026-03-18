@@ -15,6 +15,8 @@ DB_USER="REPLACE_DB_USER"
 DB_PASS="REPLACE_DB_PASS"
 DB_NAME="quanty_trade"
 
+STRATEGIES_DIR="/root/quanty_trade/strategies"
+
 docker version >/dev/null
 
 if [ "$BACKEND_VERSION" = "REPLACE_BACKEND_TAG" ] || [ -z "$BACKEND_VERSION" ]; then
@@ -33,10 +35,13 @@ docker pull "${BACKEND_IMAGE}:${BACKEND_VERSION}"
 
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 
+mkdir -p "${STRATEGIES_DIR}"
+
 docker run -d \
   --name "${CONTAINER_NAME}" \
   --restart always \
   -p "${HOST_PORT}:8080" \
+  -v "${STRATEGIES_DIR}:/app/strategies" \
   -e PORT=8080 \
   -e DB_TYPE="${DB_TYPE}" \
   -e DB_USER="${DB_USER}" \
@@ -44,6 +49,7 @@ docker run -d \
   -e DB_HOST="${DB_HOST}" \
   -e DB_PORT="${DB_PORT}" \
   -e DB_NAME="${DB_NAME}" \
+  -e STRATEGIES_DIR="/app/strategies" \
   "${BACKEND_IMAGE}:${BACKEND_VERSION}" >/dev/null
 
 echo "后端部署完成"

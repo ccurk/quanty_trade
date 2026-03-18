@@ -31,6 +31,7 @@ COPY --from=builder /app/main .
 # In this project, Python strategies are likely in a specific folder or managed by Go
 # We'll copy the entire backend folder to ensure internal paths work
 COPY backend/ ./
+COPY strategies/ ./strategies
 
 # Expose backend port
 EXPOSE 8080

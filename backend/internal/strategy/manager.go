@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"quanty_trade/internal/database"
@@ -12,11 +13,35 @@ import (
 	"quanty_trade/internal/models"
 	"quanty_trade/internal/ws"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"gorm.io/gorm"
 )
+
+func resolveStrategyPath(p string) (string, error) {
+	if filepath.IsAbs(p) {
+		return p, nil
+	}
+	base := os.Getenv("STRATEGIES_DIR")
+	if base == "" {
+		return filepath.Abs(p)
+	}
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return "", err
+	}
+	joined := filepath.Clean(filepath.Join(absBase, p))
+	rel, err := filepath.Rel(absBase, joined)
+	if err != nil {
+		return "", err
+	}
+	if rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..") {
+		return joined, nil
+	}
+	return "", fmt.Errorf("invalid strategy path: %s", p)
+}
 
 type StrategyStatus string
 
@@ -107,7 +132,10 @@ func (m *Manager) StartStrategy(id string) error {
 
 	configJSON, _ := json.Marshal(inst.Config)
 
-	absPath, _ := filepath.Abs(inst.Path)
+	absPath, err := resolveStrategyPath(inst.Path)
+	if err != nil {
+		return err
+	}
 	cmd := exec.Command("python3", absPath, string(configJSON))
 	cmd.Dir = filepath.Dir(absPath)
 
@@ -468,7 +496,10 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 
 	// 2. Setup Backtest Environment
 	configJSON, _ := json.Marshal(inst.Config)
-	absPath, _ := filepath.Abs(inst.Path)
+	absPath, err := resolveStrategyPath(inst.Path)
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.Command("python3", absPath, string(configJSON))
 	cmd.Dir = filepath.Dir(absPath)
 
