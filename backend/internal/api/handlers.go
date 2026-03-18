@@ -459,7 +459,7 @@ func SaveTemplate(c *gin.Context) {
 	absPath, _ := filepath.Abs(relPath)
 
 	if err := os.WriteFile(absPath, []byte(req.Code), 0644); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save code file"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save code file. err: %v", err)})
 		return
 	}
 
