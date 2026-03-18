@@ -736,7 +736,7 @@ const App: React.FC = () => {
                    onClick={saveStrategyTemplate}
                    className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition shadow-lg shadow-blue-900/20"
                  >
-                   <PlusCircle size={18} /> 保存到我的策略
+                   <PlusCircle size={18} /> 保存到我的模版
                  </button>
                </div>
               {testResult && (
