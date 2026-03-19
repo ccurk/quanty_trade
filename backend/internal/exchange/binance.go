@@ -170,9 +170,18 @@ func (b *BinanceExchange) wsAPIURL(cred binanceCred) string {
 }
 
 func binanceSymbol(symbol string) string {
+	return NormalizeSymbol(symbol)
+}
+
+func (b *BinanceExchange) displaySymbol(symbol string) string {
 	s := strings.ToUpper(symbol)
-	s = strings.ReplaceAll(s, "/", "")
-	s = strings.ReplaceAll(s, "-", "")
+	if strings.Contains(s, "/") {
+		return s
+	}
+	f, err := b.getFilters(s)
+	if err == nil && f.BaseAsset != "" && f.QuoteAsset != "" {
+		return strings.ToUpper(f.BaseAsset) + "/" + strings.ToUpper(f.QuoteAsset)
+	}
 	return s
 }
 
@@ -346,7 +355,7 @@ func toInt64(v interface{}) (int64, error) {
 	}
 }
 
-func (b *BinanceExchange) PlaceOrder(ownerID uint, symbol string, side string, amount float64, price float64) (*Order, error) {
+func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol string, side string, amount float64, price float64) (*Order, error) {
 	cred, err := b.getCred(ownerID)
 	if err != nil {
 		return nil, err
@@ -377,7 +386,11 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, symbol string, side string, a
 	params.Set("symbol", sym)
 	params.Set("side", s)
 	params.Set("newOrderRespType", "RESULT")
-	params.Set("newClientOrderId", fmt.Sprintf("qt_%d_%d", ownerID, time.Now().UnixNano()))
+	if clientOrderID != "" {
+		params.Set("newClientOrderId", clientOrderID)
+	} else {
+		params.Set("newClientOrderId", fmt.Sprintf("qt_%d_%d", ownerID, time.Now().UnixNano()))
+	}
 	if price > 0 {
 		params.Set("type", "LIMIT")
 		params.Set("timeInForce", "GTC")

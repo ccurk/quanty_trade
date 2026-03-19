@@ -265,28 +265,47 @@ func CreateStrategy(c *gin.Context) {
 func ListPositions(c *gin.Context) {
 	status := c.DefaultQuery("status", "active") // active or closed
 	userID, _ := c.Get("user_id")
-	positions, err := stratMgr.GetExchange().FetchPositions(userID.(uint), status)
-	if err != nil {
+	userRole, _ := c.Get("role")
+
+	query := database.DB.Model(&models.StrategyPosition{})
+	if userRole != "admin" {
+		query = query.Where("owner_id = ?", userID.(uint))
+	}
+	if status == "active" {
+		query = query.Where("status = ?", "open")
+	} else if status == "closed" {
+		query = query.Where("status = ?", "closed")
+	}
+
+	var rows []models.StrategyPosition
+	if err := query.Order("open_time desc").Find(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	userRole, _ := c.Get("role")
-
-	// Filter by user unless admin
-	var filtered []exchange.Position
-	for _, p := range positions {
-		if userRole == "admin" || p.OwnerID == userID.(uint) {
-			filtered = append(filtered, p)
+	positions := make([]exchange.Position, 0, len(rows))
+	for _, p := range rows {
+		pos := exchange.Position{
+			Symbol:       p.Symbol,
+			Amount:       p.Amount,
+			Price:        p.AvgPrice,
+			StrategyName: p.StrategyName,
+			ExchangeName: p.Exchange,
+			Status: func() string {
+				if p.Status == "open" {
+					return "active"
+				}
+				return "closed"
+			}(),
+			OwnerID:   p.OwnerID,
+			OpenTime:  p.OpenTime,
+			CloseTime: p.CloseTime,
 		}
+		positions = append(positions, pos)
 	}
 
-	// Sort by OpenTime Desc
-	sort.Slice(filtered, func(i, j int) bool {
-		return filtered[i].OpenTime.After(filtered[j].OpenTime)
-	})
-
-	c.JSON(http.StatusOK, filtered)
+	sort.Slice(positions, func(i, j int) bool { return positions[i].OpenTime.After(positions[j].OpenTime) })
+	c.JSON(http.StatusOK, positions)
 }
 
 func ClosePosition(c *gin.Context) {
@@ -297,10 +316,45 @@ func ClosePosition(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
-	if err := stratMgr.GetExchange().ClosePosition(symbol, userID.(uint)); err != nil {
+	var pos models.StrategyPosition
+	if err := database.DB.Where("owner_id = ? AND symbol = ? AND status = ?", userID.(uint), symbol, "open").
+		Order("open_time desc").
+		First(&pos).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Open position not found"})
+		return
+	}
+
+	clientOrderID := fmt.Sprintf("qt_close_%d_%d", userID.(uint), time.Now().UnixNano())
+	database.DB.Create(&models.StrategyOrder{
+		StrategyID:    pos.StrategyID,
+		StrategyName:  pos.StrategyName,
+		OwnerID:       userID.(uint),
+		Exchange:      pos.Exchange,
+		Symbol:        pos.Symbol,
+		Side:          "sell",
+		OrderType:     "market",
+		ClientOrderID: clientOrderID,
+		Status:        "requested",
+		RequestedQty:  pos.Amount,
+		Price:         0,
+		RequestedAt:   time.Now(),
+		UpdatedAt:     time.Now(),
+	})
+
+	order, err := stratMgr.GetExchange().PlaceOrder(userID.(uint), clientOrderID, pos.Symbol, "sell", pos.Amount, 0)
+	if err != nil {
+		database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
+			Updates(map[string]interface{}{"status": "failed", "updated_at": time.Now()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
+		Updates(map[string]interface{}{
+			"exchange_order_id": order.ID,
+			"status":            order.Status,
+			"updated_at":        time.Now(),
+		})
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }

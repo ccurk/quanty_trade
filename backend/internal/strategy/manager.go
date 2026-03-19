@@ -172,6 +172,12 @@ func (m *Manager) StartStrategy(id string) error {
 	if symbol != "" {
 		go inst.exchange.SubscribeCandles(symbol, func(candle exchange.Candle) {
 			inst.SendData("candle", candle)
+			inst.hub.BroadcastJSON(map[string]interface{}{
+				"type":        "candle",
+				"strategy_id": inst.ID,
+				"owner_id":    inst.OwnerID,
+				"data":        candle,
+			})
 		})
 	}
 
@@ -285,13 +291,74 @@ func (inst *StrategyInstance) readStdout() {
 			amount, _ := orderReq["amount"].(float64)
 			price, _ := orderReq["price"].(float64)
 
-			order, err := inst.exchange.PlaceOrder(inst.OwnerID, symbol, side, amount, price)
+			maxPos := 1
+			if v, ok := inst.Config["max_concurrent_positions"].(float64); ok && int(v) > 0 {
+				maxPos = int(v)
+			}
+
+			normalizedSide := strings.ToLower(side)
+			if normalizedSide == "buy" {
+				var openCount int64
+				database.DB.Model(&models.StrategyPosition{}).
+					Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
+					Count(&openCount)
+				var inflightBuy int64
+				database.DB.Model(&models.StrategyOrder{}).
+					Where("owner_id = ? AND strategy_id = ? AND side = ? AND status IN ?", inst.OwnerID, inst.ID, "buy", []string{"requested", "new", "partially_filled"}).
+					Count(&inflightBuy)
+				if int(openCount) >= maxPos {
+					inst.hub.BroadcastJSON(map[string]interface{}{
+						"type":  "error",
+						"error": "Max concurrent positions reached",
+					})
+					continue
+				}
+				if int(openCount+inflightBuy) >= maxPos {
+					inst.hub.BroadcastJSON(map[string]interface{}{
+						"type":  "error",
+						"error": "Max concurrent positions reached",
+					})
+					continue
+				}
+			}
+
+			clientOrderID := fmt.Sprintf("qt_%s_%d", strings.ReplaceAll(inst.ID, "-", ""), time.Now().UnixNano())
+			database.DB.Create(&models.StrategyOrder{
+				StrategyID:   inst.ID,
+				StrategyName: inst.Name,
+				OwnerID:      inst.OwnerID,
+				Exchange:     inst.exchange.GetName(),
+				Symbol:       symbol,
+				Side:         normalizedSide,
+				OrderType: func() string {
+					if price > 0 {
+						return "limit"
+					}
+					return "market"
+				}(),
+				ClientOrderID: clientOrderID,
+				Status:        "requested",
+				RequestedQty:  amount,
+				Price:         price,
+				RequestedAt:   time.Now(),
+				UpdatedAt:     time.Now(),
+			})
+
+			order, err := inst.exchange.PlaceOrder(inst.OwnerID, clientOrderID, symbol, side, amount, price)
 			if err != nil {
+				database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
+					Updates(map[string]interface{}{"status": "failed", "updated_at": time.Now()})
 				inst.hub.BroadcastJSON(map[string]interface{}{
 					"type":  "error",
 					"error": fmt.Sprintf("Failed to place order: %v", err),
 				})
 			} else {
+				database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
+					Updates(map[string]interface{}{
+						"exchange_order_id": order.ID,
+						"status":            order.Status,
+						"updated_at":        time.Now(),
+					})
 				inst.hub.BroadcastJSON(map[string]interface{}{
 					"type": "order",
 					"data": order,
@@ -415,10 +482,26 @@ func (m *Manager) StartBacktest(id string, startTime, endTime time.Time, initial
 		bt.Status = "running"
 		database.DB.Save(bt)
 
-		result, err := m.runBacktestSimulation(id, startTime, endTime, initialBalance)
+		m.hub.BroadcastJSON(map[string]interface{}{
+			"type":        "backtest_status",
+			"backtest_id": bt.ID,
+			"strategy_id": id,
+			"user_id":     userID,
+			"status":      "running",
+		})
+
+		result, err := m.runBacktestSimulation(id, startTime, endTime, initialBalance, userID, bt.ID)
 		if err != nil {
 			bt.Status = "failed"
 			database.DB.Save(bt)
+			m.hub.BroadcastJSON(map[string]interface{}{
+				"type":        "backtest_status",
+				"backtest_id": bt.ID,
+				"strategy_id": id,
+				"user_id":     userID,
+				"status":      "failed",
+				"error":       err.Error(),
+			})
 			return
 		}
 
@@ -430,6 +513,15 @@ func (m *Manager) StartBacktest(id string, startTime, endTime time.Time, initial
 		bt.ReturnRate = result.ReturnRate
 		bt.Result = string(resJSON)
 		database.DB.Save(bt)
+
+		m.hub.BroadcastJSON(map[string]interface{}{
+			"type":        "backtest_status",
+			"backtest_id": bt.ID,
+			"strategy_id": id,
+			"user_id":     userID,
+			"status":      "completed",
+			"result":      result,
+		})
 	}()
 
 	return bt.ID, nil
@@ -456,10 +548,26 @@ func (m *Manager) Backtest(id string, startTime, endTime time.Time, initialBalan
 	}
 	database.DB.Create(bt)
 
-	result, err := m.runBacktestSimulation(id, startTime, endTime, initialBalance)
+	m.hub.BroadcastJSON(map[string]interface{}{
+		"type":        "backtest_status",
+		"backtest_id": bt.ID,
+		"strategy_id": id,
+		"user_id":     userID,
+		"status":      "running",
+	})
+
+	result, err := m.runBacktestSimulation(id, startTime, endTime, initialBalance, userID, bt.ID)
 	if err != nil {
 		bt.Status = "failed"
 		database.DB.Save(bt)
+		m.hub.BroadcastJSON(map[string]interface{}{
+			"type":        "backtest_status",
+			"backtest_id": bt.ID,
+			"strategy_id": id,
+			"user_id":     userID,
+			"status":      "failed",
+			"error":       err.Error(),
+		})
 		return nil, err
 	}
 
@@ -473,10 +581,19 @@ func (m *Manager) Backtest(id string, startTime, endTime time.Time, initialBalan
 	bt.Result = string(resJSON)
 	database.DB.Save(bt)
 
+	m.hub.BroadcastJSON(map[string]interface{}{
+		"type":        "backtest_status",
+		"backtest_id": bt.ID,
+		"strategy_id": id,
+		"user_id":     userID,
+		"status":      "completed",
+		"result":      result,
+	})
+
 	return result, nil
 }
 
-func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time, initialBalance float64) (*BacktestResult, error) {
+func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time, initialBalance float64, userID uint, backtestID uint) (*BacktestResult, error) {
 	m.mu.RLock()
 	inst, ok := m.instances[id]
 	m.mu.RUnlock()
@@ -545,6 +662,7 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 	}()
 
 	// 4. Run Simulation
+	lastProgressEmit := time.Now()
 	for _, candle := range candles {
 		// Send candle to strategy
 		candleMsg := map[string]interface{}{
@@ -588,6 +706,21 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 			Timestamp: candle.Timestamp,
 			Equity:    currentEquity,
 		})
+
+		if time.Since(lastProgressEmit) >= 500*time.Millisecond {
+			lastProgressEmit = time.Now()
+			m.hub.BroadcastJSON(map[string]interface{}{
+				"type":        "backtest_progress",
+				"backtest_id": backtestID,
+				"strategy_id": id,
+				"user_id":     userID,
+				"timestamp":   candle.Timestamp,
+				"equity":      currentEquity,
+				"balance":     balance,
+				"position":    positionAmount,
+				"trades":      totalTrades,
+			})
+		}
 	}
 
 	finalBalance := balance + (positionAmount * candles[len(candles)-1].Close)

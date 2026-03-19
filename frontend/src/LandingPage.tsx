@@ -7,6 +7,14 @@ interface LandingPageProps {
   onGoToRegister: () => void;
 }
 
+interface PublicTemplate {
+  name: string;
+  description?: string;
+  author?: { username?: string };
+  is_default?: boolean;
+  stats?: string;
+}
+
 const DEFAULT_STRATEGIES = [
   {
     name: "BTC 均线趋势",
@@ -32,21 +40,24 @@ const DEFAULT_STRATEGIES = [
 ];
 
 const LandingPage: React.FC<LandingPageProps> = ({ onGoToLogin, onGoToRegister }) => {
-  const [publicTemplates, setPublicTemplates] = useState<any[]>([]);
+  const [publicTemplates, setPublicTemplates] = useState<PublicTemplate[]>([]);
   const [currentSlide, setCurrentSlide] = useState(0);
 
   useEffect(() => {
-    fetchPublicTemplates();
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get('/api/public/templates');
+        const data = Array.isArray(res.data) ? (res.data as PublicTemplate[]) : [];
+        if (!cancelled) setPublicTemplates(data);
+      } catch (err) {
+        console.error('Failed to fetch public templates', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
-
-  const fetchPublicTemplates = async () => {
-    try {
-      const res = await axios.get('/api/public/templates');
-      setPublicTemplates(res.data);
-    } catch (err) {
-      console.error('Failed to fetch public templates', err);
-    }
-  };
 
   const allStrategies = publicTemplates.length > 0 
     ? [...publicTemplates] 
@@ -156,7 +167,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGoToLogin, onGoToRegister }
                         <div className="relative z-10">
                           <p className="text-gray-400 text-sm mb-2 uppercase tracking-widest font-bold">累计收益</p>
                           <div className="text-5xl md:text-7xl font-black text-green-400 mb-4 drop-shadow-[0_0_15px_rgba(74,222,128,0.3)]">
-                            {strat.stats || '+'+(Math.random() * 50 + 30).toFixed(1)+'%'}
+                            {strat.stats || fallbackStats(strat.name)}
                           </div>
                           <p className="text-gray-500 text-xs">过去 12 个月测试表现</p>
                         </div>
@@ -260,12 +271,28 @@ const LandingPage: React.FC<LandingPageProps> = ({ onGoToLogin, onGoToRegister }
   );
 };
 
-const FeatureCard = ({ icon, title, desc }: any) => (
+interface FeatureCardProps {
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+}
+
+const FeatureCard = ({ icon, title, desc }: FeatureCardProps) => (
   <div className="group">
     <div className="mb-6 transform group-hover:scale-110 transition-transform duration-300">{icon}</div>
     <h4 className="text-xl font-bold mb-4 text-gray-100">{title}</h4>
     <p className="text-gray-500 leading-relaxed text-sm">{desc}</p>
   </div>
 );
+
+const fallbackStats = (seed: string) => {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const pct = 30 + (Math.abs(h) % 500) / 10;
+  return `+${pct.toFixed(1)}%`;
+};
 
 export default LandingPage;

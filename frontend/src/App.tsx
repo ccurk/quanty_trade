@@ -18,7 +18,7 @@ interface Strategy {
   id: string;
   name: string;
   status: 'running' | 'stopped' | 'error';
-  config: any;
+  config: Record<string, unknown>;
   template_id?: number;
 }
 
@@ -44,6 +44,47 @@ interface Position {
   open_time: string;
   close_time?: string;
 }
+
+interface EquityPoint {
+  timestamp: string;
+  equity: number;
+}
+
+interface BacktestResult {
+  total_trades: number;
+  total_profit: number;
+  return_rate: number;
+  initial_balance: number;
+  final_balance: number;
+  equity_curve: EquityPoint[];
+}
+
+interface BacktestRow {
+  id: number;
+  strategy_id: string;
+  start_time: string;
+  end_time: string;
+  initial_balance: number;
+  final_balance: number;
+  total_trades: number;
+  total_profit: number;
+  return_rate: number;
+  status: string;
+  created_at: string;
+  result?: string;
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+
+const getCfgString = (cfg: Record<string, unknown>, key: string, fallback: string) => {
+  const v = cfg[key];
+  return typeof v === 'string' ? v : fallback;
+};
+
+const getCfgNumber = (cfg: Record<string, unknown>, key: string, fallback: number) => {
+  const v = cfg[key];
+  return typeof v === 'number' ? v : fallback;
+};
 
 interface Toast {
   id: number;
@@ -143,9 +184,9 @@ const App: React.FC = () => {
   const [showBacktestModal, setShowBacktestModal] = useState(false);
   const [strategyToBacktest, setStrategyToBacktest] = useState<Strategy | null>(null);
   const [isBacktesting, setIsBacktesting] = useState(false);
-  const [backtestResult, setBacktestResult] = useState<any>(null);
+  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
   const [isAsyncBacktest, setIsAsyncBacktest] = useState(false);
-  const [backtestHistory, setBacktestHistory] = useState<any[]>([]);
+  const [backtestHistory, setBacktestHistory] = useState<BacktestRow[]>([]);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [backtestConfig, setBacktestConfig] = useState({
     start_time: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
@@ -183,6 +224,13 @@ const App: React.FC = () => {
       confirmText,
       cancelText,
     });
+  };
+
+  const getAxiosErrorMessage = (err: unknown) => {
+    if (!axios.isAxiosError(err)) return null;
+    const data = err.response?.data;
+    if (isObject(data) && typeof data.error === 'string') return data.error;
+    return null;
   };
   
   // Develop Tab State
@@ -262,8 +310,8 @@ const App: React.FC = () => {
       setShowEditConfigModal(false);
       setStrategyToEdit(null);
       showToast('配置更新成功', 'success');
-    } catch (err: any) {
-      showToast(err.response?.data?.error || '更新失败', 'error');
+    } catch (err: unknown) {
+      showToast(getAxiosErrorMessage(err) || '更新失败', 'error');
     }
   };
 
@@ -281,11 +329,11 @@ const App: React.FC = () => {
         showToast('回测任务已加入后台队列', 'info');
         setShowBacktestModal(false);
       } else {
-        setBacktestResult(res.data);
+        setBacktestResult(res.data as BacktestResult);
         showToast('回测完成', 'success');
       }
-    } catch (err: any) {
-      showToast(err.response?.data?.error || '回测失败', 'error');
+    } catch (err: unknown) {
+      showToast(getAxiosErrorMessage(err) || '回测失败', 'error');
     } finally {
       setIsBacktesting(false);
     }
@@ -294,7 +342,7 @@ const App: React.FC = () => {
   const fetchBacktestHistory = async (strategyId?: string) => {
     try {
       const res = await axios.get(`/api/backtests${strategyId ? `?strategy_id=${strategyId}` : ''}`);
-      setBacktestHistory(res.data);
+      setBacktestHistory(Array.isArray(res.data) ? (res.data as BacktestRow[]) : []);
     } catch (err) {
       console.error('Failed to fetch backtest history', err);
     }
@@ -336,8 +384,8 @@ const App: React.FC = () => {
       localStorage.removeItem('dev_name');
       localStorage.removeItem('dev_desc');
       localStorage.removeItem('dev_code');
-    } catch (err: any) {
-      showToast(err.response?.data?.error || '保存失败', 'error');
+    } catch (err: unknown) {
+      showToast(getAxiosErrorMessage(err) || '保存失败', 'error');
     }
   };
 
@@ -383,8 +431,8 @@ const App: React.FC = () => {
         await axios.post(`/api/positions/close?symbol=${symbol}`);
         showToast(`已请求平仓 ${symbol}`, 'success');
         fetchPositions(positionStatus);
-      } catch (err: any) {
-        showToast(err.response?.data?.error || '平仓失败', 'error');
+      } catch (err: unknown) {
+        showToast(getAxiosErrorMessage(err) || '平仓失败', 'error');
       }
     });
   };
@@ -394,11 +442,51 @@ const App: React.FC = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws.current = new WebSocket(`${protocol}//${window.location.host}/ws`);
     ws.current.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'order') {
+      const parsed = JSON.parse(event.data) as unknown;
+      if (!isObject(parsed)) return;
+      const type = parsed.type;
+      if (typeof type !== 'string') return;
+
+      if (type === 'order') {
         fetchPositions(positionStatus); // Refresh positions on order
-      } else if (msg.type === 'log') {
-        setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg.data}`, ...prev.slice(0, 99)]);
+      } else if (type === 'log') {
+        const data = parsed.data;
+        setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${typeof data === 'string' ? data : ''}`, ...prev.slice(0, 99)]);
+      } else if (type === 'execution_report') {
+        const d = isObject(parsed.data) ? parsed.data : {};
+        const symbol = typeof d.symbol === 'string' ? d.symbol : '';
+        const side = typeof d.side === 'string' ? d.side : '';
+        const status = typeof d.status === 'string' ? d.status : '';
+        const executedQty = typeof d.executed_qty === 'number' ? d.executed_qty : '';
+        const lastPrice = typeof d.last_price === 'number' ? d.last_price : '';
+        setLogs(prev => [`[${new Date().toLocaleTimeString()}] EXEC ${symbol} ${side} ${status} qty=${executedQty} price=${lastPrice}`, ...prev.slice(0, 99)]);
+        fetchPositions(positionStatus);
+      } else if (type === 'backtest_progress') {
+        const msgUserID = parsed.user_id;
+        if (user && typeof msgUserID === 'number' && msgUserID === user.id) {
+          const equity = typeof parsed.equity === 'number' ? parsed.equity.toFixed(2) : '';
+          const trades = typeof parsed.trades === 'number' ? parsed.trades : '';
+          setLogs(prev => [`[${new Date().toLocaleTimeString()}] Backtest progress equity=${equity} trades=${trades}`, ...prev.slice(0, 99)]);
+        }
+      } else if (type === 'backtest_status') {
+        const msgUserID = parsed.user_id;
+        if (user && typeof msgUserID === 'number' && msgUserID === user.id) {
+          if (parsed.status === 'completed') {
+            showToast('回测完成', 'success');
+            fetchBacktestHistory();
+          } else if (parsed.status === 'failed') {
+            showToast(typeof parsed.error === 'string' ? parsed.error : '回测失败', 'error');
+            fetchBacktestHistory();
+          }
+        }
+      } else if (type === 'candle') {
+        const msgOwnerID = parsed.owner_id;
+        if (user && typeof msgOwnerID === 'number' && msgOwnerID === user.id) {
+          const c = isObject(parsed.data) ? parsed.data : {};
+          const ts = c.timestamp ? new Date(String(c.timestamp)).toLocaleString() : '';
+          const close = typeof c.close === 'number' ? c.close : '';
+          setLogs(prev => [`[${new Date().toLocaleTimeString()}] Candle ${ts} close=${close}`, ...prev.slice(0, 99)]);
+        }
       }
     };
     ws.current.onclose = () => {
@@ -471,8 +559,8 @@ const App: React.FC = () => {
       setSelectedTemplate(0);
       setActiveTab('strategies');
       showToast('策略创建成功', 'success');
-    } catch (err: any) {
-      showToast(err.response?.data?.error || '创建失败', 'error');
+    } catch (err: unknown) {
+      showToast(getAxiosErrorMessage(err) || '创建失败', 'error');
     }
   };
 
@@ -791,10 +879,10 @@ const App: React.FC = () => {
                   </span>
                 </div>
                 <div className="text-sm text-gray-500 mb-8 space-y-1">
-                  <p className="flex justify-between"><span>交易对</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.symbol}</span></p>
-                  <p className="flex justify-between"><span>仓位占比</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.position_pct}%</span></p>
-                  <p className="flex justify-between"><span>止盈/止损</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.take_profit}% / {s.config.stop_loss}%</span></p>
-                  <p className="flex justify-between"><span>平仓收益</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{s.config.close_yield}%</span></p>
+                  <p className="flex justify-between"><span>交易对</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{getCfgString(s.config, 'symbol', '')}</span></p>
+                  <p className="flex justify-between"><span>仓位占比</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{getCfgNumber(s.config, 'position_pct', 0)}%</span></p>
+                  <p className="flex justify-between"><span>止盈/止损</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{getCfgNumber(s.config, 'take_profit', 0)}% / {getCfgNumber(s.config, 'stop_loss', 0)}%</span></p>
+                  <p className="flex justify-between"><span>平仓收益</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{getCfgNumber(s.config, 'close_yield', 0)}%</span></p>
                 </div>
                 <div className="flex gap-2">
                   <button
@@ -836,11 +924,11 @@ const App: React.FC = () => {
 
                           setStrategyToEdit(s); 
                           setNewStratConfig({
-                            symbol: s.config.symbol || 'BTC/USDT',
-                            position_pct: s.config.position_pct || 10,
-                            take_profit: s.config.take_profit || 5,
-                            stop_loss: s.config.stop_loss || 2,
-                            close_yield: s.config.close_yield || 10
+                            symbol: getCfgString(s.config, 'symbol', 'BTC/USDT'),
+                            position_pct: getCfgNumber(s.config, 'position_pct', 10),
+                            take_profit: getCfgNumber(s.config, 'take_profit', 5),
+                            stop_loss: getCfgNumber(s.config, 'stop_loss', 2),
+                            close_yield: getCfgNumber(s.config, 'close_yield', 10)
                           });
                           setShowEditConfigModal(true); 
                         }}
@@ -1459,7 +1547,9 @@ const App: React.FC = () => {
                             {bt.status === 'completed' && (
                               <button 
                                 onClick={() => {
-                                  const result = JSON.parse(bt.result);
+                                  const raw = bt.result;
+                                  if (typeof raw !== 'string') return;
+                                  const result = JSON.parse(raw) as BacktestResult;
                                   setBacktestResult(result);
                                   setShowHistoryModal(false);
                                 }}
@@ -1594,10 +1684,10 @@ const App: React.FC = () => {
                         fill="none"
                         stroke="#3b82f6"
                         strokeWidth="2"
-                        points={backtestResult.equity_curve.map((p: any, i: number) => {
+                        points={backtestResult.equity_curve.map((p: EquityPoint, i: number) => {
                           const x = (i / (backtestResult.equity_curve.length - 1)) * 100;
-                          const minEquity = Math.min(...backtestResult.equity_curve.map((ep: any) => ep.equity));
-                          const maxEquity = Math.max(...backtestResult.equity_curve.map((ep: any) => ep.equity));
+                          const minEquity = Math.min(...backtestResult.equity_curve.map((ep: EquityPoint) => ep.equity));
+                          const maxEquity = Math.max(...backtestResult.equity_curve.map((ep: EquityPoint) => ep.equity));
                           const range = maxEquity - minEquity || 1;
                           const y = 100 - ((p.equity - minEquity) / range) * 100;
                           return `${x},${y}`;

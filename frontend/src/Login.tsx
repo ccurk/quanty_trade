@@ -2,8 +2,17 @@ import React, { useState } from 'react';
 import axios from 'axios';
 import { Lock, User, Activity } from 'lucide-react';
 
+interface AuthUser {
+  id: number;
+  username: string;
+  role: 'admin' | 'user';
+  created_at?: string;
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+
 interface LoginProps {
-  onLogin: (token: string, user: any) => void;
+  onLogin: (token: string, user: AuthUser) => void;
   onGoToRegister: () => void;
   onBackToLanding: () => void;
 }
@@ -21,8 +30,17 @@ const Login: React.FC<LoginProps> = ({ onLogin, onGoToRegister, onBackToLanding 
     try {
       const res = await axios.post('/api/login', { username, password });
       onLogin(res.data.token, res.data.user);
-    } catch (err: any) {
-      setError(err.response?.data?.error || '登录失败，请检查用户名或密码');
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err)) {
+        const data = err.response?.data;
+        if (isObject(data) && typeof data.error === 'string') {
+          setError(data.error);
+        } else {
+          setError('登录失败，请检查用户名或密码');
+        }
+      } else {
+        setError('登录失败，请检查用户名或密码');
+      }
     } finally {
       setLoading(false);
     }

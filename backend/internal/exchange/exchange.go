@@ -1,6 +1,7 @@
 package exchange
 
 import (
+	"strings"
 	"time"
 )
 
@@ -39,12 +40,19 @@ type Position struct {
 type Exchange interface {
 	GetName() string
 	FetchCandles(symbol string, timeframe string, limit int) ([]Candle, error)
-	PlaceOrder(ownerID uint, symbol string, side string, amount float64, price float64) (*Order, error)
+	PlaceOrder(ownerID uint, clientOrderID string, symbol string, side string, amount float64, price float64) (*Order, error)
 	FetchOrders(ownerID uint, symbol string) ([]Order, error)
 	FetchPositions(ownerID uint, status string) ([]Position, error) // status: "active" or "closed"
 	SubscribeCandles(symbol string, callback func(Candle)) error
 	ClosePosition(symbol string, ownerID uint) error
 	FetchHistoricalCandles(symbol string, timeframe string, startTime, endTime time.Time) ([]Candle, error)
+}
+
+func NormalizeSymbol(symbol string) string {
+	s := strings.ToUpper(symbol)
+	s = strings.ReplaceAll(s, "/", "")
+	s = strings.ReplaceAll(s, "-", "")
+	return s
 }
 
 type MockExchange struct {
@@ -58,15 +66,16 @@ func (m *MockExchange) FetchCandles(symbol string, timeframe string, limit int) 
 	return []Candle{}, nil
 }
 
-func (m *MockExchange) PlaceOrder(ownerID uint, symbol string, side string, amount float64, price float64) (*Order, error) {
+func (m *MockExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol string, side string, amount float64, price float64) (*Order, error) {
 	return &Order{
-		ID:        "mock-id",
-		Symbol:    symbol,
-		Side:      side,
-		Amount:    amount,
-		Price:     price,
-		Status:    "filled",
-		Timestamp: time.Now(),
+		ID:            "mock-id",
+		ClientOrderID: clientOrderID,
+		Symbol:        symbol,
+		Side:          side,
+		Amount:        amount,
+		Price:         price,
+		Status:        "filled",
+		Timestamp:     time.Now(),
 	}, nil
 }
 

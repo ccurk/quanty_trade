@@ -6,6 +6,8 @@ interface RegisterProps {
   onBackToLogin: () => void;
 }
 
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+
 const Register: React.FC<RegisterProps> = ({ onBackToLogin }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -32,8 +34,17 @@ const Register: React.FC<RegisterProps> = ({ onBackToLogin }) => {
       });
       setSuccess(true);
       setTimeout(onBackToLogin, 2000);
-    } catch (err: any) {
-      setError(err.response?.data?.error || '注册失败，请稍后重试');
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err)) {
+        const data = err.response?.data;
+        if (isObject(data) && typeof data.error === 'string') {
+          setError(data.error);
+        } else {
+          setError('注册失败，请稍后重试');
+        }
+      } else {
+        setError('注册失败，请稍后重试');
+      }
     } finally {
       setLoading(false);
     }

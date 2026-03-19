@@ -113,3 +113,38 @@ type ExchangeOrderEvent struct {
 	Raw           string    `gorm:"type:text" json:"raw"`
 	CreatedAt     time.Time `json:"created_at"`
 }
+
+type StrategyOrder struct {
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	StrategyID      string    `gorm:"index" json:"strategy_id"`
+	StrategyName    string    `json:"strategy_name"`
+	OwnerID         uint      `gorm:"index" json:"owner_id"`
+	Exchange        string    `gorm:"index" json:"exchange"`
+	Symbol          string    `gorm:"index" json:"symbol"`
+	Side            string    `json:"side"`
+	OrderType       string    `json:"order_type"`
+	ClientOrderID   string    `gorm:"uniqueIndex" json:"client_order_id"`
+	ExchangeOrderID string    `gorm:"index" json:"exchange_order_id"`
+	Status          string    `gorm:"index" json:"status"`
+	RequestedQty    float64   `json:"requested_qty"`
+	Price           float64   `json:"price"`
+	ExecutedQty     float64   `json:"executed_qty"`
+	AvgPrice        float64   `json:"avg_price"`
+	RequestedAt     time.Time `json:"requested_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type StrategyPosition struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	StrategyID   string    `gorm:"index" json:"strategy_id"`
+	StrategyName string    `json:"strategy_name"`
+	OwnerID      uint      `gorm:"index" json:"owner_id"`
+	Exchange     string    `gorm:"index" json:"exchange"`
+	Symbol       string    `gorm:"index" json:"symbol"`
+	Amount       float64   `json:"amount"`
+	AvgPrice     float64   `json:"avg_price"`
+	Status       string    `gorm:"index" json:"status"` // open, closed
+	OpenTime     time.Time `json:"open_time"`
+	CloseTime    time.Time `json:"close_time,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}

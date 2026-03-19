@@ -219,6 +219,14 @@ func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[st
 	lastPrice := toFloat(raw["L"])
 	eventTime := time.UnixMilli(toInt64Default(raw["E"]))
 
+	var stratOrder models.StrategyOrder
+	stratOrderFound := false
+	if database.DB != nil && clientOrderID != "" {
+		if err := database.DB.Where("client_order_id = ?", clientOrderID).First(&stratOrder).Error; err == nil {
+			stratOrderFound = true
+		}
+	}
+
 	if database.DB != nil {
 		database.DB.Create(&models.ExchangeOrderEvent{
 			OwnerID:       s.ownerID,
@@ -238,6 +246,32 @@ func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[st
 			Raw:           string(mustJSON(raw)),
 			CreatedAt:     time.Now(),
 		})
+
+		if stratOrderFound {
+			statusLower := strings.ToLower(status)
+			sideLower := strings.ToLower(side)
+			orderTypeLower := strings.ToLower(orderType)
+
+			avgPrice := stratOrder.AvgPrice
+			if execQty > 0 {
+				avgPrice = ((stratOrder.AvgPrice * stratOrder.ExecutedQty) + (lastPrice * lastQty)) / execQty
+			}
+
+			database.DB.Model(&models.StrategyOrder{}).Where("id = ?", stratOrder.ID).
+				Updates(map[string]interface{}{
+					"exchange_order_id": orderID,
+					"status":            statusLower,
+					"side":              sideLower,
+					"order_type":        orderTypeLower,
+					"executed_qty":      execQty,
+					"avg_price":         avgPrice,
+					"updated_at":        time.Now(),
+				})
+
+			if statusLower == "filled" {
+				b.applyFillToPosition(s.hub, stratOrder.StrategyID, stratOrder.StrategyName, s.ownerID, b.name, symbol, sideLower, execQty, avgPrice, eventTime)
+			}
+		}
 	}
 
 	s.hub.BroadcastJSON(map[string]interface{}{
@@ -259,6 +293,125 @@ func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[st
 			"event_time":      eventTime,
 		},
 	})
+}
+
+func (b *BinanceExchange) applyFillToPosition(hub *ws.Hub, strategyID string, strategyName string, ownerID uint, exchangeName string, symbol string, side string, executedQty float64, avgPrice float64, eventTime time.Time) {
+	if database.DB == nil || strategyID == "" || executedQty <= 0 {
+		return
+	}
+
+	sym := b.displaySymbol(symbol)
+	now := time.Now()
+
+	var pos models.StrategyPosition
+	err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", ownerID, strategyID, sym, "open").First(&pos).Error
+	if err != nil {
+		if side != "buy" {
+			return
+		}
+		pos = models.StrategyPosition{
+			StrategyID:   strategyID,
+			StrategyName: strategyName,
+			OwnerID:      ownerID,
+			Exchange:     exchangeName,
+			Symbol:       sym,
+			Amount:       executedQty,
+			AvgPrice:     avgPrice,
+			Status:       "open",
+			OpenTime:     eventTime,
+			UpdatedAt:    now,
+		}
+		database.DB.Create(&pos)
+		if hub != nil {
+			hub.BroadcastJSON(map[string]interface{}{
+				"type": "position",
+				"data": map[string]interface{}{
+					"symbol":        pos.Symbol,
+					"amount":        pos.Amount,
+					"price":         pos.AvgPrice,
+					"strategy_name": pos.StrategyName,
+					"exchange_name": pos.Exchange,
+					"status":        "active",
+					"owner_id":      pos.OwnerID,
+					"open_time":     pos.OpenTime,
+				},
+			})
+		}
+		return
+	}
+
+	if side == "buy" {
+		newAmt := pos.Amount + executedQty
+		newAvg := pos.AvgPrice
+		if newAmt > 0 {
+			newAvg = ((pos.AvgPrice * pos.Amount) + (avgPrice * executedQty)) / newAmt
+		}
+		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
+			Updates(map[string]interface{}{"amount": newAmt, "avg_price": newAvg, "updated_at": now})
+		if hub != nil {
+			hub.BroadcastJSON(map[string]interface{}{
+				"type": "position",
+				"data": map[string]interface{}{
+					"symbol":        pos.Symbol,
+					"amount":        newAmt,
+					"price":         newAvg,
+					"strategy_name": pos.StrategyName,
+					"exchange_name": pos.Exchange,
+					"status":        "active",
+					"owner_id":      pos.OwnerID,
+					"open_time":     pos.OpenTime,
+				},
+			})
+		}
+		return
+	}
+
+	if side == "sell" {
+		newAmt := pos.Amount - executedQty
+		if newAmt <= 0 {
+			database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
+				Updates(map[string]interface{}{
+					"amount":     0,
+					"status":     "closed",
+					"close_time": eventTime,
+					"updated_at": now,
+				})
+			if hub != nil {
+				hub.BroadcastJSON(map[string]interface{}{
+					"type": "position",
+					"data": map[string]interface{}{
+						"symbol":        pos.Symbol,
+						"amount":        0,
+						"price":         pos.AvgPrice,
+						"strategy_name": pos.StrategyName,
+						"exchange_name": pos.Exchange,
+						"status":        "closed",
+						"owner_id":      pos.OwnerID,
+						"open_time":     pos.OpenTime,
+						"close_time":    eventTime,
+					},
+				})
+			}
+		} else {
+			database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
+				Updates(map[string]interface{}{"amount": newAmt, "updated_at": now})
+			if hub != nil {
+				hub.BroadcastJSON(map[string]interface{}{
+					"type": "position",
+					"data": map[string]interface{}{
+						"symbol":        pos.Symbol,
+						"amount":        newAmt,
+						"price":         pos.AvgPrice,
+						"strategy_name": pos.StrategyName,
+						"exchange_name": pos.Exchange,
+						"status":        "active",
+						"owner_id":      pos.OwnerID,
+						"open_time":     pos.OpenTime,
+					},
+				})
+			}
+		}
+	}
 }
 
 func toString(v interface{}) string {

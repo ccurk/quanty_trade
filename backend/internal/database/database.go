@@ -46,22 +46,38 @@ func InitDB() {
 		&models.APILog{},
 		&models.Backtest{},
 		&models.ExchangeOrderEvent{},
+		&models.StrategyOrder{},
+		&models.StrategyPosition{},
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)
 	}
 	log.Println("Database schema is up to date.")
 
-	// Create initial admin if not exists
+	adminUsername := os.Getenv("ADMIN_USERNAME")
+	if adminUsername == "" {
+		adminUsername = "admin"
+	}
+	adminPassword := os.Getenv("ADMIN_PASSWORD")
+
 	var admin models.User
-	if err := DB.Where("username = ?", "admin").First(&admin).Error; err != nil {
-		hashedPassword, _ := auth.HashPassword("admin123")
+	if err := DB.Where("username = ?", adminUsername).First(&admin).Error; err != nil {
+		pw := adminPassword
+		if pw == "" {
+			pw = "admin123"
+		}
+		hashedPassword, _ := auth.HashPassword(pw)
 		admin = models.User{
-			Username: "admin",
+			Username: adminUsername,
 			Password: hashedPassword,
 			Role:     models.RoleAdmin,
 		}
 		DB.Create(&admin)
-		log.Println("Created default admin account: admin / admin123")
+	} else if adminPassword != "" {
+		hashedPassword, _ := auth.HashPassword(adminPassword)
+		DB.Model(&admin).Updates(map[string]interface{}{
+			"password": hashedPassword,
+			"role":     models.RoleAdmin,
+		})
 	}
 }
