@@ -20,6 +20,13 @@ import (
 	"gorm.io/gorm"
 )
 
+// resolveStrategyPath converts a strategy Path stored in DB into an executable
+// absolute file path.
+//
+// Rules:
+// - If Path is absolute, use it as-is.
+// - If STRATEGIES_DIR is set, treat Path as relative to that directory.
+// - Reject paths that escape STRATEGIES_DIR (basic path traversal guard).
 func resolveStrategyPath(p string) (string, error) {
 	if filepath.IsAbs(p) {
 		return p, nil
@@ -43,6 +50,7 @@ func resolveStrategyPath(p string) (string, error) {
 	return "", fmt.Errorf("invalid strategy path: %s", p)
 }
 
+// StrategyStatus is the runtime state of a strategy process managed by Manager.
 type StrategyStatus string
 
 const (
@@ -52,28 +60,46 @@ const (
 )
 
 type StrategyInstance struct {
-	ID        string                 `json:"id"`
-	Name      string                 `json:"name"`
-	Path      string                 `json:"path"`
-	Config    map[string]interface{} `json:"config"`
-	Status    StrategyStatus         `json:"status"`
-	OwnerID   uint                   `json:"owner_id"`
-	CreatedAt time.Time              `json:"created_at"`
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    io.ReadCloser
-	mu        sync.Mutex
-	hub       *ws.Hub
-	exchange  exchange.Exchange
+	// ID is the StrategyInstance primary key (UUID string).
+	ID string `json:"id"`
+	// Name is the user-visible strategy name.
+	Name string `json:"name"`
+	// Path points to the python file of this strategy.
+	Path string `json:"path"`
+	// Config is the in-memory decoded config JSON.
+	Config map[string]interface{} `json:"config"`
+	// Status is the process state.
+	Status StrategyStatus `json:"status"`
+	// OwnerID is the user who owns this running instance.
+	OwnerID uint `json:"owner_id"`
+	// CreatedAt is when this in-memory instance was created.
+	CreatedAt time.Time `json:"created_at"`
+
+	// cmd/stdin/stdout are the managed python process and pipes.
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+
+	// mu guards process state and pipes.
+	mu sync.Mutex
+	// hub is the websocket broadcaster for UI updates.
+	hub *ws.Hub
+	// exchange is the exchange implementation (mock/binance/etc.).
+	exchange exchange.Exchange
 }
 
+// Manager manages lifecycle of all strategy instances and coordinates exchange access.
 type Manager struct {
+	// instances keeps in-memory runtime state keyed by strategy instance id.
 	instances map[string]*StrategyInstance
 	mu        sync.RWMutex
-	hub       *ws.Hub
-	exchange  exchange.Exchange
+	// hub broadcasts runtime events (logs/orders/candles/backtest updates) to frontend.
+	hub *ws.Hub
+	// exchange is the global exchange connector used by all strategies.
+	exchange exchange.Exchange
 }
 
+// BacktestResult is returned by synchronous backtests and stored in Backtest.Result.
 type BacktestResult struct {
 	TotalTrades    int           `json:"total_trades"`
 	TotalProfit    float64       `json:"total_profit"`
@@ -88,6 +114,12 @@ type EquityPoint struct {
 	Equity    float64   `json:"equity"`
 }
 
+// NewManager constructs a Manager.
+//
+// Typical usage (see cmd/main.go):
+// - Create Hub and run it in a goroutine
+// - Create Exchange implementation (Mock/Binance)
+// - NewManager(hub, exchange)
 func NewManager(hub *ws.Hub, ex exchange.Exchange) *Manager {
 	return &Manager{
 		instances: make(map[string]*StrategyInstance),
@@ -96,6 +128,11 @@ func NewManager(hub *ws.Hub, ex exchange.Exchange) *Manager {
 	}
 }
 
+// AddStrategy registers an in-memory strategy instance. It does not start the process.
+//
+// Typical usage:
+// - When creating a StrategyInstance in DB (API CreateStrategy)
+// - When syncing from DB on startup (SyncFromDB)
 func (m *Manager) AddStrategy(id, name, path string, ownerID uint, config map[string]interface{}) *StrategyInstance {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -114,6 +151,17 @@ func (m *Manager) AddStrategy(id, name, path string, ownerID uint, config map[st
 	return inst
 }
 
+// StartStrategy starts the python process for a strategy instance.
+//
+// Process protocol:
+// - Backend sends JSON lines to stdin: {"type":"candle","data":{...}}
+// - Strategy sends JSON lines to stdout:
+//   - {"type":"log","data":"..."}
+//   - {"type":"order","data":{"symbol":"BTC/USDT","side":"buy","amount":0.01,"price":0}}
+//
+// Side effects:
+// - Starts market data subscription if config contains "symbol"
+// - Starts User Data Stream for exchanges that support it (Binance)
 func (m *Manager) StartStrategy(id string) error {
 	m.mu.RLock()
 	inst, ok := m.instances[id]
@@ -193,6 +241,7 @@ func (inst *StrategyInstance) readStderr(stderr io.ReadCloser) {
 	}
 }
 
+// StopStrategy stops a running python strategy process.
 func (m *Manager) StopStrategy(id string) error {
 	m.mu.RLock()
 	inst, ok := m.instances[id]
@@ -222,6 +271,7 @@ func (m *Manager) StopStrategy(id string) error {
 }
 
 func (m *Manager) RemoveStrategy(id string) error {
+	// Remove from in-memory registry first, then kill process if needed.
 	m.mu.Lock()
 	inst, ok := m.instances[id]
 	if !ok {
@@ -239,6 +289,9 @@ func (m *Manager) RemoveStrategy(id string) error {
 	return nil
 }
 
+// UpdateStrategyConfig updates a strategy's config in memory.
+// Caller is responsible for persisting to DB (API handler does this).
+// Config cannot be changed while the strategy is running to avoid race conditions.
 func (m *Manager) UpdateStrategyConfig(id string, config map[string]interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -255,6 +308,8 @@ func (m *Manager) UpdateStrategyConfig(id string, config map[string]interface{})
 	return nil
 }
 
+// SendData sends a message to the python process stdin.
+// This is used for real-time feeds (candles) and backend-originated updates (orders).
 func (inst *StrategyInstance) SendData(dataType string, data interface{}) error {
 
 	inst.mu.Lock()
@@ -272,6 +327,13 @@ func (inst *StrategyInstance) SendData(dataType string, data interface{}) error 
 }
 
 func (inst *StrategyInstance) readStdout() {
+	// Strategy stdout protocol:
+	// - type=log: persisted to StrategyLog table + broadcast to frontend
+	// - type=order: triggers PlaceOrder on exchange with correlation id
+	//
+	// Order risk controls enforced here:
+	// - max_concurrent_positions (default 1) limits open positions per strategy
+	// - inflight buy orders are counted to prevent order spamming
 	scanner := bufio.NewScanner(inst.stdout)
 	for scanner.Scan() {
 		var msg map[string]interface{}
@@ -292,12 +354,15 @@ func (inst *StrategyInstance) readStdout() {
 			price, _ := orderReq["price"].(float64)
 
 			maxPos := 1
+			// Strategy-level guardrail: maximum number of concurrent open positions.
+			// If not provided by config, default is 1.
 			if v, ok := inst.Config["max_concurrent_positions"].(float64); ok && int(v) > 0 {
 				maxPos = int(v)
 			}
 
 			normalizedSide := strings.ToLower(side)
 			if normalizedSide == "buy" {
+				// Count current open positions and inflight buy orders to prevent churn/abuse.
 				var openCount int64
 				database.DB.Model(&models.StrategyPosition{}).
 					Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
@@ -392,6 +457,10 @@ func (inst *StrategyInstance) readStdout() {
 }
 
 func (m *Manager) SyncFromDB(db *gorm.DB) error {
+	// SyncFromDB loads all strategy instances from DB into memory so they can be
+	// started/stopped without recreating them.
+	//
+	// This is called once on backend startup.
 	var instances []models.StrategyInstance
 	if err := db.Preload("Template").Find(&instances).Error; err != nil {
 		return err
@@ -422,6 +491,8 @@ func (m *Manager) SyncFromDB(db *gorm.DB) error {
 	return nil
 }
 
+// ListStrategies returns all strategy instances visible to a user.
+// Admins can see all instances; non-admins can only see their own.
 func (m *Manager) ListStrategies(ownerID uint, isAdmin bool) []*StrategyInstance {
 
 	m.mu.RLock()
@@ -441,10 +512,12 @@ func (m *Manager) ListStrategies(ownerID uint, isAdmin bool) []*StrategyInstance
 	return list
 }
 
+// GetExchange exposes the exchange connector for API handlers.
 func (m *Manager) GetExchange() exchange.Exchange {
 	return m.exchange
 }
 
+// Clear stops all running strategies and clears the in-memory registry.
 func (m *Manager) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -456,6 +529,11 @@ func (m *Manager) Clear() {
 	m.instances = make(map[string]*StrategyInstance)
 }
 
+// StartBacktest starts an asynchronous backtest and returns the Backtest row id.
+//
+// The backtest lifecycle is broadcast to websocket clients:
+// - type=backtest_status with status=running/failed/completed
+// - type=backtest_progress with periodic equity updates
 func (m *Manager) StartBacktest(id string, startTime, endTime time.Time, initialBalance float64, userID uint) (uint, error) {
 	// 1. Check if instance exists
 	m.mu.RLock()
@@ -527,6 +605,8 @@ func (m *Manager) StartBacktest(id string, startTime, endTime time.Time, initial
 	return bt.ID, nil
 }
 
+// Backtest runs a synchronous backtest and returns the result immediately.
+// It still writes a Backtest row to DB for history tracking.
 func (m *Manager) Backtest(id string, startTime, endTime time.Time, initialBalance float64, userID uint) (*BacktestResult, error) {
 	// 1. Check if instance exists
 	m.mu.RLock()
@@ -594,6 +674,13 @@ func (m *Manager) Backtest(id string, startTime, endTime time.Time, initialBalan
 }
 
 func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time, initialBalance float64, userID uint, backtestID uint) (*BacktestResult, error) {
+	// runBacktestSimulation starts a separate python process (same strategy file)
+	// and feeds it historical candles via stdin.
+	//
+	// Note: current simulation uses a simplified execution model:
+	// - When strategy outputs an order, the fill price is candle.Close
+	// - Position/accounting is simplified for MVP and should be enhanced for production
+	//   (fees, slippage, partial fills, leverage, etc.).
 	m.mu.RLock()
 	inst, ok := m.instances[id]
 	m.mu.RUnlock()

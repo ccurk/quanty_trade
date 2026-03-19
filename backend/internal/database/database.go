@@ -14,6 +14,19 @@ import (
 
 var DB *gorm.DB
 
+// InitDB initializes the global GORM database connection and runs migrations.
+//
+// Environment variables:
+// - DB_TYPE=mysql enables MySQL; otherwise SQLite is used (quanty.db in cwd)
+// - DB_USER/DB_PASS/DB_HOST/DB_PORT/DB_NAME configure MySQL DSN
+//
+// Admin bootstrap:
+// - If ADMIN_USERNAME is not set, defaults to "admin"
+// - If ADMIN_PASSWORD is set:
+//   - If admin user exists: password is reset to ADMIN_PASSWORD
+//   - If admin user does not exist: user is created with ADMIN_PASSWORD
+//
+// - If ADMIN_PASSWORD is not set and admin user does not exist: defaults to "admin123"
 func InitDB() {
 	var err error
 	dbType := os.Getenv("DB_TYPE")

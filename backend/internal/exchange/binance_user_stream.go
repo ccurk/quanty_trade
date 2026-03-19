@@ -18,12 +18,21 @@ import (
 )
 
 type binanceUserStream struct {
+	// ownerID is the user whose Binance credentials are used.
 	ownerID uint
-	hub     *ws.Hub
-	stop    chan struct{}
-	done    chan struct{}
+	// hub broadcasts exchange events to connected frontend clients.
+	hub *ws.Hub
+	// stop/done manage goroutine lifecycle.
+	stop chan struct{}
+	done chan struct{}
 }
 
+// EnsureUserDataStream starts (once per ownerID) Binance User Data Stream
+// to receive account/order execution events (executionReport).
+//
+// Typical usage:
+//   - Called when a strategy instance starts, so the UI can receive order updates
+//     and the backend can persist execution events.
 func (b *BinanceExchange) EnsureUserDataStream(ownerID uint, hub *ws.Hub) error {
 	if ownerID == 0 || hub == nil {
 		return nil
@@ -48,6 +57,11 @@ func (b *BinanceExchange) EnsureUserDataStream(ownerID uint, hub *ws.Hub) error 
 }
 
 func (b *BinanceExchange) runUserStream(s *binanceUserStream) {
+	// runUserStream maintains a long-lived websocket connection to Binance user data stream.
+	// It handles:
+	// - listenKey creation
+	// - websocket connect/reconnect with exponential backoff
+	// - listenKey keepalive
 	defer close(s.done)
 
 	backoff := 2 * time.Second
@@ -94,6 +108,7 @@ func (b *BinanceExchange) runUserStream(s *binanceUserStream) {
 }
 
 func (b *BinanceExchange) createListenKey(cred binanceCred) (string, error) {
+	// createListenKey calls POST /api/v3/userDataStream.
 	u := b.apiBaseURL(cred) + "/api/v3/userDataStream"
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, u, nil)
 	if err != nil {
@@ -134,6 +149,7 @@ func (b *BinanceExchange) keepaliveListenKey(cred binanceCred, listenKey string,
 }
 
 func (b *BinanceExchange) pingListenKey(cred binanceCred, listenKey string) error {
+	// pingListenKey keeps the listenKey alive (Binance requires periodic keepalive).
 	u := b.apiBaseURL(cred) + "/api/v3/userDataStream"
 	q := url.Values{}
 	q.Set("listenKey", listenKey)
@@ -154,6 +170,7 @@ func (b *BinanceExchange) pingListenKey(cred binanceCred, listenKey string) erro
 }
 
 func (b *BinanceExchange) closeListenKey(cred binanceCred, listenKey string) error {
+	// closeListenKey releases the listenKey on Binance side (best-effort).
 	u := b.apiBaseURL(cred) + "/api/v3/userDataStream"
 	q := url.Values{}
 	q.Set("listenKey", listenKey)
@@ -171,6 +188,7 @@ func (b *BinanceExchange) closeListenKey(cred binanceCred, listenKey string) err
 }
 
 func (b *BinanceExchange) readUserStream(conn *websocket.Conn, s *binanceUserStream) {
+	// readUserStream reads websocket messages and dispatches supported event types.
 	for {
 		select {
 		case <-s.stop:
@@ -206,6 +224,9 @@ func (b *BinanceExchange) readUserStream(conn *websocket.Conn, s *binanceUserStr
 }
 
 func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[string]interface{}) {
+	// handleExecutionReport persists the raw exchange event, then updates
+	// StrategyOrder/StrategyPosition ledgers if this event matches a platform order
+	// (by clientOrderID).
 	symbol, _ := raw["s"].(string)
 	orderID := toString(raw["i"])
 	clientOrderID, _ := raw["c"].(string)
@@ -296,6 +317,9 @@ func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[st
 }
 
 func (b *BinanceExchange) applyFillToPosition(hub *ws.Hub, strategyID string, strategyName string, ownerID uint, exchangeName string, symbol string, side string, executedQty float64, avgPrice float64, eventTime time.Time) {
+	// applyFillToPosition updates the strategy-scoped position ledger:
+	// - buy fills open/increase a position with VWAP avgPrice
+	// - sell fills decrease and eventually close the position
 	if database.DB == nil || strategyID == "" || executedQty <= 0 {
 		return
 	}

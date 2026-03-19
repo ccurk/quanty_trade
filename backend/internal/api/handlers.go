@@ -24,6 +24,8 @@ import (
 
 var stratMgr *strategy.Manager
 
+// SetManager injects the global strategy manager into API handlers.
+// This is called once during server startup.
 func SetManager(m *strategy.Manager) {
 	stratMgr = m
 }
@@ -40,6 +42,8 @@ type RegisterRequest struct {
 }
 
 func Register(c *gin.Context) {
+	// Register creates a new user account.
+	// Request body can include exchange credentials under configs (e.g. binance apiKey/apiSecret).
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -77,6 +81,7 @@ func Register(c *gin.Context) {
 }
 
 func Login(c *gin.Context) {
+	// Login validates username/password and returns a JWT token.
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -263,6 +268,8 @@ func CreateStrategy(c *gin.Context) {
 }
 
 func ListPositions(c *gin.Context) {
+	// ListPositions returns strategy-scoped positions derived from StrategyPosition table.
+	// status=active maps to open, status=closed maps to closed.
 	status := c.DefaultQuery("status", "active") // active or closed
 	userID, _ := c.Get("user_id")
 	userRole, _ := c.Get("role")
@@ -309,6 +316,8 @@ func ListPositions(c *gin.Context) {
 }
 
 func ClosePosition(c *gin.Context) {
+	// ClosePosition closes the latest open position for the user and symbol by placing a sell market order.
+	// The order is persisted into StrategyOrder first, then updated after PlaceOrder returns.
 	symbol := c.Query("symbol")
 	if symbol == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Symbol is required"})
@@ -376,6 +385,8 @@ type BacktestRequest struct {
 }
 
 func BacktestStrategy(c *gin.Context) {
+	// BacktestStrategy triggers a backtest run.
+	// async=true runs it in background and stores progress/results in DB and via websocket events.
 	id := c.Param("id")
 	async := c.Query("async") == "true"
 	var req BacktestRequest
