@@ -1,9 +1,11 @@
 package main
 
 import (
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"quanty_trade/internal/api"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
@@ -14,7 +16,37 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func initLogging() {
+	logDir := os.Getenv("LOG_DIR")
+	if logDir == "" {
+		if wd, err := os.Getwd(); err == nil && filepath.Base(wd) == "backend" {
+			logDir = filepath.Join("..", "logs")
+		} else {
+			logDir = "logs"
+		}
+	}
+	_ = os.MkdirAll(logDir, 0o755)
+
+	logPath := filepath.Join(logDir, "server.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.SetOutput(os.Stdout)
+		gin.DefaultWriter = os.Stdout
+		gin.DefaultErrorWriter = os.Stderr
+		return
+	}
+
+	mw := io.MultiWriter(os.Stdout, f)
+	log.SetOutput(mw)
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	gin.DefaultWriter = mw
+	gin.DefaultErrorWriter = mw
+}
+
 func main() {
+	initLogging()
+
 	// Initialize Database
 	database.InitDB()
 

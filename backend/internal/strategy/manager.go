@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -172,9 +173,8 @@ func (m *Manager) StartStrategy(id string) error {
 	}
 
 	inst.mu.Lock()
-	defer inst.mu.Unlock()
-
 	if inst.Status == StatusRunning {
+		inst.mu.Unlock()
 		return nil
 	}
 
@@ -182,6 +182,7 @@ func (m *Manager) StartStrategy(id string) error {
 
 	absPath, err := resolveStrategyPath(inst.Path)
 	if err != nil {
+		inst.mu.Unlock()
 		return err
 	}
 	cmd := exec.Command("python3", absPath, string(configJSON))
@@ -189,18 +190,22 @@ func (m *Manager) StartStrategy(id string) error {
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		inst.mu.Unlock()
 		return err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		inst.mu.Unlock()
 		return err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		inst.mu.Unlock()
 		return err
 	}
 
 	if err := cmd.Start(); err != nil {
+		inst.mu.Unlock()
 		return err
 	}
 
@@ -208,6 +213,7 @@ func (m *Manager) StartStrategy(id string) error {
 	inst.stdin = stdin
 	inst.stdout = stdout
 	inst.Status = StatusRunning
+	inst.mu.Unlock()
 
 	if ex, ok := inst.exchange.(interface {
 		EnsureUserDataStream(ownerID uint, hub *ws.Hub) error
@@ -218,6 +224,23 @@ func (m *Manager) StartStrategy(id string) error {
 	// Start data feed
 	symbol, _ := inst.Config["symbol"].(string)
 	if symbol != "" {
+		warmup := 50
+		if v, ok := inst.Config["warmup_bars"].(float64); ok && int(v) > 0 {
+			warmup = int(v)
+		} else {
+			if v, ok := inst.Config["slow_window"].(float64); ok && int(v) > warmup {
+				warmup = int(v)
+			}
+			if v, ok := inst.Config["window"].(float64); ok && int(v) > warmup {
+				warmup = int(v)
+			}
+		}
+		if candles, err := inst.exchange.FetchCandles(symbol, "1m", warmup); err == nil && len(candles) > 0 {
+			for _, candle := range candles {
+				_ = inst.SendData("candle", candle)
+			}
+		}
+
 		go inst.exchange.SubscribeCandles(symbol, func(candle exchange.Candle) {
 			inst.SendData("candle", candle)
 			inst.hub.BroadcastJSON(map[string]interface{}{
@@ -234,10 +257,84 @@ func (m *Manager) StartStrategy(id string) error {
 	return nil
 }
 
+func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, executedQty float64, avgPrice float64, eventTime time.Time) {
+	if database.DB == nil || executedQty <= 0 || strategyID == "" {
+		return
+	}
+
+	now := time.Now()
+	var pos models.StrategyPosition
+	err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", ownerID, strategyID, symbol, "open").First(&pos).Error
+	if err != nil {
+		if side != "buy" {
+			return
+		}
+		pos = models.StrategyPosition{
+			StrategyID:   strategyID,
+			StrategyName: strategyName,
+			OwnerID:      ownerID,
+			Exchange:     exchangeName,
+			Symbol:       symbol,
+			Amount:       executedQty,
+			AvgPrice:     avgPrice,
+			Status:       "open",
+			OpenTime:     eventTime,
+			UpdatedAt:    now,
+		}
+		database.DB.Create(&pos)
+		if hub != nil {
+			hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
+		}
+		return
+	}
+
+	if side == "buy" {
+		newAmt := pos.Amount + executedQty
+		newAvg := pos.AvgPrice
+		if newAmt > 0 {
+			newAvg = ((pos.AvgPrice * pos.Amount) + (avgPrice * executedQty)) / newAmt
+		}
+		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
+			Updates(map[string]interface{}{"amount": newAmt, "avg_price": newAvg, "updated_at": now})
+		if hub != nil {
+			pos.Amount = newAmt
+			pos.AvgPrice = newAvg
+			hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
+		}
+		return
+	}
+
+	if side == "sell" {
+		newAmt := pos.Amount - executedQty
+		if newAmt <= 0 {
+			database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
+				Updates(map[string]interface{}{
+					"amount":     0,
+					"status":     "closed",
+					"close_time": eventTime,
+					"updated_at": now,
+				})
+			if hub != nil {
+				pos.Amount = 0
+				pos.Status = "closed"
+				pos.CloseTime = eventTime
+				hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
+			}
+			return
+		}
+		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
+			Updates(map[string]interface{}{"amount": newAmt, "updated_at": now})
+		if hub != nil {
+			pos.Amount = newAmt
+			hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
+		}
+	}
+}
+
 func (inst *StrategyInstance) readStderr(stderr io.ReadCloser) {
 	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
-		fmt.Printf("[%s ERROR] %s\n", inst.Name, scanner.Text())
+		log.Printf("[%s ERROR] %s", inst.Name, scanner.Text())
 	}
 }
 
@@ -338,7 +435,7 @@ func (inst *StrategyInstance) readStdout() {
 	for scanner.Scan() {
 		var msg map[string]interface{}
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			fmt.Printf("Error decoding strategy output: %v\n", err)
+			log.Printf("Error decoding strategy output: %v", err)
 			continue
 		}
 
@@ -422,6 +519,8 @@ func (inst *StrategyInstance) readStdout() {
 					Updates(map[string]interface{}{
 						"exchange_order_id": order.ID,
 						"status":            order.Status,
+						"executed_qty":      order.Amount,
+						"avg_price":         order.Price,
 						"updated_at":        time.Now(),
 					})
 				inst.hub.BroadcastJSON(map[string]interface{}{
@@ -429,9 +528,13 @@ func (inst *StrategyInstance) readStdout() {
 					"data": order,
 				})
 				inst.SendData("order", order)
+
+				if strings.ToLower(order.Status) == "filled" {
+					applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, order.Timestamp)
+				}
 			}
 		case "log":
-			fmt.Printf("[%s LOG] %v\n", inst.Name, data)
+			log.Printf("[%s LOG] %v", inst.Name, data)
 
 			// Save to DB
 			logMsg, _ := data.(string)

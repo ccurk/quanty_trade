@@ -473,6 +473,12 @@ const App: React.FC = () => {
         if (user && typeof msgUserID === 'number' && msgUserID === user.id) {
           if (parsed.status === 'completed') {
             showToast('回测完成', 'success');
+            const strategyID = parsed.strategy_id;
+            const result = parsed.result;
+            if (typeof strategyID === 'string' && strategyToBacktest?.id === strategyID && isObject(result)) {
+              setBacktestResult(result as unknown as BacktestResult);
+              setShowBacktestModal(true);
+            }
             fetchBacktestHistory();
           } else if (parsed.status === 'failed') {
             showToast(typeof parsed.error === 'string' ? parsed.error : '回测失败', 'error');
@@ -487,6 +493,13 @@ const App: React.FC = () => {
           const close = typeof c.close === 'number' ? c.close : '';
           setLogs(prev => [`[${new Date().toLocaleTimeString()}] Candle ${ts} close=${close}`, ...prev.slice(0, 99)]);
         }
+      } else if (type === 'position') {
+        const d = isObject(parsed.data) ? parsed.data : {};
+        const sym = typeof d.symbol === 'string' ? d.symbol : '';
+        const amt = typeof d.amount === 'number' ? d.amount : '';
+        const status = typeof d.status === 'string' ? d.status : '';
+        setLogs(prev => [`[${new Date().toLocaleTimeString()}] Position ${sym} amount=${amt} status=${status}`, ...prev.slice(0, 99)]);
+        fetchPositions(positionStatus);
       }
     };
     ws.current.onclose = () => {
@@ -1685,7 +1698,8 @@ const App: React.FC = () => {
                         stroke="#3b82f6"
                         strokeWidth="2"
                         points={backtestResult.equity_curve.map((p: EquityPoint, i: number) => {
-                          const x = (i / (backtestResult.equity_curve.length - 1)) * 100;
+                          const denom = Math.max(backtestResult.equity_curve.length - 1, 1);
+                          const x = (i / denom) * 100;
                           const minEquity = Math.min(...backtestResult.equity_curve.map((ep: EquityPoint) => ep.equity));
                           const maxEquity = Math.max(...backtestResult.equity_curve.map((ep: EquityPoint) => ep.equity));
                           const range = maxEquity - minEquity || 1;

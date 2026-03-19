@@ -419,21 +419,33 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 	}
 
 	var resp struct {
-		OrderID       int64  `json:"orderId"`
-		ClientOrderID string `json:"clientOrderId"`
-		Symbol        string `json:"symbol"`
-		Side          string `json:"side"`
-		Price         string `json:"price"`
-		OrigQty       string `json:"origQty"`
-		Status        string `json:"status"`
-		TransactTime  int64  `json:"transactTime"`
+		OrderID             int64  `json:"orderId"`
+		ClientOrderID       string `json:"clientOrderId"`
+		Symbol              string `json:"symbol"`
+		Side                string `json:"side"`
+		Price               string `json:"price"`
+		OrigQty             string `json:"origQty"`
+		ExecutedQty         string `json:"executedQty"`
+		CummulativeQuoteQty string `json:"cummulativeQuoteQty"`
+		Status              string `json:"status"`
+		TransactTime        int64  `json:"transactTime"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, err
 	}
 
 	px, _ := strconv.ParseFloat(resp.Price, 64)
-	aq, _ := strconv.ParseFloat(resp.OrigQty, 64)
+	origQty, _ := strconv.ParseFloat(resp.OrigQty, 64)
+	executedQty, _ := strconv.ParseFloat(resp.ExecutedQty, 64)
+	quoteQty, _ := strconv.ParseFloat(resp.CummulativeQuoteQty, 64)
+
+	aq := origQty
+	if executedQty > 0 {
+		aq = executedQty
+	}
+	if executedQty > 0 && quoteQty > 0 {
+		px = quoteQty / executedQty
+	}
 	ts := time.Now()
 	if resp.TransactTime > 0 {
 		ts = time.UnixMilli(resp.TransactTime)
