@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 import traceback
 from abc import ABC, abstractmethod
 
@@ -11,6 +12,12 @@ class BaseStrategy(ABC):
         self.positions = {}
         self.orders = {}
         self.pending_orders = {}
+        self.trace = bool(config.get("trace", False)) or bool(config.get("debug", False))
+        try:
+            self.trace_candle_interval = max(1, int(config.get("trace_candle_interval", config.get("debug_interval_bars", 5))))
+        except Exception:
+            self.trace_candle_interval = 5
+        self._trace_candle_count = 0
 
     @abstractmethod
     def on_candle(self, candle):
@@ -31,6 +38,11 @@ class BaseStrategy(ABC):
         if not self.symbol:
             self.log("Cannot send order: symbol is not set in config")
             return
+        if self.trace:
+            try:
+                self.log(f"TRACE send_order side={side} amount={float(amount)} price={float(price)}")
+            except Exception:
+                self.log(f"TRACE send_order side={side} amount={amount} price={price}")
         order_request = {
             "symbol": self.symbol,
             "side": side,
@@ -106,6 +118,8 @@ class BaseStrategy(ABC):
             "amount": amount,
             "price": price
         }
+        if self.trace:
+            self.log(f"TRACE pending set symbol={self.symbol} side={side}")
 
     def _clear_pending(self, symbol=None):
         sym = symbol or self.symbol
@@ -113,6 +127,8 @@ class BaseStrategy(ABC):
             return
         if sym in self.pending_orders:
             del self.pending_orders[sym]
+            if self.trace:
+                self.log(f"TRACE pending cleared symbol={sym}")
 
     def _record_order(self, order):
         if not isinstance(order, dict):
@@ -181,6 +197,11 @@ class BaseStrategy(ABC):
 
         self.positions[sym] = pos
         self._clear_pending(sym)
+        if self.trace:
+            try:
+                self.log(f"TRACE position symbol={sym} status={pos.get('status')} qty={float(pos.get('qty', 0) or 0)} avg={float(pos.get('avg_price', 0) or 0)}")
+            except Exception:
+                self.log(f"TRACE position symbol={sym} status={pos.get('status')} qty={pos.get('qty')} avg={pos.get('avg_price')}")
         return pos
 
     def run(self):
@@ -195,15 +216,44 @@ class BaseStrategy(ABC):
                 data = msg.get("data")
 
                 if msg_type == "candle":
+                    if self.trace:
+                        self._trace_candle_count += 1
+                        if self._trace_candle_count % self.trace_candle_interval == 0:
+                            ts = None
+                            close = None
+                            if isinstance(data, dict):
+                                ts = data.get("timestamp")
+                                close = data.get("close")
+                            self.log(f"TRACE recv candle n={self._trace_candle_count} ts={ts} close={close} pending={1 if (self.symbol in self.pending_orders) else 0}")
+                    t0 = time.time()
                     self.on_candle(data)
+                    if self.trace:
+                        dt_ms = (time.time() - t0) * 1000.0
+                        self.log(f"TRACE on_candle done ms={dt_ms:.2f}")
                 elif msg_type == "order":
+                    if self.trace:
+                        self.log(f"TRACE recv order keys={list(data.keys()) if isinstance(data, dict) else type(data)}")
                     self._record_order(data)
                     pos = self._update_position_from_order(data)
+                    t0 = time.time()
                     self.on_order(data)
+                    if self.trace:
+                        dt_ms = (time.time() - t0) * 1000.0
+                        self.log(f"TRACE on_order done ms={dt_ms:.2f}")
                     if pos is not None:
+                        t0 = time.time()
                         self.on_position(pos)
+                        if self.trace:
+                            dt_ms = (time.time() - t0) * 1000.0
+                            self.log(f"TRACE on_position(done from order) ms={dt_ms:.2f}")
                 elif msg_type == "position":
+                    if self.trace:
+                        self.log(f"TRACE recv position keys={list(data.keys()) if isinstance(data, dict) else type(data)}")
+                    t0 = time.time()
                     self.on_position(data)
+                    if self.trace:
+                        dt_ms = (time.time() - t0) * 1000.0
+                        self.log(f"TRACE on_position done ms={dt_ms:.2f}")
                 elif msg_type == "stop":
                     self.log("Stopping strategy...")
                     self.running = False

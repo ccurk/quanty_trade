@@ -439,7 +439,7 @@ func (inst *StrategyInstance) readStderr(stderr io.ReadCloser) {
 }
 
 // StopStrategy stops a running python strategy process.
-func (m *Manager) StopStrategy(id string) error {
+func (m *Manager) StopStrategy(id string, force bool) error {
 	m.mu.RLock()
 	inst, ok := m.instances[id]
 	m.mu.RUnlock()
@@ -448,21 +448,23 @@ func (m *Manager) StopStrategy(id string) error {
 		return fmt.Errorf("strategy %s not found", id)
 	}
 
-	var openCount int64
-	database.DB.Model(&models.StrategyPosition{}).
-		Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
-		Count(&openCount)
-	if openCount > 0 {
-		return fmt.Errorf("strategy has open positions; close positions before stopping")
-	}
-	if bx, ok := m.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
-		if sym, ok := inst.Config["symbol"].(string); ok && sym != "" {
-			exPos, err := bx.FetchPositions(inst.OwnerID, "active")
-			if err == nil {
-				want := exchange.NormalizeSymbol(sym)
-				for _, p := range exPos {
-					if exchange.NormalizeSymbol(p.Symbol) == want && p.Amount > 0 {
-						return fmt.Errorf("strategy has open positions on exchange; close positions before stopping")
+	if !force {
+		var openCount int64
+		database.DB.Model(&models.StrategyPosition{}).
+			Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
+			Count(&openCount)
+		if openCount > 0 {
+			return fmt.Errorf("strategy has open positions; close positions before stopping")
+		}
+		if bx, ok := m.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+			if sym, ok := inst.Config["symbol"].(string); ok && sym != "" {
+				exPos, err := bx.FetchPositions(inst.OwnerID, "active")
+				if err == nil {
+					want := exchange.NormalizeSymbol(sym)
+					for _, p := range exPos {
+						if exchange.NormalizeSymbol(p.Symbol) == want && p.Amount > 0 {
+							return fmt.Errorf("strategy has open positions on exchange; close positions before stopping")
+						}
 					}
 				}
 			}

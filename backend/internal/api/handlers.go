@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -274,6 +275,24 @@ func ListPositions(c *gin.Context) {
 	status := c.DefaultQuery("status", "active") // active or closed
 	userID, _ := c.Get("user_id")
 	userRole, _ := c.Get("role")
+	pageRaw := strings.TrimSpace(c.Query("page"))
+	pageSizeRaw := strings.TrimSpace(c.Query("page_size"))
+	usePaging := pageRaw != "" || pageSizeRaw != ""
+	page := 1
+	pageSize := 20
+	if pageRaw != "" {
+		if v, err := strconv.Atoi(pageRaw); err == nil && v > 0 {
+			page = v
+		}
+	}
+	if pageSizeRaw != "" {
+		if v, err := strconv.Atoi(pageSizeRaw); err == nil && v > 0 {
+			pageSize = v
+		}
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
 
 	if status == "active" {
 		if bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
@@ -346,7 +365,26 @@ func ListPositions(c *gin.Context) {
 				out = append(out, p)
 			}
 			sort.Slice(out, func(i, j int) bool { return out[i].OpenTime.After(out[j].OpenTime) })
-			c.JSON(http.StatusOK, out)
+			if !usePaging {
+				c.JSON(http.StatusOK, out)
+				return
+			}
+			total := len(out)
+			start := (page - 1) * pageSize
+			if start > total {
+				start = total
+			}
+			end := start + pageSize
+			if end > total {
+				end = total
+			}
+			type resp struct {
+				Items    []exchange.Position `json:"items"`
+				Total    int                 `json:"total"`
+				Page     int                 `json:"page"`
+				PageSize int                 `json:"page_size"`
+			}
+			c.JSON(http.StatusOK, resp{Items: out[start:end], Total: total, Page: page, PageSize: pageSize})
 			return
 		}
 	}
@@ -362,6 +400,11 @@ func ListPositions(c *gin.Context) {
 	}
 
 	var rows []models.StrategyPosition
+	total := int64(0)
+	if usePaging {
+		_ = query.Count(&total).Error
+		query = query.Offset((page - 1) * pageSize).Limit(pageSize)
+	}
 	if err := query.Order("open_time desc").Find(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -397,11 +440,22 @@ func ListPositions(c *gin.Context) {
 	}
 
 	sort.Slice(positions, func(i, j int) bool { return positions[i].OpenTime.After(positions[j].OpenTime) })
-	c.JSON(http.StatusOK, positions)
+	if !usePaging {
+		c.JSON(http.StatusOK, positions)
+		return
+	}
+	type resp struct {
+		Items    []exchange.Position `json:"items"`
+		Total    int64               `json:"total"`
+		Page     int                 `json:"page"`
+		PageSize int                 `json:"page_size"`
+	}
+	c.JSON(http.StatusOK, resp{Items: positions, Total: total, Page: page, PageSize: pageSize})
 }
 
 type PnLPeriodSummary struct {
 	StartTime         time.Time `json:"start_time"`
+	EndTime           time.Time `json:"end_time,omitempty"`
 	GrossProfit       float64   `json:"gross_profit"`
 	GrossLoss         float64   `json:"gross_loss"`
 	RealizedPnL       float64   `json:"realized_pnl"`
@@ -412,11 +466,13 @@ type PnLPeriodSummary struct {
 }
 
 type PnLSummaryResponse struct {
-	UpdatedAt     time.Time        `json:"updated_at"`
-	UnrealizedPnL float64          `json:"unrealized_pnl"`
-	Day           PnLPeriodSummary `json:"day"`
-	Week          PnLPeriodSummary `json:"week"`
-	Month         PnLPeriodSummary `json:"month"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	UnrealizedPnL float64           `json:"unrealized_pnl"`
+	Day           PnLPeriodSummary  `json:"day"`
+	Week          PnLPeriodSummary  `json:"week"`
+	Month         PnLPeriodSummary  `json:"month"`
+	Custom        *PnLPeriodSummary `json:"custom,omitempty"`
+	CustomLabel   string            `json:"custom_label,omitempty"`
 }
 
 type DashboardResponse struct {
@@ -459,6 +515,9 @@ func GetDashboard(c *gin.Context) {
 	uid := userID.(uint)
 
 	now := time.Now()
+	rangePreset := strings.TrimSpace(c.Query("range"))
+	startRaw := strings.TrimSpace(c.Query("start"))
+	endRaw := strings.TrimSpace(c.Query("end"))
 
 	var pnlResp PnLSummaryResponse
 	func() {
@@ -477,7 +536,7 @@ func GetDashboard(c *gin.Context) {
 			}
 		}
 
-		period := func(start time.Time) PnLPeriodSummary {
+		period := func(start time.Time, end time.Time) PnLPeriodSummary {
 			var row struct {
 				GrossProfit      float64
 				GrossLoss        float64
@@ -491,7 +550,7 @@ func GetDashboard(c *gin.Context) {
 				COALESCE(SUM(realized_pn_l), 0) AS realized_pnl,
 				COALESCE(SUM(realized_notional), 0) AS realized_notional
 			`).
-				Where("owner_id = ? AND status = ? AND close_time >= ?", uid, "closed", start).
+				Where("owner_id = ? AND status = ? AND close_time >= ? AND close_time <= ?", uid, "closed", start, end).
 				Scan(&row).Error
 
 			ret := 0.0
@@ -500,6 +559,7 @@ func GetDashboard(c *gin.Context) {
 			}
 			return PnLPeriodSummary{
 				StartTime:         start,
+				EndTime:           end,
 				GrossProfit:       row.GrossProfit,
 				GrossLoss:         row.GrossLoss,
 				RealizedPnL:       row.RealizedPnL,
@@ -513,9 +573,64 @@ func GetDashboard(c *gin.Context) {
 		pnlResp = PnLSummaryResponse{
 			UpdatedAt:     now,
 			UnrealizedPnL: unrealized,
-			Day:           period(startDay),
-			Week:          period(startWeek),
-			Month:         period(startMonth),
+			Day:           period(startDay, now),
+			Week:          period(startWeek, now),
+			Month:         period(startMonth, now),
+		}
+
+		customStart := time.Time{}
+		customEnd := time.Time{}
+		if startRaw != "" {
+			if t, err := time.Parse(time.RFC3339, startRaw); err == nil {
+				customStart = t
+			} else if t, err := time.Parse("2006-01-02T15:04", startRaw); err == nil {
+				customStart = t
+			}
+		}
+		if endRaw != "" {
+			if t, err := time.Parse(time.RFC3339, endRaw); err == nil {
+				customEnd = t
+			} else if t, err := time.Parse("2006-01-02T15:04", endRaw); err == nil {
+				customEnd = t
+			}
+		}
+
+		if rangePreset != "" || (!customStart.IsZero() && !customEnd.IsZero()) {
+			label := rangePreset
+			if rangePreset != "" {
+				d := time.Duration(0)
+				switch strings.ToLower(rangePreset) {
+				case "1m":
+					d = time.Minute
+					label = "近 1 分钟"
+				case "5m":
+					d = 5 * time.Minute
+					label = "近 5 分钟"
+				case "1h":
+					d = time.Hour
+					label = "近 1 小时"
+				case "1d":
+					d = 24 * time.Hour
+					label = "近 1 天"
+				case "1w":
+					d = 7 * 24 * time.Hour
+					label = "近 1 周"
+				case "1mo":
+					d = 30 * 24 * time.Hour
+					label = "近 1 个月"
+				}
+				if d > 0 {
+					customStart = now.Add(-d)
+					customEnd = now
+				}
+			} else {
+				label = "自定义范围"
+			}
+			if !customStart.IsZero() && !customEnd.IsZero() && customEnd.After(customStart) {
+				p := period(customStart, customEnd)
+				pnlResp.Custom = &p
+				pnlResp.CustomLabel = label
+			}
 		}
 	}()
 
@@ -1163,7 +1278,8 @@ func TestCode(c *gin.Context) {
 
 func StopStrategy(c *gin.Context) {
 	id := c.Param("id")
-	if err := stratMgr.StopStrategy(id); err != nil {
+	force := c.Query("force") == "true"
+	if err := stratMgr.StopStrategy(id, force); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

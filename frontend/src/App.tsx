@@ -55,6 +55,7 @@ interface Position {
 
 interface PnLPeriodSummary {
   start_time: string;
+  end_time?: string;
   gross_profit: number;
   gross_loss: number;
   realized_pnl: number;
@@ -70,6 +71,8 @@ interface PnLSummaryResponse {
   day: PnLPeriodSummary;
   week: PnLPeriodSummary;
   month: PnLPeriodSummary;
+  custom?: PnLPeriodSummary;
+  custom_label?: string;
 }
 
 interface DashboardResponse {
@@ -100,6 +103,13 @@ interface DashboardResponse {
     error: number;
     total: number;
   };
+}
+
+interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 interface EquityPoint {
@@ -247,6 +257,9 @@ const App: React.FC = () => {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
+  const [posPage, setPosPage] = useState<{ active: number; closed: number }>({ active: 1, closed: 1 });
+  const [posPageSize, setPosPageSize] = useState<{ active: number; closed: number }>({ active: 20, closed: 20 });
+  const [posTotal, setPosTotal] = useState<{ active: number; closed: number }>({ active: 0, closed: 0 });
   const [positionStatus, setPositionStatus] = useState<'active' | 'closed'>('active');
   const [logs, setLogs] = useState<string[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -298,6 +311,9 @@ const App: React.FC = () => {
   });
   const [selectedTemplate, setSelectedTemplate] = useState<number>(0);
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
+  const [dashboardRange, setDashboardRange] = useState<'default' | '1m' | '5m' | '1w' | '1mo' | 'custom'>('default');
+  const [dashboardStart, setDashboardStart] = useState('');
+  const [dashboardEnd, setDashboardEnd] = useState('');
   
   // Backtest State
   const [showBacktestModal, setShowBacktestModal] = useState(false);
@@ -358,6 +374,7 @@ const App: React.FC = () => {
   const [devDesc, setDevCodeDesc] = useState(() => localStorage.getItem('dev_desc') || '');
   const [isTestingCode, setIsTestingCode] = useState(false);
   const [testResult, setDevTestResult] = useState<{valid: boolean, error?: string} | null>(null);
+  const devNameInputRef = useRef<HTMLInputElement | null>(null);
   
   const ws = useRef<WebSocket | null>(null);
 
@@ -415,6 +432,18 @@ const App: React.FC = () => {
       if (posTimer) window.clearInterval(posTimer);
     };
   }, [user, token, activeTab, positionStatus]);
+
+  useEffect(() => {
+    if (user && token) {
+      fetchPositions(positionStatus);
+    }
+  }, [user, token, positionStatus, posPage, posPageSize]);
+
+  useEffect(() => {
+    if (user && token && dashboardRange !== 'custom') {
+      fetchDashboard();
+    }
+  }, [user, token, dashboardRange]);
 
   const fetchUsers = async () => {
     try {
@@ -500,7 +529,8 @@ const App: React.FC = () => {
   };
 
   const saveStrategyTemplate = async () => {
-    const name = devName.trim();
+    const rawName = devNameInputRef.current?.value ?? devName;
+    const name = rawName.trim();
     if (!name) {
       showToast('请输入模板名称', 'warning');
       return;
@@ -558,8 +588,17 @@ const App: React.FC = () => {
 
   const fetchPositions = async (status: 'active' | 'closed') => {
     try {
-      const res = await axios.get(`/api/positions?status=${status}`);
-      setPositions(res.data);
+      const page = posPage[status];
+      const pageSize = posPageSize[status];
+      const res = await axios.get(`/api/positions?status=${status}&page=${page}&page_size=${pageSize}`);
+      if (res.data && typeof res.data === 'object' && Array.isArray(res.data.items)) {
+        const data = res.data as PaginatedResponse<Position>;
+        setPositions(data.items);
+        setPosTotal(prev => ({ ...prev, [status]: data.total }));
+      } else {
+        setPositions(res.data);
+        setPosTotal(prev => ({ ...prev, [status]: Array.isArray(res.data) ? res.data.length : 0 }));
+      }
     } catch (err) {
       console.error('Failed to fetch positions', err);
     }
@@ -567,7 +606,19 @@ const App: React.FC = () => {
 
   const fetchDashboard = async () => {
     try {
-      const res = await axios.get('/api/stats/dashboard');
+      const params = new URLSearchParams();
+      if (dashboardRange !== 'default') {
+        if (dashboardRange === 'custom') {
+          if (dashboardStart && dashboardEnd) {
+            params.set('start', dashboardStart);
+            params.set('end', dashboardEnd);
+          }
+        } else {
+          params.set('range', dashboardRange);
+        }
+      }
+      const qs = params.toString();
+      const res = await axios.get(`/api/stats/dashboard${qs ? `?${qs}` : ''}`);
       setDashboard(res.data);
     } catch (err) {
       console.error('Failed to fetch dashboard', err);
@@ -691,7 +742,30 @@ const App: React.FC = () => {
   const toggleStrategy = async (s: Strategy) => {
     try {
       if (s.status === 'running') {
-        await axios.post(`/api/strategies/${s.id}/stop`);
+        try {
+          await axios.post(`/api/strategies/${s.id}/stop`);
+        } catch (err: unknown) {
+          const msg = getAxiosErrorMessage(err) || '';
+          if (msg.includes('open positions') || msg.includes('未平仓')) {
+            customConfirm(
+              '强制停止策略',
+              `策略「${s.name}」仍有未平仓位。\n\n强制停止只会停止策略进程，不会自动平仓，可能导致仓位无人管理。\n\n确定要强制停止吗？`,
+              async () => {
+                try {
+                  await axios.post(`/api/strategies/${s.id}/stop?force=true`);
+                  fetchStrategies();
+                  showToast('策略已强制停止', 'success');
+                } catch (e: unknown) {
+                  showToast(getAxiosErrorMessage(e) || '操作失败', 'error');
+                }
+              },
+              '强制停止',
+              '取消'
+            );
+            return;
+          }
+          throw err;
+        }
       } else {
         await axios.post(`/api/strategies/${s.id}/start`);
       }
@@ -976,6 +1050,7 @@ const App: React.FC = () => {
                   placeholder="模板名称 (必填)"
                   value={devName}
                   onChange={(e) => setDevCodeName(e.target.value)}
+                  ref={devNameInputRef}
                   className={`px-4 py-2 rounded-xl border transition outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-200'}`}
                 />
                 <input 
@@ -1304,13 +1379,13 @@ const App: React.FC = () => {
           <div className="space-y-6">
             <div className="flex gap-2 p-1 bg-gray-900/50 rounded-xl w-fit border border-gray-800">
               <button 
-                onClick={() => setPositionStatus('active')}
+                onClick={() => { setPositionStatus('active'); setPosPage(prev => ({ ...prev, active: 1 })); }}
                 className={`px-6 py-2 rounded-lg font-bold transition ${positionStatus === 'active' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}
               >
                 当前持仓
               </button>
               <button 
-                onClick={() => setPositionStatus('closed')}
+                onClick={() => { setPositionStatus('closed'); setPosPage(prev => ({ ...prev, closed: 1 })); }}
                 className={`px-6 py-2 rounded-lg font-bold transition ${positionStatus === 'closed' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}
               >
                 历史持仓
@@ -1404,6 +1479,41 @@ const App: React.FC = () => {
                   ))}
                 </tbody>
               </table>
+              <div className={`flex items-center justify-between px-4 md:px-6 py-3 border-t ${isDarkMode ? 'border-gray-800 text-gray-400' : 'border-gray-200 text-gray-600'}`}>
+                <div className="text-xs">
+                  共 {posTotal[positionStatus]} 条 · 第 {posPage[positionStatus]} / {Math.max(1, Math.ceil(posTotal[positionStatus] / posPageSize[positionStatus]))} 页
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={posPageSize[positionStatus]}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      setPosPageSize(prev => ({ ...prev, [positionStatus]: v }));
+                      setPosPage(prev => ({ ...prev, [positionStatus]: 1 }));
+                    }}
+                    className={`px-3 py-2 rounded-lg border text-sm ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                  >
+                    {[10, 20, 50, 100].map(v => <option key={v} value={v}>{v}/页</option>)}
+                  </select>
+                  <button
+                    onClick={() => setPosPage(prev => ({ ...prev, [positionStatus]: Math.max(1, prev[positionStatus] - 1) }))}
+                    disabled={posPage[positionStatus] <= 1}
+                    className={`px-3 py-2 rounded-lg border text-sm font-bold transition disabled:opacity-50 ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700 text-white' : 'bg-white hover:bg-gray-50 border-gray-200 text-gray-900'}`}
+                  >
+                    上一页
+                  </button>
+                  <button
+                    onClick={() => {
+                      const totalPages = Math.max(1, Math.ceil(posTotal[positionStatus] / posPageSize[positionStatus]));
+                      setPosPage(prev => ({ ...prev, [positionStatus]: Math.min(totalPages, prev[positionStatus] + 1) }));
+                    }}
+                    disabled={posPage[positionStatus] >= Math.max(1, Math.ceil(posTotal[positionStatus] / posPageSize[positionStatus]))}
+                    className={`px-3 py-2 rounded-lg border text-sm font-bold transition disabled:opacity-50 ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700 text-white' : 'bg-white hover:bg-gray-50 border-gray-200 text-gray-900'}`}
+                  >
+                    下一页
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -1414,12 +1524,55 @@ const App: React.FC = () => {
               <div className="text-sm text-gray-500">
                 更新时间：{dashboard ? new Date(dashboard.updated_at).toLocaleString() : '--'}
               </div>
-              <button
-                onClick={fetchDashboard}
-                className={`px-4 py-2 rounded-xl font-bold transition shadow-sm border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
-              >
-                刷新面板
-              </button>
+              <div className="flex items-center gap-2">
+                <select
+                  value={dashboardRange}
+                  onChange={(e) => {
+                    const v = e.target.value as typeof dashboardRange;
+                    setDashboardRange(v);
+                    if (v !== 'custom') {
+                      setDashboardStart('');
+                      setDashboardEnd('');
+                    }
+                  }}
+                  className={`px-3 py-2 rounded-xl border text-sm font-bold ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                >
+                  <option value="default">默认</option>
+                  <option value="1m">近 1 分钟</option>
+                  <option value="5m">近 5 分钟</option>
+                  <option value="1w">近 1 周</option>
+                  <option value="1mo">近 1 个月</option>
+                  <option value="custom">自定义</option>
+                </select>
+                {dashboardRange === 'custom' && (
+                  <>
+                    <input
+                      type="datetime-local"
+                      value={dashboardStart}
+                      onChange={(e) => setDashboardStart(e.target.value)}
+                      className={`px-3 py-2 rounded-xl border text-sm ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                    />
+                    <input
+                      type="datetime-local"
+                      value={dashboardEnd}
+                      onChange={(e) => setDashboardEnd(e.target.value)}
+                      className={`px-3 py-2 rounded-xl border text-sm ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                    />
+                    <button
+                      onClick={fetchDashboard}
+                      className="px-4 py-2 rounded-xl font-bold transition shadow-sm border bg-blue-600 hover:bg-blue-700 text-white border-blue-600"
+                    >
+                      应用
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={fetchDashboard}
+                  className={`px-4 py-2 rounded-xl font-bold transition shadow-sm border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
+                >
+                  刷新面板
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -1444,31 +1597,38 @@ const App: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {(['day', 'week', 'month'] as const).map((k) => {
-                const p = dashboard ? dashboard.pnl[k] : null;
-                const title = k === 'day' ? '今日收益' : k === 'week' ? '本周收益' : '本月收益';
-                const total = p ? p.total_pnl : 0;
-                return (
-                  <div key={k} className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-                    <div className="flex justify-between items-center mb-3">
-                      <div className="font-bold">{title}</div>
-                      <div className={`font-mono font-bold ${total >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        {p ? `$${total.toFixed(2)}` : '--'}
+              {(() => {
+                const cards: Array<{ key: string; title: string; p: PnLPeriodSummary | null }> = [];
+                if (dashboard?.pnl.custom) {
+                  cards.push({ key: 'custom', title: dashboard.pnl.custom_label || '自定义范围', p: dashboard.pnl.custom });
+                }
+                cards.push({ key: 'day', title: '今日收益', p: dashboard ? dashboard.pnl.day : null });
+                cards.push({ key: 'week', title: '本周收益', p: dashboard ? dashboard.pnl.week : null });
+                cards.push({ key: 'month', title: '本月收益', p: dashboard ? dashboard.pnl.month : null });
+                return cards.map(({ key, title, p }) => {
+                  const total = p ? p.total_pnl : 0;
+                  return (
+                    <div key={key} className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                      <div className="flex justify-between items-center mb-3">
+                        <div className="font-bold">{title}</div>
+                        <div className={`font-mono font-bold ${total >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                          {p ? `$${total.toFixed(2)}` : '--'}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <div className="text-gray-500">总收入</div>
+                        <div className="font-mono">{p ? `$${p.gross_profit.toFixed(2)}` : '--'}</div>
+                        <div className="text-gray-500">已实现</div>
+                        <div className={`font-mono ${p && p.realized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `$${p.realized_pnl.toFixed(2)}` : '--'}</div>
+                        <div className="text-gray-500">未实现</div>
+                        <div className={`font-mono ${p && p.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `$${p.unrealized_pnl.toFixed(2)}` : '--'}</div>
+                        <div className="text-gray-500">回报率</div>
+                        <div className={`font-mono ${p && p.realized_return_pct >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `${p.realized_return_pct.toFixed(2)}%` : '--'}</div>
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-3 text-sm">
-                      <div className="text-gray-500">总收入</div>
-                      <div className="font-mono">{p ? `$${p.gross_profit.toFixed(2)}` : '--'}</div>
-                      <div className="text-gray-500">已实现</div>
-                      <div className={`font-mono ${p && p.realized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `$${p.realized_pnl.toFixed(2)}` : '--'}</div>
-                      <div className="text-gray-500">未实现</div>
-                      <div className={`font-mono ${p && p.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `$${p.unrealized_pnl.toFixed(2)}` : '--'}</div>
-                      <div className="text-gray-500">回报率</div>
-                      <div className={`font-mono ${p && p.realized_return_pct >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `${p.realized_return_pct.toFixed(2)}%` : '--'}</div>
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                });
+              })()}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
