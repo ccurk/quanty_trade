@@ -23,7 +23,7 @@ type User struct {
 	Username  string         `gorm:"unique;not null" json:"username"`
 	Password  string         `gorm:"not null" json:"-"`
 	Role      UserRole       `gorm:"default:'user'" json:"role"`
-	Configs   string         `gorm:"type:text" json:"configs"` // JSON string for exchange API keys
+	Configs   string         `gorm:"type:text" json:"-"` // JSON string for exchange API keys
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
@@ -92,4 +92,24 @@ type APILog struct {
 	UserID     uint      `json:"user_id"`
 	Username   string    `json:"username"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+type ExchangeOrderEvent struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	OwnerID       uint      `gorm:"index" json:"owner_id"`
+	Exchange      string    `gorm:"index" json:"exchange"`
+	Symbol        string    `gorm:"index" json:"symbol"`
+	OrderID       string    `gorm:"index" json:"order_id"`
+	ClientOrderID string    `gorm:"index" json:"client_order_id"`
+	Side          string    `json:"side"`
+	OrderType     string    `json:"order_type"`
+	Status        string    `gorm:"index" json:"status"`
+	Price         float64   `json:"price"`
+	OrigQty       float64   `json:"orig_qty"`
+	ExecutedQty   float64   `json:"executed_qty"`
+	LastQty       float64   `json:"last_qty"`
+	LastPrice     float64   `json:"last_price"`
+	EventTime     time.Time `gorm:"index" json:"event_time"`
+	Raw           string    `gorm:"type:text" json:"raw"`
+	CreatedAt     time.Time `json:"created_at"`
 }

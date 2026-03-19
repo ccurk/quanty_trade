@@ -161,6 +161,12 @@ func (m *Manager) StartStrategy(id string) error {
 	inst.stdout = stdout
 	inst.Status = StatusRunning
 
+	if ex, ok := inst.exchange.(interface {
+		EnsureUserDataStream(ownerID uint, hub *ws.Hub) error
+	}); ok {
+		_ = ex.EnsureUserDataStream(inst.OwnerID, inst.hub)
+	}
+
 	// Start data feed
 	symbol, _ := inst.Config["symbol"].(string)
 	if symbol != "" {
@@ -279,7 +285,7 @@ func (inst *StrategyInstance) readStdout() {
 			amount, _ := orderReq["amount"].(float64)
 			price, _ := orderReq["price"].(float64)
 
-			order, err := inst.exchange.PlaceOrder(symbol, side, amount, price)
+			order, err := inst.exchange.PlaceOrder(inst.OwnerID, symbol, side, amount, price)
 			if err != nil {
 				inst.hub.BroadcastJSON(map[string]interface{}{
 					"type":  "error",

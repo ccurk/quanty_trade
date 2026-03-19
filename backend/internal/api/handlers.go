@@ -16,6 +16,7 @@ import (
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/models"
+	"quanty_trade/internal/secure"
 	"quanty_trade/internal/strategy"
 
 	"github.com/gin-gonic/gin"
@@ -54,12 +55,17 @@ func Register(c *gin.Context) {
 
 	hashedPassword, _ := auth.HashPassword(req.Password)
 	configsJSON, _ := json.Marshal(req.Configs)
+	encryptedConfigs, err := secure.EncryptString(string(configsJSON))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to secure configs"})
+		return
+	}
 
 	user := models.User{
 		Username: req.Username,
 		Password: hashedPassword,
 		Role:     models.RoleUser,
-		Configs:  string(configsJSON),
+		Configs:  encryptedConfigs,
 	}
 
 	if err := database.DB.Create(&user).Error; err != nil {
@@ -258,13 +264,13 @@ func CreateStrategy(c *gin.Context) {
 
 func ListPositions(c *gin.Context) {
 	status := c.DefaultQuery("status", "active") // active or closed
-	positions, err := stratMgr.GetExchange().FetchPositions(status)
+	userID, _ := c.Get("user_id")
+	positions, err := stratMgr.GetExchange().FetchPositions(userID.(uint), status)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	userID, _ := c.Get("user_id")
 	userRole, _ := c.Get("role")
 
 	// Filter by user unless admin

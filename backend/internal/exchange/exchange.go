@@ -14,13 +14,14 @@ type Candle struct {
 }
 
 type Order struct {
-	ID        string    `json:"id"`
-	Symbol    string    `json:"symbol"`
-	Side      string    `json:"side"` // "buy", "sell"
-	Amount    float64   `json:"amount"`
-	Price     float64   `json:"price"`
-	Status    string    `json:"status"` // "open", "filled", "canceled"
-	Timestamp time.Time `json:"timestamp"`
+	ID            string    `json:"id"`
+	ClientOrderID string    `json:"client_order_id,omitempty"`
+	Symbol        string    `json:"symbol"`
+	Side          string    `json:"side"` // "buy", "sell"
+	Amount        float64   `json:"amount"`
+	Price         float64   `json:"price"`
+	Status        string    `json:"status"` // "open", "filled", "canceled"
+	Timestamp     time.Time `json:"timestamp"`
 }
 
 type Position struct {
@@ -38,9 +39,9 @@ type Position struct {
 type Exchange interface {
 	GetName() string
 	FetchCandles(symbol string, timeframe string, limit int) ([]Candle, error)
-	PlaceOrder(symbol string, side string, amount float64, price float64) (*Order, error)
-	FetchOrders(symbol string) ([]Order, error)
-	FetchPositions(status string) ([]Position, error) // status: "active" or "closed"
+	PlaceOrder(ownerID uint, symbol string, side string, amount float64, price float64) (*Order, error)
+	FetchOrders(ownerID uint, symbol string) ([]Order, error)
+	FetchPositions(ownerID uint, status string) ([]Position, error) // status: "active" or "closed"
 	SubscribeCandles(symbol string, callback func(Candle)) error
 	ClosePosition(symbol string, ownerID uint) error
 	FetchHistoricalCandles(symbol string, timeframe string, startTime, endTime time.Time) ([]Candle, error)
@@ -57,7 +58,7 @@ func (m *MockExchange) FetchCandles(symbol string, timeframe string, limit int) 
 	return []Candle{}, nil
 }
 
-func (m *MockExchange) PlaceOrder(symbol string, side string, amount float64, price float64) (*Order, error) {
+func (m *MockExchange) PlaceOrder(ownerID uint, symbol string, side string, amount float64, price float64) (*Order, error) {
 	return &Order{
 		ID:        "mock-id",
 		Symbol:    symbol,
@@ -69,11 +70,11 @@ func (m *MockExchange) PlaceOrder(symbol string, side string, amount float64, pr
 	}, nil
 }
 
-func (m *MockExchange) FetchOrders(symbol string) ([]Order, error) {
+func (m *MockExchange) FetchOrders(ownerID uint, symbol string) ([]Order, error) {
 	return []Order{}, nil
 }
 
-func (m *MockExchange) FetchPositions(status string) ([]Position, error) {
+func (m *MockExchange) FetchPositions(ownerID uint, status string) ([]Position, error) {
 	if status == "active" {
 		return []Position{
 			{
@@ -83,18 +84,8 @@ func (m *MockExchange) FetchPositions(status string) ([]Position, error) {
 				StrategyName: "均线趋势策略",
 				ExchangeName: m.Name,
 				Status:       "active",
-				OwnerID:      1, // admin
+				OwnerID:      ownerID,
 				OpenTime:     time.Now().Add(-2 * time.Hour),
-			},
-			{
-				Symbol:       "ETH/USDT",
-				Amount:       1.5,
-				Price:        2500.0,
-				StrategyName: "用户A策略",
-				ExchangeName: m.Name,
-				Status:       "active",
-				OwnerID:      2, // user A
-				OpenTime:     time.Now().Add(-1 * time.Hour),
 			},
 		}, nil
 	} else {
@@ -106,7 +97,7 @@ func (m *MockExchange) FetchPositions(status string) ([]Position, error) {
 				StrategyName: "网格套利",
 				ExchangeName: m.Name,
 				Status:       "closed",
-				OwnerID:      1, // admin
+				OwnerID:      ownerID,
 				OpenTime:     time.Now().Add(-24 * time.Hour),
 				CloseTime:    time.Now().Add(-22 * time.Hour),
 			},

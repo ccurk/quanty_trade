@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 	"quanty_trade/internal/api"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
@@ -24,7 +25,13 @@ func main() {
 	hub := ws.NewHub()
 	go hub.Run()
 
-	ex := &exchange.MockExchange{Name: "Mock"}
+	var ex exchange.Exchange
+	switch os.Getenv("EXCHANGE") {
+	case "binance":
+		ex = exchange.NewBinanceExchange()
+	default:
+		ex = &exchange.MockExchange{Name: "Mock"}
+	}
 	mgr := strategy.NewManager(hub, ex)
 	mgr.SyncFromDB(database.DB)
 	api.SetManager(mgr)
