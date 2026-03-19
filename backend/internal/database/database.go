@@ -31,6 +31,7 @@ func InitDB() {
 	var err error
 	c := conf.C()
 	dbType := c.DB.Type
+	gormCfg := &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true}
 
 	if dbType == "mysql" {
 		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
@@ -40,14 +41,14 @@ func InitDB() {
 			c.DB.Port,
 			c.DB.Name,
 		)
-		DB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+		DB, err = gorm.Open(mysql.Open(dsn), gormCfg)
 		log.Println("Connecting to MySQL database...")
 	} else {
 		path := c.DB.SqlitePath
 		if path == "" {
 			path = "quanty.db"
 		}
-		DB, err = gorm.Open(sqlite.Open(path), &gorm.Config{})
+		DB, err = gorm.Open(sqlite.Open(path), gormCfg)
 		log.Println("Connecting to SQLite database (local)...")
 	}
 
@@ -69,6 +70,10 @@ func InitDB() {
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)
+	}
+
+	if dbType == "mysql" {
+		_ = DB.Exec("ALTER TABLE strategy_templates DROP FOREIGN KEY fk_strategy_templates_author").Error
 	}
 	log.Println("Database schema is up to date.")
 

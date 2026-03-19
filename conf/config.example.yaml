@@ -3,6 +3,11 @@ server:
   port: 8080
   mode: "debug"
 
+network:
+  http_proxy: ""
+  https_proxy: ""
+  no_proxy: "127.0.0.1,localhost"
+
 paths:
   logs_dir: "logs"
   strategies_dir: "strategies"
@@ -30,4 +35,7 @@ exchange:
     api_key: ""
     api_secret: ""
     testnet: false
+    market: "spot"
+    base_url: "https://api.binance.com"
+    ws_base_url: "wss://stream.binance.com:9443"
     wsapi_url: "wss://ws-api.binance.com:443/ws-api/v3"

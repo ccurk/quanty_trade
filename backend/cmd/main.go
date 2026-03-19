@@ -45,6 +45,18 @@ func initLogging() {
 
 func main() {
 	conf.MustLoad()
+	if v := conf.C().Network.HTTPProxy; v != "" {
+		_ = os.Setenv("HTTP_PROXY", v)
+		_ = os.Setenv("http_proxy", v)
+	}
+	if v := conf.C().Network.HTTPSProxy; v != "" {
+		_ = os.Setenv("HTTPS_PROXY", v)
+		_ = os.Setenv("https_proxy", v)
+	}
+	if v := conf.C().Network.NoProxy; v != "" {
+		_ = os.Setenv("NO_PROXY", v)
+		_ = os.Setenv("no_proxy", v)
+	}
 	initLogging()
 
 	// Initialize Database

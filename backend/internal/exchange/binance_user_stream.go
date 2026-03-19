@@ -34,6 +34,9 @@ type binanceUserStream struct {
 //   - Called when a strategy instance starts, so the UI can receive order updates
 //     and the backend can persist execution events.
 func (b *BinanceExchange) EnsureUserDataStream(ownerID uint, hub *ws.Hub) error {
+	if b.market == "usdm" {
+		return nil
+	}
 	if ownerID == 0 || hub == nil {
 		return nil
 	}

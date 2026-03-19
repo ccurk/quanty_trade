@@ -68,7 +68,11 @@ func (b *BinanceExchange) refreshExchangeInfo() error {
 	b.ensureInfoCache()
 
 	params := url.Values{}
-	u := b.baseURL + "/api/v3/exchangeInfo"
+	path := "/api/v3/exchangeInfo"
+	if b.market == "usdm" {
+		path = "/fapi/v1/exchangeInfo"
+	}
+	u := b.baseURL + path
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u+"?"+params.Encode(), nil)
 	if err != nil {
 		return err
@@ -113,7 +117,7 @@ func (b *BinanceExchange) refreshExchangeInfo() error {
 			switch flt.FilterType {
 			case "PRICE_FILTER":
 				f.TickSize, _ = strconv.ParseFloat(flt.TickSize, 64)
-			case "LOT_SIZE":
+			case "LOT_SIZE", "MARKET_LOT_SIZE":
 				f.StepSize, _ = strconv.ParseFloat(flt.StepSize, 64)
 				f.MinQty, _ = strconv.ParseFloat(flt.MinQty, 64)
 			case "MIN_NOTIONAL":

@@ -13,6 +13,7 @@ import (
 
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
+	Network  NetworkConfig  `yaml:"network"`
 	Paths    PathsConfig    `yaml:"paths"`
 	DB       DBConfig       `yaml:"db"`
 	Admin    AdminConfig    `yaml:"admin"`
@@ -24,6 +25,12 @@ type ServerConfig struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
 	Mode string `yaml:"mode"`
+}
+
+type NetworkConfig struct {
+	HTTPProxy  string `yaml:"http_proxy"`
+	HTTPSProxy string `yaml:"https_proxy"`
+	NoProxy    string `yaml:"no_proxy"`
 }
 
 type PathsConfig struct {
@@ -60,6 +67,9 @@ type BinanceConfig struct {
 	APIKey    string `yaml:"api_key"`
 	APISecret string `yaml:"api_secret"`
 	Testnet   bool   `yaml:"testnet"`
+	Market    string `yaml:"market"`
+	BaseURL   string `yaml:"base_url"`
+	WsBaseURL string `yaml:"ws_base_url"`
 	WsAPIURL  string `yaml:"wsapi_url"`
 }
 
@@ -77,6 +87,11 @@ func defaultConfig() Config {
 			Host: "0.0.0.0",
 			Port: 8080,
 			Mode: "debug",
+		},
+		Network: NetworkConfig{
+			HTTPProxy:  "",
+			HTTPSProxy: "",
+			NoProxy:    "127.0.0.1,localhost",
 		},
 		Paths: PathsConfig{
 			LogsDir:       "logs",
@@ -103,6 +118,9 @@ func defaultConfig() Config {
 				APIKey:    "",
 				APISecret: "",
 				Testnet:   false,
+				Market:    "spot",
+				BaseURL:   "",
+				WsBaseURL: "",
 				WsAPIURL:  "",
 			},
 		},
@@ -290,6 +308,16 @@ func applyEnvOverrides(c *Config) {
 		c.Server.Mode = v
 	}
 
+	if v := strings.TrimSpace(os.Getenv("HTTP_PROXY")); v != "" {
+		c.Network.HTTPProxy = v
+	}
+	if v := strings.TrimSpace(os.Getenv("HTTPS_PROXY")); v != "" {
+		c.Network.HTTPSProxy = v
+	}
+	if v := strings.TrimSpace(os.Getenv("NO_PROXY")); v != "" {
+		c.Network.NoProxy = v
+	}
+
 	if v := strings.TrimSpace(os.Getenv("LOG_DIR")); v != "" {
 		c.Paths.LogsDir = v
 	}
@@ -344,6 +372,15 @@ func applyEnvOverrides(c *Config) {
 	}
 	if v := strings.TrimSpace(os.Getenv("BINANCE_TESTNET")); v != "" {
 		c.Exchange.Binance.Testnet = strings.ToLower(v) == "true"
+	}
+	if v := strings.TrimSpace(os.Getenv("BINANCE_MARKET")); v != "" {
+		c.Exchange.Binance.Market = v
+	}
+	if v := strings.TrimSpace(os.Getenv("BINANCE_BASE_URL")); v != "" {
+		c.Exchange.Binance.BaseURL = v
+	}
+	if v := strings.TrimSpace(os.Getenv("BINANCE_WS_BASE_URL")); v != "" {
+		c.Exchange.Binance.WsBaseURL = v
 	}
 	if v := strings.TrimSpace(os.Getenv("BINANCE_WSAPI_URL")); v != "" {
 		c.Exchange.Binance.WsAPIURL = v

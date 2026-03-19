@@ -37,6 +37,14 @@ class BaseStrategy(ABC):
             "amount": amount,
             "price": price
         }
+        lev = self.config.get("leverage")
+        try:
+            if lev is not None:
+                lev_int = int(lev)
+                if lev_int > 0:
+                    order_request["leverage"] = lev_int
+        except Exception:
+            pass
         self._send_to_backend("order", order_request)
 
     def buy(self, amount, price=0):

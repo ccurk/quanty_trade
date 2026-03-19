@@ -31,6 +31,9 @@ type BinanceExchange struct {
 	baseURL      string
 	wsBaseURL    string
 	wsAPIBaseURL string
+	market       string
+	baseURLSet   bool
+	wsBaseURLSet bool
 
 	mu        sync.RWMutex
 	credsByID map[uint]binanceCred
@@ -40,6 +43,9 @@ type BinanceExchange struct {
 
 	streamMu    sync.Mutex
 	streamsByID map[uint]*binanceUserStream
+
+	leverageMu    sync.Mutex
+	leverageByKey map[string]int
 }
 
 type binanceCred struct {
@@ -54,14 +60,37 @@ func NewBinanceExchange() *BinanceExchange {
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		credsByID:  make(map[uint]binanceCred),
 	}
-	ex.baseURL = "https://api.binance.com"
-	ex.wsBaseURL = "wss://stream.binance.com:9443"
+	c := conf.C().Exchange.Binance
+	ex.market = strings.ToLower(strings.TrimSpace(c.Market))
+	if ex.market == "" {
+		ex.market = "spot"
+	}
+
+	if ex.market == "usdm" {
+		ex.baseURL = "https://fapi.binance.com"
+		ex.wsBaseURL = "wss://fstream.binance.com"
+	} else {
+		ex.baseURL = "https://api.binance.com"
+		ex.wsBaseURL = "wss://stream.binance.com:9443"
+	}
 	ex.wsAPIBaseURL = "wss://ws-api.binance.com:443/ws-api/v3"
+
+	if c.BaseURL != "" {
+		ex.baseURL = c.BaseURL
+		ex.baseURLSet = true
+	}
+	if c.WsBaseURL != "" {
+		ex.wsBaseURL = c.WsBaseURL
+		ex.wsBaseURLSet = true
+	}
 	ex.streamsByID = make(map[uint]*binanceUserStream)
+	ex.leverageByKey = make(map[string]int)
 	return ex
 }
 
 func (b *BinanceExchange) GetName() string { return b.name }
+
+func (b *BinanceExchange) Market() string { return b.market }
 
 func (b *BinanceExchange) SetUserCredentials(ownerID uint, apiKey, apiSecret string, testnet bool) {
 	b.mu.Lock()
@@ -163,7 +192,13 @@ func parseBinanceCredFromUserConfigs(configs string) (binanceCred, error) {
 }
 
 func (b *BinanceExchange) apiBaseURL(cred binanceCred) string {
+	if b.baseURLSet {
+		return b.baseURL
+	}
 	if cred.Testnet {
+		if b.market == "usdm" {
+			return "https://testnet.binancefuture.com"
+		}
 		return "https://testnet.binance.vision"
 	}
 	return b.baseURL
@@ -285,7 +320,11 @@ func (b *BinanceExchange) FetchHistoricalCandles(symbol string, timeframe string
 		params.Set("endTime", strconv.FormatInt(endMs, 10))
 		params.Set("limit", "1000")
 
-		body, _, err := b.publicRequest(context.Background(), "/api/v3/klines", params)
+		path := "/api/v3/klines"
+		if b.market == "usdm" {
+			path = "/fapi/v1/klines"
+		}
+		body, _, err := b.publicRequest(context.Background(), path, params)
 		if err != nil {
 			return nil, err
 		}
@@ -365,6 +404,69 @@ func toInt64(v interface{}) (int64, error) {
 	}
 }
 
+func normalizeNewClientOrderID(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return models.GenerateUUID()
+	}
+	out := make([]rune, 0, len(v))
+	for _, r := range v {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			out = append(out, r)
+		} else {
+			out = append(out, '-')
+		}
+		if len(out) >= 36 {
+			break
+		}
+	}
+	s := strings.Trim(string(out), "-_")
+	if s == "" {
+		return models.GenerateUUID()
+	}
+	if len(s) > 36 {
+		return s[:36]
+	}
+	return s
+}
+
+func (b *BinanceExchange) SetLeverage(ownerID uint, symbol string, leverage int) error {
+	if b.market != "usdm" {
+		return nil
+	}
+	if leverage < 1 {
+		return nil
+	}
+	if leverage > 125 {
+		leverage = 125
+	}
+
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return err
+	}
+
+	key := fmt.Sprintf("%d:%s", ownerID, binanceSymbol(symbol))
+	b.leverageMu.Lock()
+	if v, ok := b.leverageByKey[key]; ok && v == leverage {
+		b.leverageMu.Unlock()
+		return nil
+	}
+	b.leverageMu.Unlock()
+
+	params := url.Values{}
+	params.Set("symbol", binanceSymbol(symbol))
+	params.Set("leverage", strconv.Itoa(leverage))
+	_, _, err = b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/leverage", params)
+	if err != nil {
+		return err
+	}
+
+	b.leverageMu.Lock()
+	b.leverageByKey[key] = leverage
+	b.leverageMu.Unlock()
+	return nil
+}
+
 func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol string, side string, amount float64, price float64) (*Order, error) {
 	cred, err := b.getCred(ownerID)
 	if err != nil {
@@ -395,11 +497,12 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 	params := url.Values{}
 	params.Set("symbol", sym)
 	params.Set("side", s)
-	params.Set("newOrderRespType", "RESULT")
-	if clientOrderID != "" {
-		params.Set("newClientOrderId", clientOrderID)
-	} else {
-		params.Set("newClientOrderId", fmt.Sprintf("qt_%d_%d", ownerID, time.Now().UnixNano()))
+	if b.market != "usdm" {
+		params.Set("newOrderRespType", "RESULT")
+	}
+	params.Set("newClientOrderId", normalizeNewClientOrderID(clientOrderID))
+	if b.market == "usdm" && s == "SELL" {
+		params.Set("reduceOnly", "true")
 	}
 	if price > 0 {
 		params.Set("type", "LIMIT")
@@ -423,9 +526,81 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 		params.Set("quantity", formatByStep(adjQty, filters.StepSize))
 	}
 
-	body, _, err := b.signedRequest(context.Background(), cred, http.MethodPost, "/api/v3/order", params)
+	orderPath := "/api/v3/order"
+	if b.market == "usdm" {
+		orderPath = "/fapi/v1/order"
+	}
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodPost, orderPath, params)
 	if err != nil {
 		return nil, err
+	}
+
+	if b.market == "usdm" {
+		var resp struct {
+			OrderID       int64  `json:"orderId"`
+			ClientOrderID string `json:"clientOrderId"`
+			Symbol        string `json:"symbol"`
+			Side          string `json:"side"`
+			Price         string `json:"price"`
+			OrigQty       string `json:"origQty"`
+			ExecutedQty   string `json:"executedQty"`
+			AvgPrice      string `json:"avgPrice"`
+			Status        string `json:"status"`
+			UpdateTime    int64  `json:"updateTime"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, err
+		}
+
+		orderID := strconv.FormatInt(resp.OrderID, 10)
+		clientID := resp.ClientOrderID
+		status := strings.ToLower(resp.Status)
+
+		px, _ := strconv.ParseFloat(resp.Price, 64)
+		avgPx, _ := strconv.ParseFloat(resp.AvgPrice, 64)
+		origQty, _ := strconv.ParseFloat(resp.OrigQty, 64)
+		executedQty, _ := strconv.ParseFloat(resp.ExecutedQty, 64)
+
+		if status != "filled" || avgPx == 0 || executedQty == 0 {
+			if refreshed, err := b.waitUSDMOrderFinal(cred, sym, clientID, orderID); err == nil && refreshed != nil {
+				status = strings.ToLower(refreshed.Status)
+				if v, err := strconv.ParseFloat(refreshed.AvgPrice, 64); err == nil && v > 0 {
+					avgPx = v
+				}
+				if v, err := strconv.ParseFloat(refreshed.ExecutedQty, 64); err == nil && v > 0 {
+					executedQty = v
+				}
+				if v, err := strconv.ParseFloat(refreshed.OrigQty, 64); err == nil && v > 0 {
+					origQty = v
+				}
+				if refreshed.UpdateTime > 0 {
+					resp.UpdateTime = refreshed.UpdateTime
+				}
+			}
+		}
+
+		aq := origQty
+		if executedQty > 0 {
+			aq = executedQty
+		}
+		if avgPx > 0 {
+			px = avgPx
+		}
+		ts := time.Now()
+		if resp.UpdateTime > 0 {
+			ts = time.UnixMilli(resp.UpdateTime)
+		}
+
+		return &Order{
+			ID:            orderID,
+			ClientOrderID: clientID,
+			Symbol:        symbol,
+			Side:          strings.ToLower(resp.Side),
+			Amount:        aq,
+			Price:         px,
+			Status:        status,
+			Timestamp:     ts,
+		}, nil
 	}
 
 	var resp struct {
@@ -471,6 +646,53 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 		Status:        strings.ToLower(resp.Status),
 		Timestamp:     ts,
 	}, nil
+}
+
+type usdmOrderFinal struct {
+	Status      string `json:"status"`
+	OrigQty     string `json:"origQty"`
+	ExecutedQty string `json:"executedQty"`
+	AvgPrice    string `json:"avgPrice"`
+	UpdateTime  int64  `json:"updateTime"`
+}
+
+func (b *BinanceExchange) waitUSDMOrderFinal(cred binanceCred, symbol string, clientOrderID string, orderID string) (*usdmOrderFinal, error) {
+	if b.market != "usdm" {
+		return nil, nil
+	}
+	if symbol == "" {
+		return nil, nil
+	}
+
+	var last usdmOrderFinal
+	for i := 0; i < 12; i++ {
+		params := url.Values{}
+		params.Set("symbol", symbol)
+		if strings.TrimSpace(clientOrderID) != "" {
+			params.Set("origClientOrderId", clientOrderID)
+		} else if strings.TrimSpace(orderID) != "" {
+			params.Set("orderId", orderID)
+		}
+
+		body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/order", params)
+		if err != nil {
+			return nil, err
+		}
+
+		var parsed usdmOrderFinal
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return nil, err
+		}
+		last = parsed
+
+		st := strings.ToLower(parsed.Status)
+		if st == "filled" || st == "canceled" || st == "rejected" || st == "expired" {
+			return &parsed, nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	return &last, nil
 }
 
 func (b *BinanceExchange) FetchOrders(ownerID uint, symbol string) ([]Order, error) {
@@ -527,6 +749,47 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 		return nil, err
 	}
 
+	if b.market == "usdm" {
+		body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v2/positionRisk", nil)
+		if err != nil {
+			return nil, err
+		}
+
+		var raw []struct {
+			Symbol      string `json:"symbol"`
+			PositionAmt string `json:"positionAmt"`
+			EntryPrice  string `json:"entryPrice"`
+			UpdateTime  int64  `json:"updateTime"`
+		}
+		if err := json.Unmarshal(body, &raw); err != nil {
+			return nil, err
+		}
+
+		out := make([]Position, 0)
+		for _, p := range raw {
+			amt, _ := strconv.ParseFloat(p.PositionAmt, 64)
+			if amt == 0 {
+				continue
+			}
+			entry, _ := strconv.ParseFloat(p.EntryPrice, 64)
+			ts := time.Now()
+			if p.UpdateTime > 0 {
+				ts = time.UnixMilli(p.UpdateTime)
+			}
+			out = append(out, Position{
+				Symbol:       b.displaySymbol(p.Symbol),
+				Amount:       math.Abs(amt),
+				Price:        entry,
+				StrategyName: "",
+				ExchangeName: b.name,
+				Status:       "active",
+				OwnerID:      ownerID,
+				OpenTime:     ts,
+			})
+		}
+		return out, nil
+	}
+
 	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/api/v3/account", nil)
 	if err != nil {
 		return nil, err
@@ -576,6 +839,58 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 func (b *BinanceExchange) ClosePosition(symbol string, ownerID uint) error {
 	cred, err := b.getCred(ownerID)
 	if err != nil {
+		return err
+	}
+
+	if b.market == "usdm" {
+		filters, err := b.getFilters(symbol)
+		if err != nil {
+			return err
+		}
+
+		body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v2/positionRisk", nil)
+		if err != nil {
+			return err
+		}
+
+		var raw []struct {
+			Symbol      string `json:"symbol"`
+			PositionAmt string `json:"positionAmt"`
+		}
+		if err := json.Unmarshal(body, &raw); err != nil {
+			return err
+		}
+
+		target := binanceSymbol(symbol)
+		var positionAmt float64
+		for _, p := range raw {
+			if strings.EqualFold(p.Symbol, target) {
+				positionAmt, _ = strconv.ParseFloat(p.PositionAmt, 64)
+				break
+			}
+		}
+		if positionAmt == 0 {
+			return nil
+		}
+
+		side := "SELL"
+		qty := math.Abs(positionAmt)
+		if positionAmt < 0 {
+			side = "BUY"
+		}
+
+		adjQty := roundDownToStep(qty, filters.StepSize)
+		if filters.MinQty > 0 && adjQty < filters.MinQty {
+			return nil
+		}
+
+		params := url.Values{}
+		params.Set("symbol", target)
+		params.Set("side", side)
+		params.Set("type", "MARKET")
+		params.Set("reduceOnly", "true")
+		params.Set("quantity", formatByStep(adjQty, filters.StepSize))
+		_, _, err = b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/order", params)
 		return err
 	}
 

@@ -275,6 +275,82 @@ func ListPositions(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	userRole, _ := c.Get("role")
 
+	if status == "active" && userRole != "admin" {
+		if bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+			exPos, err := bx.FetchPositions(userID.(uint), "active")
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+
+			var instRows []models.StrategyInstance
+			_ = database.DB.Where("owner_id = ?", userID.(uint)).Order("updated_at desc").Find(&instRows).Error
+			findStrategyForSymbol := func(sym string) (string, string) {
+				want := exchange.NormalizeSymbol(sym)
+				for _, si := range instRows {
+					var cfg map[string]interface{}
+					if err := json.Unmarshal([]byte(si.Config), &cfg); err != nil {
+						continue
+					}
+					if v, ok := cfg["symbol"].(string); ok && exchange.NormalizeSymbol(v) == want {
+						return si.ID, si.Name
+					}
+				}
+				return "", ""
+			}
+
+			type stratInfo struct {
+				StrategyName string
+				OpenTime     time.Time
+				AvgPrice     float64
+			}
+			bySymbol := map[string]stratInfo{}
+			var rows []models.StrategyPosition
+			_ = database.DB.Where("owner_id = ? AND status = ?", userID.(uint), "open").Find(&rows).Error
+			for _, p := range rows {
+				bySymbol[strings.ToUpper(p.Symbol)] = stratInfo{StrategyName: p.StrategyName, OpenTime: p.OpenTime, AvgPrice: p.AvgPrice}
+			}
+
+			out := make([]exchange.Position, 0, len(exPos))
+			for _, p := range exPos {
+				key := strings.ToUpper(p.Symbol)
+				if info, ok := bySymbol[key]; ok {
+					p.StrategyName = info.StrategyName
+					if !info.OpenTime.IsZero() {
+						p.OpenTime = info.OpenTime
+					}
+					if p.Price == 0 && info.AvgPrice > 0 {
+						p.Price = info.AvgPrice
+					}
+				} else {
+					strategyID, strategyName := findStrategyForSymbol(p.Symbol)
+					if strategyID != "" {
+						now := time.Now()
+						pos := models.StrategyPosition{
+							StrategyID:   strategyID,
+							StrategyName: strategyName,
+							OwnerID:      userID.(uint),
+							Exchange:     bx.GetName(),
+							Symbol:       p.Symbol,
+							Amount:       p.Amount,
+							AvgPrice:     p.Price,
+							Status:       "open",
+							OpenTime:     p.OpenTime,
+							UpdatedAt:    now,
+						}
+						_ = database.DB.Create(&pos).Error
+						p.StrategyName = strategyName
+						bySymbol[key] = stratInfo{StrategyName: strategyName, OpenTime: pos.OpenTime, AvgPrice: pos.AvgPrice}
+					}
+				}
+				out = append(out, p)
+			}
+			sort.Slice(out, func(i, j int) bool { return out[i].OpenTime.After(out[j].OpenTime) })
+			c.JSON(http.StatusOK, out)
+			return
+		}
+	}
+
 	query := database.DB.Model(&models.StrategyPosition{})
 	if userRole != "admin" {
 		query = query.Where("owner_id = ?", userID.(uint))
@@ -326,6 +402,17 @@ func ClosePosition(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
+	if bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		if err := bx.ClosePosition(symbol, userID.(uint)); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		database.DB.Model(&models.StrategyPosition{}).
+			Where("owner_id = ? AND symbol = ? AND status = ?", userID.(uint), symbol, "open").
+			Updates(map[string]interface{}{"status": "closed", "close_time": time.Now(), "updated_at": time.Now()})
+		c.JSON(http.StatusOK, gin.H{"status": "success"})
+		return
+	}
 	var pos models.StrategyPosition
 	if err := database.DB.Where("owner_id = ? AND symbol = ? AND status = ?", userID.(uint), symbol, "open").
 		Order("open_time desc").
@@ -334,7 +421,7 @@ func ClosePosition(c *gin.Context) {
 		return
 	}
 
-	clientOrderID := fmt.Sprintf("qt_close_%d_%d", userID.(uint), time.Now().UnixNano())
+	clientOrderID := models.GenerateUUID()
 	database.DB.Create(&models.StrategyOrder{
 		StrategyID:    pos.StrategyID,
 		StrategyName:  pos.StrategyName,
@@ -554,6 +641,17 @@ func SaveTemplate(c *gin.Context) {
 		return
 	}
 
+	userIDValue, ok := c.Get("user_id")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	userID, ok := userIDValue.(uint)
+	if !ok || userID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
 	if !req.IsDraft {
 		missing := validateStrategyCode(req.Code)
 		if len(missing) > 0 {
@@ -565,14 +663,12 @@ func SaveTemplate(c *gin.Context) {
 		}
 	}
 
-	userID, _ := c.Get("user_id")
-
 	// Find if existing template with same name by same author
 	var template models.StrategyTemplate
-	err := database.DB.Where("name = ? AND author_id = ?", req.Name, userID.(uint)).First(&template).Error
+	err := database.DB.Where("name = ? AND author_id = ?", req.Name, userID).First(&template).Error
 
 	// Save code to file
-	filename := fmt.Sprintf("%s_%d.py", req.Name, userID.(uint))
+	filename := fmt.Sprintf("%s_%d.py", req.Name, userID)
 	filename = strings.ReplaceAll(filename, " ", "_")
 	filename = filepath.Base(filename)
 	strategiesDir := conf.C().Paths.StrategiesDir
@@ -608,7 +704,7 @@ func SaveTemplate(c *gin.Context) {
 			Name:        req.Name,
 			Description: req.Description,
 			Path:        absPath,
-			AuthorID:    userID.(uint),
+			AuthorID:    userID,
 			IsPublic:    false,
 			IsDraft:     req.IsDraft,
 			Code:        req.Code,

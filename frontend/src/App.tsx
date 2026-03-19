@@ -31,6 +31,7 @@ interface Template {
   is_public: boolean;
   is_draft: boolean;
   is_enabled: boolean;
+  author_id: number;
   author: { id: number, username: string };
 }
 
@@ -213,6 +214,7 @@ const App: React.FC = () => {
   const [newStratName, setNewStratName] = useState('');
   const [newStratConfig, setNewStratConfig] = useState({
     symbol: 'BTC/USDT',
+    leverage: 20,
     fast_window: 10,
     slow_window: 30,
     trade_amount: 0.01,
@@ -221,6 +223,7 @@ const App: React.FC = () => {
     trailing_stop_pct: 0.005,
     max_hold_bars: 0,
     cooldown_bars: 0,
+    max_trades_per_day: 3,
     max_concurrent_positions: 1,
     warmup_bars: 100,
     position_pct: 10,
@@ -593,8 +596,8 @@ const App: React.FC = () => {
         await axios.post(`/api/strategies/${s.id}/start`);
       }
       fetchStrategies();
-    } catch (err) {
-      console.error('Failed to toggle strategy', err);
+    } catch (err: unknown) {
+      showToast(getAxiosErrorMessage(err) || '操作失败', 'error');
     }
   };
 
@@ -618,6 +621,7 @@ const App: React.FC = () => {
       setNewStratName('');
       setNewStratConfig({
         symbol: 'BTC/USDT',
+        leverage: 20,
         fast_window: 10,
         slow_window: 30,
         trade_amount: 0.01,
@@ -626,6 +630,7 @@ const App: React.FC = () => {
         trailing_stop_pct: 0.005,
         max_hold_bars: 0,
         cooldown_bars: 0,
+        max_trades_per_day: 3,
         max_concurrent_positions: 1,
         warmup_bars: 100,
         position_pct: 10,
@@ -922,6 +927,7 @@ const App: React.FC = () => {
                 setNewStratName('');
                 setNewStratConfig({
                   symbol: 'BTC/USDT',
+                  leverage: 20,
                   fast_window: 10,
                   slow_window: 30,
                   trade_amount: 0.01,
@@ -930,6 +936,7 @@ const App: React.FC = () => {
                   trailing_stop_pct: 0.005,
                   max_hold_bars: 0,
                   cooldown_bars: 0,
+                  max_trades_per_day: 3,
                   max_concurrent_positions: 1,
                   warmup_bars: 100,
                   position_pct: 10,
@@ -1013,6 +1020,7 @@ const App: React.FC = () => {
                           setStrategyToEdit(s); 
                           setNewStratConfig({
                             symbol: getCfgString(s.config, 'symbol', 'BTC/USDT'),
+                            leverage: getCfgNumber(s.config, 'leverage', 20),
                             fast_window: getCfgNumber(s.config, 'fast_window', 10),
                             slow_window: getCfgNumber(s.config, 'slow_window', 30),
                             trade_amount: getCfgNumber(s.config, 'trade_amount', 0.01),
@@ -1021,6 +1029,7 @@ const App: React.FC = () => {
                             trailing_stop_pct: getCfgNumber(s.config, 'trailing_stop_pct', 0.005),
                             max_hold_bars: getCfgNumber(s.config, 'max_hold_bars', 0),
                             cooldown_bars: getCfgNumber(s.config, 'cooldown_bars', 0),
+                            max_trades_per_day: getCfgNumber(s.config, 'max_trades_per_day', 3),
                             max_concurrent_positions: getCfgNumber(s.config, 'max_concurrent_positions', 1),
                             warmup_bars: getCfgNumber(s.config, 'warmup_bars', 100),
                             position_pct: getCfgNumber(s.config, 'position_pct', 10),
@@ -1069,8 +1078,8 @@ const App: React.FC = () => {
               </thead>
               <tbody className={`divide-y ${isDarkMode ? 'divide-gray-800' : 'divide-gray-100'}`}>
                 {templates.filter(t => 
-                  (t.author?.id === user?.id || user?.role === 'admin') && 
-                  !t.is_public && !t.is_draft &&
+                  (t.author_id === user?.id || user?.role === 'admin') && 
+                  !t.is_draft &&
                   (t.name.toLowerCase().includes(templateSearch.toLowerCase()) || 
                    (t.description || '').toLowerCase().includes(templateSearch.toLowerCase()))
                 ).map(t => (
@@ -1082,6 +1091,11 @@ const App: React.FC = () => {
                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider w-fit ${t.is_enabled ? 'bg-green-900/30 text-green-400' : 'bg-gray-800 text-gray-500'}`}>
                           {t.is_enabled ? '已启用' : '已禁用'}
                         </span>
+                        {t.is_public && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-purple-900/30 text-purple-400 w-fit">
+                            已发布
+                          </span>
+                        )}
                         {strategies.some(s => s.template_id === t.id) && (
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-blue-900/30 text-blue-400 w-fit">
                             已在运行
@@ -1558,6 +1572,15 @@ const App: React.FC = () => {
                   />
                 </div>
                 <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">杠杆</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.leverage}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, leverage: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
                   <label className="block text-sm font-medium text-gray-500 mb-2">预热 K 线</label>
                   <input
                     type="number"
@@ -1623,6 +1646,15 @@ const App: React.FC = () => {
                     type="number"
                     value={newStratConfig.cooldown_bars}
                     onChange={(e) => setNewStratConfig({ ...newStratConfig, cooldown_bars: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">每日最多交易</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.max_trades_per_day}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, max_trades_per_day: Number(e.target.value) })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>

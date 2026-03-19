@@ -226,8 +226,10 @@ func (m *Manager) StartStrategy(id string) error {
 	symbol, _ := inst.Config["symbol"].(string)
 	if symbol != "" {
 		warmup := 50
-		if v, ok := inst.Config["warmup_bars"].(float64); ok && int(v) > 0 {
-			warmup = int(v)
+		if raw, ok := inst.Config["warmup_bars"]; ok {
+			if v, ok := raw.(float64); ok {
+				warmup = int(v)
+			}
 		} else {
 			if v, ok := inst.Config["slow_window"].(float64); ok && int(v) > warmup {
 				warmup = int(v)
@@ -236,13 +238,17 @@ func (m *Manager) StartStrategy(id string) error {
 				warmup = int(v)
 			}
 		}
-		if candles, err := inst.exchange.FetchCandles(symbol, "1m", warmup); err == nil && len(candles) > 0 {
-			log.Printf("[STRATEGY WARMUP] id=%s owner=%d symbol=%s bars=%d", inst.ID, inst.OwnerID, symbol, len(candles))
-			for _, candle := range candles {
-				_ = inst.SendData("candle", candle)
+		if warmup > 0 {
+			if candles, err := inst.exchange.FetchCandles(symbol, "1m", warmup); err == nil && len(candles) > 0 {
+				log.Printf("[STRATEGY WARMUP] id=%s owner=%d symbol=%s bars=%d", inst.ID, inst.OwnerID, symbol, len(candles))
+				for _, candle := range candles {
+					_ = inst.SendData("candle", candle)
+				}
+			} else if err != nil {
+				log.Printf("[STRATEGY WARMUP ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, symbol, err)
 			}
-		} else if err != nil {
-			log.Printf("[STRATEGY WARMUP ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, symbol, err)
+		} else {
+			log.Printf("[STRATEGY WARMUP SKIP] id=%s owner=%d symbol=%s", inst.ID, inst.OwnerID, symbol)
 		}
 
 		go func() {
@@ -393,6 +399,27 @@ func (m *Manager) StopStrategy(id string) error {
 
 	if !ok {
 		return fmt.Errorf("strategy %s not found", id)
+	}
+
+	var openCount int64
+	database.DB.Model(&models.StrategyPosition{}).
+		Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
+		Count(&openCount)
+	if openCount > 0 {
+		return fmt.Errorf("strategy has open positions; close positions before stopping")
+	}
+	if bx, ok := m.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		if sym, ok := inst.Config["symbol"].(string); ok && sym != "" {
+			exPos, err := bx.FetchPositions(inst.OwnerID, "active")
+			if err == nil {
+				want := exchange.NormalizeSymbol(sym)
+				for _, p := range exPos {
+					if exchange.NormalizeSymbol(p.Symbol) == want && p.Amount > 0 {
+						return fmt.Errorf("strategy has open positions on exchange; close positions before stopping")
+					}
+				}
+			}
+		}
 	}
 
 	inst.mu.Lock()
@@ -551,7 +578,7 @@ func (inst *StrategyInstance) readStdout() {
 				}
 			}
 
-			clientOrderID := fmt.Sprintf("qt_%s_%d", strings.ReplaceAll(inst.ID, "-", ""), time.Now().UnixNano())
+			clientOrderID := models.GenerateUUID()
 			log.Printf("[ORDER REQUEST] strategy=%s owner=%d client_order_id=%s symbol=%s side=%s amount=%v price=%v", inst.ID, inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price)
 			database.DB.Create(&models.StrategyOrder{
 				StrategyID:   inst.ID,
@@ -573,6 +600,43 @@ func (inst *StrategyInstance) readStdout() {
 				RequestedAt:   time.Now(),
 				UpdatedAt:     time.Now(),
 			})
+
+			leverage := 0
+			if orderReq != nil {
+				if raw, ok := orderReq["leverage"]; ok {
+					if v, ok := raw.(float64); ok && int(v) > 0 {
+						leverage = int(v)
+					}
+				}
+			}
+			if leverage == 0 {
+				if raw, ok := inst.Config["leverage"]; ok {
+					if v, ok := raw.(float64); ok && int(v) > 0 {
+						leverage = int(v)
+					}
+				}
+			}
+			if leverage > 0 {
+				if ex, ok := inst.exchange.(interface {
+					SetLeverage(ownerID uint, symbol string, leverage int) error
+				}); ok {
+					if err := ex.SetLeverage(inst.OwnerID, symbol, leverage); err != nil {
+						log.Printf("[LEVERAGE ERROR] strategy=%s owner=%d symbol=%s leverage=%d err=%v", inst.ID, inst.OwnerID, symbol, leverage, err)
+						database.DB.Create(&models.StrategyLog{
+							StrategyID: inst.ID,
+							Level:      "error",
+							Message:    fmt.Sprintf("SetLeverage error: %v", err),
+							CreatedAt:  time.Now(),
+						})
+						inst.hub.BroadcastJSON(map[string]interface{}{
+							"type":        "error",
+							"strategy_id": inst.ID,
+							"owner_id":    inst.OwnerID,
+							"error":       fmt.Sprintf("SetLeverage error: %v", err),
+						})
+					}
+				}
+			}
 
 			order, err := inst.exchange.PlaceOrder(inst.OwnerID, clientOrderID, symbol, side, amount, price)
 			if err != nil {
@@ -911,6 +975,8 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 	// 3. Simulation Variables
 	balance := initialBalance
 	positionAmount := 0.0
+	positionMargin := 0.0
+	entryPrice := 0.0
 	totalTrades := 0
 	totalProfit := 0.0
 	equityCurve := make([]EquityPoint, 0)
@@ -949,19 +1015,124 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 			side, _ := orderReq["side"].(string)
 			amount, _ := orderReq["amount"].(float64)
 			price := candle.Close // Simplified: execute at current candle close
+			lev := 1
+			if raw, ok := inst.Config["leverage"]; ok {
+				if v, ok := raw.(float64); ok && int(v) > 0 {
+					lev = int(v)
+				}
+			}
+			if lev <= 0 {
+				lev = 1
+			}
+			simOrderID := models.GenerateUUID()
 
 			if side == "buy" {
-				cost := amount * price
-				if balance >= cost {
-					balance -= cost
-					positionAmount += amount
+				requiredMargin := (amount * price) / float64(lev)
+				if balance >= requiredMargin {
+					balance -= requiredMargin
+					newAmt := positionAmount + amount
+					if newAmt > 0 {
+						entryPrice = ((entryPrice * positionAmount) + (price * amount)) / newAmt
+					} else {
+						entryPrice = price
+					}
+					positionAmount = newAmt
+					positionMargin += requiredMargin
 					totalTrades++
+					_ = json.NewEncoder(stdin).Encode(map[string]interface{}{
+						"type": "order",
+						"data": map[string]interface{}{
+							"id":              simOrderID,
+							"client_order_id": simOrderID,
+							"symbol":          symbol,
+							"side":            "buy",
+							"amount":          amount,
+							"price":           price,
+							"status":          "filled",
+							"timestamp":       candle.Timestamp,
+						},
+					})
+					_ = json.NewEncoder(stdin).Encode(map[string]interface{}{
+						"type": "position",
+						"data": map[string]interface{}{
+							"symbol":    symbol,
+							"qty":       positionAmount,
+							"avg_price": entryPrice,
+							"status":    "open",
+						},
+					})
+				} else {
+					_ = json.NewEncoder(stdin).Encode(map[string]interface{}{
+						"type": "order",
+						"data": map[string]interface{}{
+							"id":              simOrderID,
+							"client_order_id": simOrderID,
+							"symbol":          symbol,
+							"side":            "buy",
+							"amount":          amount,
+							"price":           price,
+							"status":          "rejected",
+							"timestamp":       candle.Timestamp,
+						},
+					})
 				}
 			} else if side == "sell" {
 				if positionAmount >= amount {
-					balance += amount * price
+					released := 0.0
+					if positionAmount > 0 && positionMargin > 0 {
+						released = positionMargin * (amount / positionAmount)
+					}
+					pnl := amount * (price - entryPrice)
+					balance += released + pnl
 					positionAmount -= amount
+					positionMargin -= released
+					if positionAmount <= 0 {
+						positionAmount = 0
+						positionMargin = 0
+						entryPrice = 0
+					}
 					totalTrades++
+					_ = json.NewEncoder(stdin).Encode(map[string]interface{}{
+						"type": "order",
+						"data": map[string]interface{}{
+							"id":              simOrderID,
+							"client_order_id": simOrderID,
+							"symbol":          symbol,
+							"side":            "sell",
+							"amount":          amount,
+							"price":           price,
+							"status":          "filled",
+							"timestamp":       candle.Timestamp,
+						},
+					})
+					_ = json.NewEncoder(stdin).Encode(map[string]interface{}{
+						"type": "position",
+						"data": map[string]interface{}{
+							"symbol":    symbol,
+							"qty":       positionAmount,
+							"avg_price": entryPrice,
+							"status": func() string {
+								if positionAmount > 0 {
+									return "open"
+								}
+								return "closed"
+							}(),
+						},
+					})
+				} else {
+					_ = json.NewEncoder(stdin).Encode(map[string]interface{}{
+						"type": "order",
+						"data": map[string]interface{}{
+							"id":              simOrderID,
+							"client_order_id": simOrderID,
+							"symbol":          symbol,
+							"side":            "sell",
+							"amount":          amount,
+							"price":           price,
+							"status":          "rejected",
+							"timestamp":       candle.Timestamp,
+						},
+					})
 				}
 			}
 		default:
@@ -969,7 +1140,10 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 		}
 
 		// Calculate current equity
-		currentEquity := balance + (positionAmount * candle.Close)
+		currentEquity := balance
+		if positionAmount > 0 {
+			currentEquity = balance + positionMargin + (positionAmount * (candle.Close - entryPrice))
+		}
 		equityCurve = append(equityCurve, EquityPoint{
 			Timestamp: candle.Timestamp,
 			Equity:    currentEquity,

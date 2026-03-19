@@ -26,6 +26,7 @@ class LiveMARiskStrategy(BaseStrategy):
     def __init__(self, config):
         super().__init__(config)
         self.symbol = config.get("symbol", self.symbol)
+        self.leverage = _i(config.get("leverage", 0), 0)
 
         self.fast_window = max(1, _i(config.get("fast_window", 10), 10))
         self.slow_window = max(self.fast_window, _i(config.get("slow_window", 30), 30))
