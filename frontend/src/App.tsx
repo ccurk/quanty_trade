@@ -104,35 +104,75 @@ interface ConfirmOptions {
 
 const DEFAULT_STRATEGY_CODE = `from base_strategy import BaseStrategy
 import json
+import sys
+
 
 class MyStrategy(BaseStrategy):
     def __init__(self, config):
         super().__init__(config)
-        # 获取基础交易配置
         self.symbol = config.get("symbol", "BTC/USDT")
-        self.position_pct = config.get("position_pct", 10)
-        self.take_profit = config.get("take_profit", 5)
-        self.stop_loss = config.get("stop_loss", 2)
-        self.close_yield = config.get("close_yield", 10)
-        
-        # 策略特定参数
-        self.window = config.get("window", 20)
+        self.fast_window = int(config.get("fast_window", 10))
+        self.slow_window = int(config.get("slow_window", 30))
+        self.trade_amount = float(config.get("trade_amount", 0.01))
+        self.take_profit_pct = float(config.get("take_profit_pct", 0.03))
+        self.stop_loss_pct = float(config.get("stop_loss_pct", 0.01))
+
+        self.closes = []
+        self.in_position = False
+        self.entry_price = None
 
     def on_candle(self, candle):
-        self.log(f"收到 K 线: {candle['close']} (交易对: {self.symbol})")
-        # 在这里添加您的交易逻辑
-        # 例如: if self.should_buy(): self.buy(self.symbol, amount)
+        close = float(candle.get("close", 0))
+        if close <= 0:
+            return
+
+        self.closes.append(close)
+        if len(self.closes) > self.slow_window:
+            self.closes.pop(0)
+
+        if self.in_position and self.entry_price:
+            if close >= self.entry_price * (1.0 + self.take_profit_pct):
+                self.log(f"TAKE PROFIT close={close}")
+                self.send_order("sell", self.trade_amount, 0)
+                self.in_position = False
+                self.entry_price = None
+                return
+            if close <= self.entry_price * (1.0 - self.stop_loss_pct):
+                self.log(f"STOP LOSS close={close}")
+                self.send_order("sell", self.trade_amount, 0)
+                self.in_position = False
+                self.entry_price = None
+                return
+
+        if len(self.closes) < self.slow_window:
+            return
+
+        fast_ma = sum(self.closes[-self.fast_window:]) / self.fast_window
+        slow_ma = sum(self.closes) / self.slow_window
+
+        if fast_ma > slow_ma and not self.in_position:
+            self.log(f"BUY signal fast={fast_ma:.4f} slow={slow_ma:.4f} close={close:.4f}")
+            self.send_order("buy", self.trade_amount, 0)
+            self.in_position = True
+            self.entry_price = close
+            return
+
+        if fast_ma < slow_ma and self.in_position:
+            self.log(f"SELL signal fast={fast_ma:.4f} slow={slow_ma:.4f} close={close:.4f}")
+            self.send_order("sell", self.trade_amount, 0)
+            self.in_position = False
+            self.entry_price = None
 
     def on_order(self, order):
-        self.log(f"订单状态更新: {order['id']} - {order['status']}")
+        return
 
     def on_position(self, position):
-        # 处理持仓变动，检查止盈止损
-        pass
+        return
+
 
 if __name__ == "__main__":
-    import sys
-    config = json.loads(sys.argv[1])
+    config_str = sys.argv[1] if len(sys.argv) > 1 else "{}"
+    config = json.loads(config_str)
     strategy = MyStrategy(config)
     strategy.run()
 `;
@@ -173,10 +213,20 @@ const App: React.FC = () => {
   const [newStratName, setNewStratName] = useState('');
   const [newStratConfig, setNewStratConfig] = useState({
     symbol: 'BTC/USDT',
+    fast_window: 10,
+    slow_window: 30,
+    trade_amount: 0.01,
+    take_profit_pct: 0.03,
+    stop_loss_pct: 0.01,
+    trailing_stop_pct: 0.005,
+    max_hold_bars: 0,
+    cooldown_bars: 0,
+    max_concurrent_positions: 1,
+    warmup_bars: 100,
     position_pct: 10,
     take_profit: 5,
     stop_loss: 2,
-    close_yield: 10
+    close_yield: 10,
   });
   const [selectedTemplate, setSelectedTemplate] = useState<number>(0);
   
@@ -500,6 +550,10 @@ const App: React.FC = () => {
         const status = typeof d.status === 'string' ? d.status : '';
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] Position ${sym} amount=${amt} status=${status}`, ...prev.slice(0, 99)]);
         fetchPositions(positionStatus);
+      } else if (type === 'error') {
+        const msg = typeof parsed.error === 'string' ? parsed.error : '发生错误';
+        setLogs(prev => [`[${new Date().toLocaleTimeString()}] ERROR ${msg}`, ...prev.slice(0, 99)]);
+        showToast(msg, 'error');
       }
     };
     ws.current.onclose = () => {
@@ -564,10 +618,20 @@ const App: React.FC = () => {
       setNewStratName('');
       setNewStratConfig({
         symbol: 'BTC/USDT',
+        fast_window: 10,
+        slow_window: 30,
+        trade_amount: 0.01,
+        take_profit_pct: 0.03,
+        stop_loss_pct: 0.01,
+        trailing_stop_pct: 0.005,
+        max_hold_bars: 0,
+        cooldown_bars: 0,
+        max_concurrent_positions: 1,
+        warmup_bars: 100,
         position_pct: 10,
         take_profit: 5,
         stop_loss: 2,
-        close_yield: 10
+        close_yield: 10,
       });
       setSelectedTemplate(0);
       setActiveTab('strategies');
@@ -858,10 +922,20 @@ const App: React.FC = () => {
                 setNewStratName('');
                 setNewStratConfig({
                   symbol: 'BTC/USDT',
+                  fast_window: 10,
+                  slow_window: 30,
+                  trade_amount: 0.01,
+                  take_profit_pct: 0.03,
+                  stop_loss_pct: 0.01,
+                  trailing_stop_pct: 0.005,
+                  max_hold_bars: 0,
+                  cooldown_bars: 0,
+                  max_concurrent_positions: 1,
+                  warmup_bars: 100,
                   position_pct: 10,
                   take_profit: 5,
                   stop_loss: 2,
-                  close_yield: 10
+                  close_yield: 10,
                 });
                 setShowCreateModal(true);
               }}
@@ -893,9 +967,10 @@ const App: React.FC = () => {
                 </div>
                 <div className="text-sm text-gray-500 mb-8 space-y-1">
                   <p className="flex justify-between"><span>交易对</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{getCfgString(s.config, 'symbol', '')}</span></p>
-                  <p className="flex justify-between"><span>仓位占比</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{getCfgNumber(s.config, 'position_pct', 0)}%</span></p>
-                  <p className="flex justify-between"><span>止盈/止损</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{getCfgNumber(s.config, 'take_profit', 0)}% / {getCfgNumber(s.config, 'stop_loss', 0)}%</span></p>
-                  <p className="flex justify-between"><span>平仓收益</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{getCfgNumber(s.config, 'close_yield', 0)}%</span></p>
+                  <p className="flex justify-between"><span>均线</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{getCfgNumber(s.config, 'fast_window', 0)} / {getCfgNumber(s.config, 'slow_window', 0)}</span></p>
+                  <p className="flex justify-between"><span>下单数量</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{getCfgNumber(s.config, 'trade_amount', 0)}</span></p>
+                  <p className="flex justify-between"><span>止盈/止损/追踪</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{getCfgNumber(s.config, 'take_profit_pct', 0)} / {getCfgNumber(s.config, 'stop_loss_pct', 0)} / {getCfgNumber(s.config, 'trailing_stop_pct', 0)}</span></p>
+                  <p className="flex justify-between"><span>最大并发仓位</span> <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>{getCfgNumber(s.config, 'max_concurrent_positions', 1)}</span></p>
                 </div>
                 <div className="flex gap-2">
                   <button
@@ -938,10 +1013,20 @@ const App: React.FC = () => {
                           setStrategyToEdit(s); 
                           setNewStratConfig({
                             symbol: getCfgString(s.config, 'symbol', 'BTC/USDT'),
+                            fast_window: getCfgNumber(s.config, 'fast_window', 10),
+                            slow_window: getCfgNumber(s.config, 'slow_window', 30),
+                            trade_amount: getCfgNumber(s.config, 'trade_amount', 0.01),
+                            take_profit_pct: getCfgNumber(s.config, 'take_profit_pct', 0.03),
+                            stop_loss_pct: getCfgNumber(s.config, 'stop_loss_pct', 0.01),
+                            trailing_stop_pct: getCfgNumber(s.config, 'trailing_stop_pct', 0.005),
+                            max_hold_bars: getCfgNumber(s.config, 'max_hold_bars', 0),
+                            cooldown_bars: getCfgNumber(s.config, 'cooldown_bars', 0),
+                            max_concurrent_positions: getCfgNumber(s.config, 'max_concurrent_positions', 1),
+                            warmup_bars: getCfgNumber(s.config, 'warmup_bars', 100),
                             position_pct: getCfgNumber(s.config, 'position_pct', 10),
                             take_profit: getCfgNumber(s.config, 'take_profit', 5),
                             stop_loss: getCfgNumber(s.config, 'stop_loss', 2),
-                            close_yield: getCfgNumber(s.config, 'close_yield', 10)
+                            close_yield: getCfgNumber(s.config, 'close_yield', 10),
                           });
                           setShowEditConfigModal(true); 
                         }}
@@ -1255,38 +1340,98 @@ const App: React.FC = () => {
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-500 mb-2">仓位占比 (%)</label>
-                  <input 
-                    type="number" 
-                    value={newStratConfig.position_pct}
-                    onChange={(e) => setNewStratConfig({ ...newStratConfig, position_pct: Number(e.target.value) })}
+                  <label className="block text-sm font-medium text-gray-500 mb-2">快线窗口</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.fast_window}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, fast_window: Number(e.target.value) })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-500 mb-2">止盈比例 (%)</label>
-                  <input 
-                    type="number" 
-                    value={newStratConfig.take_profit}
-                    onChange={(e) => setNewStratConfig({ ...newStratConfig, take_profit: Number(e.target.value) })}
+                  <label className="block text-sm font-medium text-gray-500 mb-2">慢线窗口</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.slow_window}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, slow_window: Number(e.target.value) })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-500 mb-2">止损比例 (%)</label>
-                  <input 
-                    type="number" 
-                    value={newStratConfig.stop_loss}
-                    onChange={(e) => setNewStratConfig({ ...newStratConfig, stop_loss: Number(e.target.value) })}
+                  <label className="block text-sm font-medium text-gray-500 mb-2">下单数量</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.trade_amount}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, trade_amount: Number(e.target.value) })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-500 mb-2">平仓收益 (%)</label>
-                  <input 
-                    type="number" 
-                    value={newStratConfig.close_yield}
-                    onChange={(e) => setNewStratConfig({ ...newStratConfig, close_yield: Number(e.target.value) })}
+                  <label className="block text-sm font-medium text-gray-500 mb-2">预热 K 线</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.warmup_bars}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, warmup_bars: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">止盈 (0-1)</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.take_profit_pct}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, take_profit_pct: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">止损 (0-1)</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.stop_loss_pct}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, stop_loss_pct: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">追踪止损 (0-1)</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.trailing_stop_pct}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, trailing_stop_pct: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">最大并发仓位</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.max_concurrent_positions}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, max_concurrent_positions: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">最多持仓根数</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.max_hold_bars}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, max_hold_bars: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">冷却根数</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.cooldown_bars}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, cooldown_bars: Number(e.target.value) })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>
@@ -1375,49 +1520,109 @@ const App: React.FC = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-500 mb-2">交易对</label>
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={newStratConfig.symbol}
                     onChange={(e) => setNewStratConfig({ ...newStratConfig, symbol: e.target.value })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-500 mb-2">仓位占比 (%)</label>
-                  <input 
-                    type="number" 
-                    value={newStratConfig.position_pct}
-                    onChange={(e) => setNewStratConfig({ ...newStratConfig, position_pct: Number(e.target.value) })}
+                  <label className="block text-sm font-medium text-gray-500 mb-2">下单数量</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.trade_amount}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, trade_amount: Number(e.target.value) })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-500 mb-2">止盈比例 (%)</label>
-                  <input 
-                    type="number" 
-                    value={newStratConfig.take_profit}
-                    onChange={(e) => setNewStratConfig({ ...newStratConfig, take_profit: Number(e.target.value) })}
+                  <label className="block text-sm font-medium text-gray-500 mb-2">快线窗口</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.fast_window}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, fast_window: Number(e.target.value) })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-500 mb-2">止损比例 (%)</label>
-                  <input 
-                    type="number" 
-                    value={newStratConfig.stop_loss}
-                    onChange={(e) => setNewStratConfig({ ...newStratConfig, stop_loss: Number(e.target.value) })}
+                  <label className="block text-sm font-medium text-gray-500 mb-2">慢线窗口</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.slow_window}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, slow_window: Number(e.target.value) })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-500 mb-2">平仓收益 (%)</label>
-                  <input 
-                    type="number" 
-                    value={newStratConfig.close_yield}
-                    onChange={(e) => setNewStratConfig({ ...newStratConfig, close_yield: Number(e.target.value) })}
+                  <label className="block text-sm font-medium text-gray-500 mb-2">预热 K 线</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.warmup_bars}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, warmup_bars: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">最大并发仓位</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.max_concurrent_positions}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, max_concurrent_positions: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">止盈 (0-1)</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.take_profit_pct}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, take_profit_pct: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">止损 (0-1)</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.stop_loss_pct}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, stop_loss_pct: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">追踪止损 (0-1)</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.trailing_stop_pct}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, trailing_stop_pct: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">最多持仓根数</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.max_hold_bars}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, max_hold_bars: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">冷却根数</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.cooldown_bars}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, cooldown_bars: Number(e.target.value) })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>

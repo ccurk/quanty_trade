@@ -2,19 +2,24 @@ package auth
 
 import (
 	"errors"
-	"os"
+	"quanty_trade/internal/conf"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
-var jwtSecret = []byte(os.Getenv("JWT_SECRET"))
-
-func init() {
-	if len(jwtSecret) == 0 {
-		jwtSecret = []byte("your-default-secret-key-for-development")
+func jwtSecretBytes() []byte {
+	c, err := func() (conf.Config, error) {
+		if err := conf.Load(); err != nil {
+			return conf.Config{}, err
+		}
+		return conf.C(), nil
+	}()
+	if err == nil && c.Security.JWTSecret != "" {
+		return []byte(c.Security.JWTSecret)
 	}
+	return []byte("your-default-secret-key-for-development")
 }
 
 type Claims struct {
@@ -36,12 +41,12 @@ func GenerateToken(userID uint, username, role string) (string, error) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtSecret)
+	return token.SignedString(jwtSecretBytes())
 }
 
 func ParseToken(tokenStr string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		return jwtSecret, nil
+		return jwtSecretBytes(), nil
 	})
 
 	if err != nil {

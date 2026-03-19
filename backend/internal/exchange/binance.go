@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/models"
 	"quanty_trade/internal/secure"
@@ -94,6 +95,15 @@ func (b *BinanceExchange) getCred(ownerID uint) (binanceCred, error) {
 		}
 	}
 
+	c := conf.C().Exchange.Binance
+	if c.APIKey != "" && c.APISecret != "" {
+		return binanceCred{
+			APIKey:    c.APIKey,
+			APISecret: c.APISecret,
+			Testnet:   c.Testnet,
+		}, nil
+	}
+
 	envKey := os.Getenv("BINANCE_API_KEY")
 	envSecret := os.Getenv("BINANCE_API_SECRET")
 	if envKey != "" && envSecret != "" {
@@ -160,7 +170,7 @@ func (b *BinanceExchange) apiBaseURL(cred binanceCred) string {
 }
 
 func (b *BinanceExchange) wsAPIURL(cred binanceCred) string {
-	if v := os.Getenv("BINANCE_WSAPI_URL"); v != "" {
+	if v := conf.C().Exchange.Binance.WsAPIURL; v != "" {
 		return v
 	}
 	if cred.Testnet {

@@ -7,23 +7,22 @@ import (
 	"os"
 	"path/filepath"
 	"quanty_trade/internal/api"
+	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/strategy"
 	"quanty_trade/internal/ws"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
 
 func initLogging() {
-	logDir := os.Getenv("LOG_DIR")
+	c := conf.C()
+	logDir := c.Paths.LogsDir
 	if logDir == "" {
-		if wd, err := os.Getwd(); err == nil && filepath.Base(wd) == "backend" {
-			logDir = filepath.Join("..", "logs")
-		} else {
-			logDir = "logs"
-		}
+		logDir = conf.Path("logs")
 	}
 	_ = os.MkdirAll(logDir, 0o755)
 
@@ -45,10 +44,15 @@ func initLogging() {
 }
 
 func main() {
+	conf.MustLoad()
 	initLogging()
 
 	// Initialize Database
 	database.InitDB()
+
+	if mode := conf.C().Server.Mode; mode != "" {
+		gin.SetMode(mode)
+	}
 
 	r := gin.Default()
 	r.Use(api.APILogger()) // Global API Logging
@@ -58,7 +62,7 @@ func main() {
 	go hub.Run()
 
 	var ex exchange.Exchange
-	switch os.Getenv("EXCHANGE") {
+	switch conf.C().Exchange.Name {
 	case "binance":
 		ex = exchange.NewBinanceExchange()
 	default:
@@ -129,5 +133,6 @@ func main() {
 	})
 
 	log.Println("Backend starting on :8080")
-	r.Run(":8080")
+	addr := ":" + strconv.Itoa(conf.C().Server.Port)
+	r.Run(addr)
 }

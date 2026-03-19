@@ -8,12 +8,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"os"
+	"quanty_trade/internal/conf"
 	"strings"
 )
 
 func keyBytes() ([]byte, bool) {
-	raw := strings.TrimSpace(os.Getenv("CONFIG_ENCRYPTION_KEY"))
+	_ = conf.Load()
+	raw := strings.TrimSpace(conf.C().Security.ConfigEncryptionKey)
 	if raw == "" {
 		return nil, false
 	}

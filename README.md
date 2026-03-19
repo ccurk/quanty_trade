@@ -22,19 +22,38 @@
 ```bash
 cd backend
 go mod tidy
-# 默认使用 SQLite (本地 quanty.db)
-go run cmd/main.go
-
-# 连接云端 MySQL 数据库 (示例)
-export DB_TYPE=mysql
-export DB_HOST=your-cloud-db-host
-export DB_PORT=3306
-export DB_USER=your-user
-export DB_PASS=your-password
-export DB_NAME=quanty_trade
-go run cmd/main.go
+# 默认读取 conf/config.yaml（若不存在则读取 conf/config.example.yaml）
+go run ./cmd
 ```
 *默认管理员账号: `admin` / `admin123`*
+
+#### 使用 MySQL（推荐 docker）
+1) 启动 MySQL
+```bash
+docker run -d --name quanty-mysql \
+  -e MYSQL_ROOT_PASSWORD=rootpass \
+  -e MYSQL_DATABASE=quanty_trade \
+  -e MYSQL_USER=quanty \
+  -e MYSQL_PASSWORD=quantypass \
+  -p 3306:3306 \
+  mysql:8.0
+```
+
+2) 修改 conf/config.yaml
+```yaml
+db:
+  type: "mysql"
+  host: "127.0.0.1"
+  port: "3306"
+  user: "quanty"
+  pass: "quantypass"
+  name: "quanty_trade"
+```
+
+#### Binance 连接方式
+- 推荐：用户注册时提交 configs，后端加密保存到数据库（需要 security.config_encryption_key 或环境变量 CONFIG_ENCRYPTION_KEY）
+- 可选：直接在 conf/config.yaml 的 exchange.binance.api_key/api_secret 配置（建议只在本地开发使用，文件已加入 .gitignore）
+- 仍支持环境变量回退：BINANCE_API_KEY / BINANCE_API_SECRET / BINANCE_TESTNET
 
 ### 2. 运行前端
 ```bash

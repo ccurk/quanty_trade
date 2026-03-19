@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"quanty_trade/internal/auth"
+	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/models"
@@ -510,11 +511,58 @@ type SaveTemplateRequest struct {
 	IsDraft     bool   `json:"is_draft"`
 }
 
+func validateStrategyCode(code string) []string {
+	c := strings.ToLower(code)
+	missing := make([]string, 0)
+
+	if !strings.Contains(c, "basestrategy") {
+		missing = append(missing, "继承 BaseStrategy")
+	}
+	if !strings.Contains(c, "def on_candle") {
+		missing = append(missing, "def on_candle")
+	}
+	if !strings.Contains(c, "def on_order") {
+		missing = append(missing, "def on_order")
+	}
+
+	hasOpen := strings.Contains(c, ".buy(") ||
+		strings.Contains(c, "send_order(\"buy") ||
+		strings.Contains(c, "send_order('buy")
+	if !hasOpen {
+		missing = append(missing, "开仓下单 buy()/send_order(buy)")
+	}
+
+	hasClose := strings.Contains(c, ".close_position(") ||
+		strings.Contains(c, ".sell(") ||
+		strings.Contains(c, "send_order(\"sell") ||
+		strings.Contains(c, "send_order('sell")
+	if !hasClose {
+		missing = append(missing, "平仓 close_position()/sell()/send_order(sell)")
+	}
+
+	if !strings.Contains(c, "strategy.run(") {
+		missing = append(missing, "main 中调用 strategy.run()")
+	}
+
+	return missing
+}
+
 func SaveTemplate(c *gin.Context) {
 	var req SaveTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	if !req.IsDraft {
+		missing := validateStrategyCode(req.Code)
+		if len(missing) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   fmt.Sprintf("策略模板缺少必备实现: %s", strings.Join(missing, "、")),
+				"missing": missing,
+			})
+			return
+		}
 	}
 
 	userID, _ := c.Get("user_id")
@@ -527,9 +575,9 @@ func SaveTemplate(c *gin.Context) {
 	filename := fmt.Sprintf("%s_%d.py", req.Name, userID.(uint))
 	filename = strings.ReplaceAll(filename, " ", "_")
 	filename = filepath.Base(filename)
-	strategiesDir := os.Getenv("STRATEGIES_DIR")
+	strategiesDir := conf.C().Paths.StrategiesDir
 	if strategiesDir == "" {
-		strategiesDir = filepath.Join("..", "strategies")
+		strategiesDir = conf.Path("strategies")
 	}
 	absStrategiesDir, err := filepath.Abs(strategiesDir)
 	if err != nil {
@@ -601,6 +649,14 @@ func TestCode(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"valid": false,
 			"error": stderr.String(),
+		})
+		return
+	}
+
+	if missing := validateStrategyCode(req.Code); len(missing) > 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"valid": false,
+			"error": fmt.Sprintf("策略模板缺少必备实现: %s", strings.Join(missing, "、")),
 		})
 		return
 	}

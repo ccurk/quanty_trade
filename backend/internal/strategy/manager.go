@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"os/exec"
 	"path/filepath"
+	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/models"
@@ -32,7 +32,7 @@ func resolveStrategyPath(p string) (string, error) {
 	if filepath.IsAbs(p) {
 		return p, nil
 	}
-	base := os.Getenv("STRATEGIES_DIR")
+	base := conf.C().Paths.StrategiesDir
 	if base == "" {
 		return filepath.Abs(p)
 	}
@@ -178,6 +178,7 @@ func (m *Manager) StartStrategy(id string) error {
 		return nil
 	}
 
+	log.Printf("[STRATEGY START] id=%s owner=%d name=%s path=%s", inst.ID, inst.OwnerID, inst.Name, inst.Path)
 	configJSON, _ := json.Marshal(inst.Config)
 
 	absPath, err := resolveStrategyPath(inst.Path)
@@ -236,19 +237,52 @@ func (m *Manager) StartStrategy(id string) error {
 			}
 		}
 		if candles, err := inst.exchange.FetchCandles(symbol, "1m", warmup); err == nil && len(candles) > 0 {
+			log.Printf("[STRATEGY WARMUP] id=%s owner=%d symbol=%s bars=%d", inst.ID, inst.OwnerID, symbol, len(candles))
 			for _, candle := range candles {
 				_ = inst.SendData("candle", candle)
 			}
+		} else if err != nil {
+			log.Printf("[STRATEGY WARMUP ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, symbol, err)
 		}
 
-		go inst.exchange.SubscribeCandles(symbol, func(candle exchange.Candle) {
-			inst.SendData("candle", candle)
-			inst.hub.BroadcastJSON(map[string]interface{}{
-				"type":        "candle",
-				"strategy_id": inst.ID,
-				"owner_id":    inst.OwnerID,
-				"data":        candle,
-			})
+		go func() {
+			if err := inst.exchange.SubscribeCandles(symbol, func(candle exchange.Candle) {
+				inst.SendData("candle", candle)
+				inst.hub.BroadcastJSON(map[string]interface{}{
+					"type":        "candle",
+					"strategy_id": inst.ID,
+					"owner_id":    inst.OwnerID,
+					"data":        candle,
+				})
+			}); err != nil {
+				log.Printf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, symbol, err)
+				database.DB.Create(&models.StrategyLog{
+					StrategyID: inst.ID,
+					Level:      "error",
+					Message:    fmt.Sprintf("SubscribeCandles error: %v", err),
+					CreatedAt:  time.Now(),
+				})
+				inst.hub.BroadcastJSON(map[string]interface{}{
+					"type":        "error",
+					"strategy_id": inst.ID,
+					"owner_id":    inst.OwnerID,
+					"error":       fmt.Sprintf("SubscribeCandles error: %v", err),
+				})
+			}
+		}()
+	} else {
+		log.Printf("[STRATEGY START WARN] id=%s owner=%d reason=no symbol in config", inst.ID, inst.OwnerID)
+		database.DB.Create(&models.StrategyLog{
+			StrategyID: inst.ID,
+			Level:      "error",
+			Message:    "No symbol in config; strategy will not receive market data",
+			CreatedAt:  time.Now(),
+		})
+		inst.hub.BroadcastJSON(map[string]interface{}{
+			"type":        "error",
+			"strategy_id": inst.ID,
+			"owner_id":    inst.OwnerID,
+			"error":       "No symbol in config; strategy will not receive market data",
 		})
 	}
 
@@ -334,7 +368,20 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 func (inst *StrategyInstance) readStderr(stderr io.ReadCloser) {
 	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
-		log.Printf("[%s ERROR] %s", inst.Name, scanner.Text())
+		msg := scanner.Text()
+		log.Printf("[%s ERROR] %s", inst.Name, msg)
+		database.DB.Create(&models.StrategyLog{
+			StrategyID: inst.ID,
+			Level:      "error",
+			Message:    msg,
+			CreatedAt:  time.Now(),
+		})
+		inst.hub.BroadcastJSON(map[string]interface{}{
+			"type":        "error",
+			"strategy_id": inst.ID,
+			"owner_id":    inst.OwnerID,
+			"error":       msg,
+		})
 	}
 }
 
@@ -469,22 +516,43 @@ func (inst *StrategyInstance) readStdout() {
 					Where("owner_id = ? AND strategy_id = ? AND side = ? AND status IN ?", inst.OwnerID, inst.ID, "buy", []string{"requested", "new", "partially_filled"}).
 					Count(&inflightBuy)
 				if int(openCount) >= maxPos {
+					reason := fmt.Sprintf("Max concurrent positions reached (open=%d max=%d)", openCount, maxPos)
+					log.Printf("[ORDER BLOCK] strategy=%s owner=%d symbol=%s side=%s amount=%v price=%v reason=%s", inst.ID, inst.OwnerID, symbol, normalizedSide, amount, price, reason)
+					database.DB.Create(&models.StrategyLog{
+						StrategyID: inst.ID,
+						Level:      "error",
+						Message:    reason,
+						CreatedAt:  time.Now(),
+					})
 					inst.hub.BroadcastJSON(map[string]interface{}{
-						"type":  "error",
-						"error": "Max concurrent positions reached",
+						"type":        "error",
+						"strategy_id": inst.ID,
+						"owner_id":    inst.OwnerID,
+						"error":       reason,
 					})
 					continue
 				}
 				if int(openCount+inflightBuy) >= maxPos {
+					reason := fmt.Sprintf("Max concurrent positions reached (open=%d inflight_buy=%d max=%d)", openCount, inflightBuy, maxPos)
+					log.Printf("[ORDER BLOCK] strategy=%s owner=%d symbol=%s side=%s amount=%v price=%v reason=%s", inst.ID, inst.OwnerID, symbol, normalizedSide, amount, price, reason)
+					database.DB.Create(&models.StrategyLog{
+						StrategyID: inst.ID,
+						Level:      "error",
+						Message:    reason,
+						CreatedAt:  time.Now(),
+					})
 					inst.hub.BroadcastJSON(map[string]interface{}{
-						"type":  "error",
-						"error": "Max concurrent positions reached",
+						"type":        "error",
+						"strategy_id": inst.ID,
+						"owner_id":    inst.OwnerID,
+						"error":       reason,
 					})
 					continue
 				}
 			}
 
 			clientOrderID := fmt.Sprintf("qt_%s_%d", strings.ReplaceAll(inst.ID, "-", ""), time.Now().UnixNano())
+			log.Printf("[ORDER REQUEST] strategy=%s owner=%d client_order_id=%s symbol=%s side=%s amount=%v price=%v", inst.ID, inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price)
 			database.DB.Create(&models.StrategyOrder{
 				StrategyID:   inst.ID,
 				StrategyName: inst.Name,
@@ -510,9 +578,18 @@ func (inst *StrategyInstance) readStdout() {
 			if err != nil {
 				database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
 					Updates(map[string]interface{}{"status": "failed", "updated_at": time.Now()})
+				log.Printf("[ORDER ERROR] strategy=%s owner=%d client_order_id=%s symbol=%s side=%s amount=%v price=%v err=%v", inst.ID, inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price, err)
+				database.DB.Create(&models.StrategyLog{
+					StrategyID: inst.ID,
+					Level:      "error",
+					Message:    fmt.Sprintf("Failed to place order: %v", err),
+					CreatedAt:  time.Now(),
+				})
 				inst.hub.BroadcastJSON(map[string]interface{}{
-					"type":  "error",
-					"error": fmt.Sprintf("Failed to place order: %v", err),
+					"type":        "error",
+					"strategy_id": inst.ID,
+					"owner_id":    inst.OwnerID,
+					"error":       fmt.Sprintf("Failed to place order: %v", err),
 				})
 			} else {
 				database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
@@ -523,6 +600,7 @@ func (inst *StrategyInstance) readStdout() {
 						"avg_price":         order.Price,
 						"updated_at":        time.Now(),
 					})
+				log.Printf("[ORDER OK] strategy=%s owner=%d client_order_id=%s exchange_order_id=%s status=%s filled_qty=%v avg_price=%v", inst.ID, inst.OwnerID, clientOrderID, order.ID, order.Status, order.Amount, order.Price)
 				inst.hub.BroadcastJSON(map[string]interface{}{
 					"type": "order",
 					"data": order,

@@ -3,8 +3,8 @@ package database
 import (
 	"fmt"
 	"log"
-	"os"
 	"quanty_trade/internal/auth"
+	"quanty_trade/internal/conf"
 	"quanty_trade/internal/models"
 
 	"gorm.io/driver/mysql"
@@ -29,20 +29,25 @@ var DB *gorm.DB
 // - If ADMIN_PASSWORD is not set and admin user does not exist: defaults to "admin123"
 func InitDB() {
 	var err error
-	dbType := os.Getenv("DB_TYPE")
+	c := conf.C()
+	dbType := c.DB.Type
 
 	if dbType == "mysql" {
 		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
-			os.Getenv("DB_USER"),
-			os.Getenv("DB_PASS"),
-			os.Getenv("DB_HOST"),
-			os.Getenv("DB_PORT"),
-			os.Getenv("DB_NAME"),
+			c.DB.User,
+			c.DB.Pass,
+			c.DB.Host,
+			c.DB.Port,
+			c.DB.Name,
 		)
 		DB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
 		log.Println("Connecting to MySQL database...")
 	} else {
-		DB, err = gorm.Open(sqlite.Open("quanty.db"), &gorm.Config{})
+		path := c.DB.SqlitePath
+		if path == "" {
+			path = "quanty.db"
+		}
+		DB, err = gorm.Open(sqlite.Open(path), &gorm.Config{})
 		log.Println("Connecting to SQLite database (local)...")
 	}
 
@@ -67,11 +72,11 @@ func InitDB() {
 	}
 	log.Println("Database schema is up to date.")
 
-	adminUsername := os.Getenv("ADMIN_USERNAME")
+	adminUsername := c.Admin.Username
 	if adminUsername == "" {
 		adminUsername = "admin"
 	}
-	adminPassword := os.Getenv("ADMIN_PASSWORD")
+	adminPassword := c.Admin.Password
 
 	var admin models.User
 	if err := DB.Where("username = ?", adminUsername).First(&admin).Error; err != nil {

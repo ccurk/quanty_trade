@@ -1,0 +1,33 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  mode: "debug"
+
+paths:
+  logs_dir: "logs"
+  strategies_dir: "strategies"
+
+db:
+  type: "sqlite"
+  sqlite_path: "backend/quanty.db"
+  user: ""
+  pass: ""
+  host: "127.0.0.1"
+  port: "3306"
+  name: "quanty_trade"
+
+admin:
+  username: "admin"
+  password: ""
+
+security:
+  jwt_secret: ""
+  config_encryption_key: ""
+
+exchange:
+  name: "mock"
+  binance:
+    api_key: ""
+    api_secret: ""
+    testnet: false
+    wsapi_url: "wss://ws-api.binance.com:443/ws-api/v3"
