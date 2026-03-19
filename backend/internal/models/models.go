@@ -256,6 +256,10 @@ type StrategyPosition struct {
 	Amount float64 `json:"amount"`
 	// AvgPrice is the volume-weighted average entry price.
 	AvgPrice float64 `json:"avg_price"`
+	// RealizedPnL is the realized profit/loss accumulated on closes.
+	RealizedPnL float64 `json:"realized_pnl"`
+	// RealizedNotional is the accumulated entry notional used for return calculation.
+	RealizedNotional float64 `json:"realized_notional"`
 	// Status is open/closed.
 	Status string `gorm:"type:varchar(16);index" json:"status"`
 	// OpenTime is when the position was first opened.

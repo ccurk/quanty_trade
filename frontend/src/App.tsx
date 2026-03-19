@@ -39,11 +39,33 @@ interface Position {
   symbol: string;
   amount: number;
   price: number;
+  current_price?: number;
+  unrealized_pnl?: number;
+  return_rate?: number;
   strategy_name: string;
   exchange_name: string;
   status: string;
   open_time: string;
   close_time?: string;
+}
+
+interface PnLPeriodSummary {
+  start_time: string;
+  gross_profit: number;
+  gross_loss: number;
+  realized_pnl: number;
+  realized_notional: number;
+  realized_return_pct: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+}
+
+interface PnLSummaryResponse {
+  updated_at: string;
+  unrealized_pnl: number;
+  day: PnLPeriodSummary;
+  week: PnLPeriodSummary;
+  month: PnLPeriodSummary;
 }
 
 interface EquityPoint {
@@ -189,7 +211,7 @@ const App: React.FC = () => {
   const [positionStatus, setPositionStatus] = useState<'active' | 'closed'>('active');
   const [logs, setLogs] = useState<string[]>([]);
   const [users, setUsers] = useState<User[]>([]);
-  const [activeTab, setActiveTab] = useState<'strategies' | 'templates' | 'positions' | 'logs' | 'square' | 'admin' | 'develop'>('strategies');
+  const [activeTab, setActiveTab] = useState<'strategies' | 'templates' | 'positions' | 'stats' | 'logs' | 'square' | 'admin' | 'develop'>('strategies');
   
   // Search States
   const [stratSearch, setStratSearch] = useState('');
@@ -232,6 +254,7 @@ const App: React.FC = () => {
     close_yield: 10,
   });
   const [selectedTemplate, setSelectedTemplate] = useState<number>(0);
+  const [pnlSummary, setPnlSummary] = useState<PnLSummaryResponse | null>(null);
   
   // Backtest State
   const [showBacktestModal, setShowBacktestModal] = useState(false);
@@ -319,17 +342,36 @@ const App: React.FC = () => {
   }, [token]);
 
   useEffect(() => {
+    let pnlTimer: number | undefined;
     if (user && token) {
       fetchStrategies();
       fetchTemplates();
       fetchPositions(positionStatus);
+      fetchPnLSummary();
       if (user.role === 'admin') fetchUsers();
       connectWS();
+      pnlTimer = window.setInterval(() => {
+        fetchPnLSummary();
+      }, 5000);
     }
     return () => {
       if (ws.current) ws.current.close();
+      if (pnlTimer) window.clearInterval(pnlTimer);
     };
   }, [user, token, positionStatus]);
+
+  useEffect(() => {
+    let posTimer: number | undefined;
+    if (user && token && activeTab === 'positions' && positionStatus === 'active') {
+      fetchPositions('active');
+      posTimer = window.setInterval(() => {
+        fetchPositions('active');
+      }, 3000);
+    }
+    return () => {
+      if (posTimer) window.clearInterval(posTimer);
+    };
+  }, [user, token, activeTab, positionStatus]);
 
   const fetchUsers = async () => {
     try {
@@ -478,12 +520,22 @@ const App: React.FC = () => {
     }
   };
 
+  const fetchPnLSummary = async () => {
+    try {
+      const res = await axios.get('/api/stats/pnl');
+      setPnlSummary(res.data);
+    } catch (err) {
+      console.error('Failed to fetch pnl summary', err);
+    }
+  };
+
   const closePosition = async (symbol: string) => {
     customConfirm('手动平仓', `确定要手动平仓 ${symbol} 吗？此操作将立即在交易所下单。`, async () => {
       try {
         await axios.post(`/api/positions/close?symbol=${symbol}`);
         showToast(`已请求平仓 ${symbol}`, 'success');
         fetchPositions(positionStatus);
+        fetchPnLSummary();
       } catch (err: unknown) {
         showToast(getAxiosErrorMessage(err) || '平仓失败', 'error');
       }
@@ -502,6 +554,7 @@ const App: React.FC = () => {
 
       if (type === 'order') {
         fetchPositions(positionStatus); // Refresh positions on order
+        fetchPnLSummary();
       } else if (type === 'log') {
         const data = parsed.data;
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${typeof data === 'string' ? data : ''}`, ...prev.slice(0, 99)]);
@@ -514,6 +567,7 @@ const App: React.FC = () => {
         const lastPrice = typeof d.last_price === 'number' ? d.last_price : '';
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] EXEC ${symbol} ${side} ${status} qty=${executedQty} price=${lastPrice}`, ...prev.slice(0, 99)]);
         fetchPositions(positionStatus);
+        fetchPnLSummary();
       } else if (type === 'backtest_progress') {
         const msgUserID = parsed.user_id;
         if (user && typeof msgUserID === 'number' && msgUserID === user.id) {
@@ -553,6 +607,7 @@ const App: React.FC = () => {
         const status = typeof d.status === 'string' ? d.status : '';
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] Position ${sym} amount=${amt} status=${status}`, ...prev.slice(0, 99)]);
         fetchPositions(positionStatus);
+        fetchPnLSummary();
       } else if (type === 'error') {
         const msg = typeof parsed.error === 'string' ? parsed.error : '发生错误';
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] ERROR ${msg}`, ...prev.slice(0, 99)]);
@@ -751,6 +806,7 @@ const App: React.FC = () => {
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'develop'} onClick={() => { setActiveTab('develop'); setIsSidebarOpen(false); }} icon={<Code size={20} />} label="代码开发" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'square'} onClick={() => { setActiveTab('square'); setIsSidebarOpen(false); }} icon={<ShoppingBag size={20} />} label="策略广场" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'positions'} onClick={() => { setActiveTab('positions'); setIsSidebarOpen(false); }} icon={<List size={20} />} label="仓位管理" />
+          <NavItem isDarkMode={isDarkMode} active={activeTab === 'stats'} onClick={() => { setActiveTab('stats'); setIsSidebarOpen(false); }} icon={<Activity size={20} />} label="统计" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'logs'} onClick={() => { setActiveTab('logs'); setIsSidebarOpen(false); }} icon={<Terminal size={20} />} label="系统日志" />
           {user.role === 'admin' && (
             <NavItem isDarkMode={isDarkMode} active={activeTab === 'admin'} onClick={() => { setActiveTab('admin'); setIsSidebarOpen(false); }} icon={<ShieldCheck size={20} />} label="系统管理" />
@@ -820,6 +876,7 @@ const App: React.FC = () => {
               {activeTab === 'develop' && '策略代码开发'}
               {activeTab === 'square' && '策略广场'}
               {activeTab === 'positions' && '实时持仓'}
+              {activeTab === 'stats' && '收益统计'}
               {activeTab === 'logs' && '实时日志'}
               {activeTab === 'admin' && '用户管理'}
             </h2>
@@ -852,7 +909,7 @@ const App: React.FC = () => {
               </div>
             )}
             <button 
-              onClick={() => { fetchStrategies(); fetchTemplates(); fetchPositions(positionStatus); if (user.role === 'admin') fetchUsers(); }} 
+              onClick={() => { fetchStrategies(); fetchTemplates(); fetchPositions(positionStatus); fetchPnLSummary(); if (user.role === 'admin') fetchUsers(); }} 
               className={`p-2 rounded-lg transition shadow-sm border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
               title="立即刷新：手动同步后端最新策略、持仓和模板数据"
             >
@@ -1210,6 +1267,9 @@ const App: React.FC = () => {
                     <th className="px-4 md:px-6 py-4">交易所</th>
                     <th className="px-4 md:px-6 py-4">数量</th>
                     <th className="px-4 md:px-6 py-4">均价</th>
+                    <th className="px-4 md:px-6 py-4">最新价</th>
+                    <th className="px-4 md:px-6 py-4">未实现盈亏</th>
+                    <th className="px-4 md:px-6 py-4">回报率</th>
                     <th className="px-4 md:px-6 py-4">{positionStatus === 'active' ? '开仓时间' : '平仓时间'}</th>
                     <th className="px-4 md:px-6 py-4">状态</th>
                     <th className="px-4 md:px-6 py-4 text-right">操作</th>
@@ -1227,6 +1287,15 @@ const App: React.FC = () => {
                       <td className="px-4 md:px-6 py-4 text-sm text-gray-500">{p.exchange_name}</td>
                       <td className="px-4 md:px-6 py-4 font-mono">{p.amount}</td>
                       <td className="px-4 md:px-6 py-4 font-mono">${p.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                      <td className="px-4 md:px-6 py-4 font-mono">
+                        {typeof p.current_price === 'number' && p.current_price > 0 ? `$${p.current_price.toLocaleString(undefined, { minimumFractionDigits: 4 })}` : '--'}
+                      </td>
+                      <td className={`px-4 md:px-6 py-4 font-mono ${typeof p.unrealized_pnl === 'number' ? (p.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500') : ''}`}>
+                        {typeof p.unrealized_pnl === 'number' ? `$${p.unrealized_pnl.toFixed(2)}` : '--'}
+                      </td>
+                      <td className={`px-4 md:px-6 py-4 font-mono ${typeof p.return_rate === 'number' ? (p.return_rate >= 0 ? 'text-green-500' : 'text-red-500') : ''}`}>
+                        {typeof p.return_rate === 'number' ? `${p.return_rate.toFixed(2)}%` : '--'}
+                      </td>
                       <td className="px-4 md:px-6 py-4 text-xs text-gray-500 font-mono">
                         {new Date(positionStatus === 'active' ? p.open_time : (p.close_time || '')).toLocaleString()}
                       </td>
@@ -1259,6 +1328,50 @@ const App: React.FC = () => {
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'stats' && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div className="text-sm text-gray-500">
+                更新时间：{pnlSummary ? new Date(pnlSummary.updated_at).toLocaleString() : '--'}
+              </div>
+              <button
+                onClick={fetchPnLSummary}
+                className={`px-4 py-2 rounded-xl font-bold transition shadow-sm border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
+              >
+                刷新统计
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {(['day', 'week', 'month'] as const).map((k) => {
+                const p = pnlSummary ? pnlSummary[k] : null;
+                const title = k === 'day' ? '今日统计' : k === 'week' ? '本周统计' : '本月统计';
+                const total = p ? p.total_pnl : 0;
+                return (
+                  <div key={k} className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                    <div className="flex justify-between items-center mb-3">
+                      <div className="font-bold">{title}</div>
+                      <div className={`font-mono font-bold ${total >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        {p ? `$${total.toFixed(2)}` : '--'}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div className="text-gray-500">总收入</div>
+                      <div className="font-mono">{p ? `$${p.gross_profit.toFixed(2)}` : '--'}</div>
+                      <div className="text-gray-500">总盈亏</div>
+                      <div className={`font-mono ${p && p.realized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `$${p.realized_pnl.toFixed(2)}` : '--'}</div>
+                      <div className="text-gray-500">未实现</div>
+                      <div className={`font-mono ${p && p.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `$${p.unrealized_pnl.toFixed(2)}` : '--'}</div>
+                      <div className="text-gray-500">回报率</div>
+                      <div className={`font-mono ${p && p.realized_return_pct >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `${p.realized_return_pct.toFixed(2)}%` : '--'}</div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

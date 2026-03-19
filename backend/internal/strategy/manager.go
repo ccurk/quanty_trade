@@ -310,16 +310,18 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 			return
 		}
 		pos = models.StrategyPosition{
-			StrategyID:   strategyID,
-			StrategyName: strategyName,
-			OwnerID:      ownerID,
-			Exchange:     exchangeName,
-			Symbol:       symbol,
-			Amount:       executedQty,
-			AvgPrice:     avgPrice,
-			Status:       "open",
-			OpenTime:     eventTime,
-			UpdatedAt:    now,
+			StrategyID:       strategyID,
+			StrategyName:     strategyName,
+			OwnerID:          ownerID,
+			Exchange:         exchangeName,
+			Symbol:           symbol,
+			Amount:           executedQty,
+			AvgPrice:         avgPrice,
+			RealizedPnL:      0,
+			RealizedNotional: 0,
+			Status:           "open",
+			OpenTime:         eventTime,
+			UpdatedAt:        now,
 		}
 		database.DB.Create(&pos)
 		if hub != nil {
@@ -346,16 +348,23 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 
 	if side == "sell" {
 		newAmt := pos.Amount - executedQty
+		realized := executedQty * (avgPrice - pos.AvgPrice)
+		newRealizedPnL := pos.RealizedPnL + realized
+		newRealizedNotional := pos.RealizedNotional + (executedQty * pos.AvgPrice)
 		if newAmt <= 0 {
 			database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
 				Updates(map[string]interface{}{
-					"amount":     0,
-					"status":     "closed",
-					"close_time": eventTime,
-					"updated_at": now,
+					"amount":            0,
+					"realized_pnl":      newRealizedPnL,
+					"realized_notional": newRealizedNotional,
+					"status":            "closed",
+					"close_time":        eventTime,
+					"updated_at":        now,
 				})
 			if hub != nil {
 				pos.Amount = 0
+				pos.RealizedPnL = newRealizedPnL
+				pos.RealizedNotional = newRealizedNotional
 				pos.Status = "closed"
 				pos.CloseTime = eventTime
 				hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
@@ -363,9 +372,11 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 			return
 		}
 		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
-			Updates(map[string]interface{}{"amount": newAmt, "updated_at": now})
+			Updates(map[string]interface{}{"amount": newAmt, "realized_pnl": newRealizedPnL, "realized_notional": newRealizedNotional, "updated_at": now})
 		if hub != nil {
 			pos.Amount = newAmt
+			pos.RealizedPnL = newRealizedPnL
+			pos.RealizedNotional = newRealizedNotional
 			hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
 		}
 	}

@@ -46,6 +46,12 @@ type Position struct {
 	Amount float64 `json:"amount"`
 	// Price is the average entry price (platform-derived).
 	Price float64 `json:"price"`
+	// CurrentPrice is the latest mark/last price used for PnL display.
+	CurrentPrice float64 `json:"current_price"`
+	// UnrealizedPnL is the unrealized profit/loss for active positions.
+	UnrealizedPnL float64 `json:"unrealized_pnl"`
+	// ReturnRate is the unrealized return rate in percent (PnL / entry value * 100).
+	ReturnRate float64 `json:"return_rate"`
 	// StrategyName is the strategy instance name that owns this position.
 	StrategyName string `json:"strategy_name"`
 	// ExchangeName is the exchange name (e.g. Binance).

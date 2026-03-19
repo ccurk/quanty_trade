@@ -275,7 +275,7 @@ func ListPositions(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	userRole, _ := c.Get("role")
 
-	if status == "active" && userRole != "admin" {
+	if status == "active" {
 		if bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
 			exPos, err := bx.FetchPositions(userID.(uint), "active")
 			if err != nil {
@@ -392,6 +392,88 @@ func ListPositions(c *gin.Context) {
 	c.JSON(http.StatusOK, positions)
 }
 
+type PnLPeriodSummary struct {
+	StartTime         time.Time `json:"start_time"`
+	GrossProfit       float64   `json:"gross_profit"`
+	GrossLoss         float64   `json:"gross_loss"`
+	RealizedPnL       float64   `json:"realized_pnl"`
+	RealizedNotional  float64   `json:"realized_notional"`
+	RealizedReturnPct float64   `json:"realized_return_pct"`
+	UnrealizedPnL     float64   `json:"unrealized_pnl"`
+	TotalPnL          float64   `json:"total_pnl"`
+}
+
+type PnLSummaryResponse struct {
+	UpdatedAt     time.Time        `json:"updated_at"`
+	UnrealizedPnL float64          `json:"unrealized_pnl"`
+	Day           PnLPeriodSummary `json:"day"`
+	Week          PnLPeriodSummary `json:"week"`
+	Month         PnLPeriodSummary `json:"month"`
+}
+
+func GetPnLSummary(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	uid := userID.(uint)
+
+	now := time.Now()
+	loc := now.Location()
+	startDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	weekOffset := (int(now.Weekday()) + 6) % 7
+	startWeek := startDay.AddDate(0, 0, -weekOffset)
+	startMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
+
+	unrealized := 0.0
+	if bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		if ps, err := bx.FetchPositions(uid, "active"); err == nil {
+			for _, p := range ps {
+				unrealized += p.UnrealizedPnL
+			}
+		}
+	}
+
+	period := func(start time.Time) PnLPeriodSummary {
+		var row struct {
+			GrossProfit      float64
+			GrossLoss        float64
+			RealizedPnL      float64
+			RealizedNotional float64
+		}
+		_ = database.DB.Model(&models.StrategyPosition{}).
+			Select(`
+				COALESCE(SUM(CASE WHEN realized_pnl > 0 THEN realized_pnl ELSE 0 END), 0) AS gross_profit,
+				COALESCE(SUM(CASE WHEN realized_pnl < 0 THEN realized_pnl ELSE 0 END), 0) AS gross_loss,
+				COALESCE(SUM(realized_pnl), 0) AS realized_pnl,
+				COALESCE(SUM(realized_notional), 0) AS realized_notional
+			`).
+			Where("owner_id = ? AND status = ? AND close_time >= ?", uid, "closed", start).
+			Scan(&row).Error
+
+		ret := 0.0
+		if row.RealizedNotional > 0 {
+			ret = (row.RealizedPnL / row.RealizedNotional) * 100
+		}
+		return PnLPeriodSummary{
+			StartTime:         start,
+			GrossProfit:       row.GrossProfit,
+			GrossLoss:         row.GrossLoss,
+			RealizedPnL:       row.RealizedPnL,
+			RealizedNotional:  row.RealizedNotional,
+			RealizedReturnPct: ret,
+			UnrealizedPnL:     unrealized,
+			TotalPnL:          row.RealizedPnL + unrealized,
+		}
+	}
+
+	resp := PnLSummaryResponse{
+		UpdatedAt:     now,
+		UnrealizedPnL: unrealized,
+		Day:           period(startDay),
+		Week:          period(startWeek),
+		Month:         period(startMonth),
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
 func ClosePosition(c *gin.Context) {
 	// ClosePosition closes the latest open position for the user and symbol by placing a sell market order.
 	// The order is persisted into StrategyOrder first, then updated after PlaceOrder returns.
@@ -403,13 +485,120 @@ func ClosePosition(c *gin.Context) {
 
 	userID, _ := c.Get("user_id")
 	if bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
-		if err := bx.ClosePosition(symbol, userID.(uint)); err != nil {
+		uid := userID.(uint)
+
+		var existing models.StrategyPosition
+		hasExisting := database.DB.Where("owner_id = ? AND symbol = ? AND status = ?", uid, symbol, "open").
+			Order("open_time desc").
+			First(&existing).Error == nil
+
+		findStrategyForSymbol := func(sym string) (string, string) {
+			var instRows []models.StrategyInstance
+			_ = database.DB.Where("owner_id = ?", uid).Order("updated_at desc").Find(&instRows).Error
+			want := exchange.NormalizeSymbol(sym)
+			for _, si := range instRows {
+				var cfg map[string]interface{}
+				if err := json.Unmarshal([]byte(si.Config), &cfg); err != nil {
+					continue
+				}
+				if v, ok := cfg["symbol"].(string); ok && exchange.NormalizeSymbol(v) == want {
+					return si.ID, si.Name
+				}
+			}
+			return "", ""
+		}
+
+		order, entryPrice, signedAmt, err := bx.ClosePositionOrder(symbol, uid)
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		database.DB.Model(&models.StrategyPosition{}).
-			Where("owner_id = ? AND symbol = ? AND status = ?", userID.(uint), symbol, "open").
-			Updates(map[string]interface{}{"status": "closed", "close_time": time.Now(), "updated_at": time.Now()})
+		if order == nil {
+			c.JSON(http.StatusOK, gin.H{"status": "success"})
+			return
+		}
+
+		strategyID := ""
+		strategyName := ""
+		openTime := time.Now()
+		prevRealizedPnL := 0.0
+		prevRealizedNotional := 0.0
+		if hasExisting {
+			strategyID = existing.StrategyID
+			strategyName = existing.StrategyName
+			openTime = existing.OpenTime
+			prevRealizedPnL = existing.RealizedPnL
+			prevRealizedNotional = existing.RealizedNotional
+			if entryPrice == 0 {
+				entryPrice = existing.AvgPrice
+			}
+		} else {
+			strategyID, strategyName = findStrategyForSymbol(symbol)
+		}
+		if strategyID == "" {
+			strategyID = "manual"
+			strategyName = "manual"
+		}
+
+		qty := order.Amount
+		exitPrice := order.Price
+		realized := 0.0
+		if signedAmt >= 0 {
+			realized = qty * (exitPrice - entryPrice)
+		} else {
+			realized = qty * (entryPrice - exitPrice)
+		}
+		realizedNotional := qty * entryPrice
+
+		now := time.Now()
+		database.DB.Create(&models.StrategyOrder{
+			StrategyID:      strategyID,
+			StrategyName:    strategyName,
+			OwnerID:         uid,
+			Exchange:        bx.GetName(),
+			Symbol:          symbol,
+			Side:            strings.ToLower(order.Side),
+			OrderType:       "market",
+			ClientOrderID:   order.ClientOrderID,
+			ExchangeOrderID: order.ID,
+			Status:          order.Status,
+			RequestedQty:    qty,
+			Price:           0,
+			ExecutedQty:     qty,
+			AvgPrice:        exitPrice,
+			RequestedAt:     now,
+			UpdatedAt:       now,
+		})
+
+		if hasExisting {
+			database.DB.Model(&models.StrategyPosition{}).Where("id = ?", existing.ID).
+				Updates(map[string]interface{}{
+					"amount":            0,
+					"avg_price":         entryPrice,
+					"realized_pnl":      prevRealizedPnL + realized,
+					"realized_notional": prevRealizedNotional + realizedNotional,
+					"status":            "closed",
+					"close_time":        order.Timestamp,
+					"updated_at":        now,
+				})
+		} else {
+			database.DB.Create(&models.StrategyPosition{
+				StrategyID:       strategyID,
+				StrategyName:     strategyName,
+				OwnerID:          uid,
+				Exchange:         bx.GetName(),
+				Symbol:           symbol,
+				Amount:           0,
+				AvgPrice:         entryPrice,
+				RealizedPnL:      realized,
+				RealizedNotional: realizedNotional,
+				Status:           "closed",
+				OpenTime:         openTime,
+				CloseTime:        order.Timestamp,
+				UpdatedAt:        now,
+			})
+		}
+
 		c.JSON(http.StatusOK, gin.H{"status": "success"})
 		return
 	}

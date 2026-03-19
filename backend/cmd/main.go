@@ -109,6 +109,9 @@ func main() {
 		protected.GET("/positions", api.ListPositions)
 		protected.POST("/positions/close", api.ClosePosition)
 
+		// Stats
+		protected.GET("/stats/pnl", api.GetPnLSummary)
+
 		// Strategy Square
 		protected.GET("/templates", api.ListTemplates)
 		protected.POST("/templates", api.SaveTemplate)
