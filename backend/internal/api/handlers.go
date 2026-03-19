@@ -369,12 +369,20 @@ func ListPositions(c *gin.Context) {
 
 	positions := make([]exchange.Position, 0, len(rows))
 	for _, p := range rows {
+		realizedRet := 0.0
+		if p.RealizedNotional > 0 {
+			realizedRet = (p.RealizedPnL / p.RealizedNotional) * 100
+		}
 		pos := exchange.Position{
-			Symbol:       p.Symbol,
-			Amount:       p.Amount,
-			Price:        p.AvgPrice,
-			StrategyName: p.StrategyName,
-			ExchangeName: p.Exchange,
+			Symbol:             p.Symbol,
+			Amount:             p.Amount,
+			Price:              p.AvgPrice,
+			ClosedQty:          p.ClosedQty,
+			AvgClosePrice:      p.AvgClosePrice,
+			RealizedPnL:        p.RealizedPnL,
+			RealizedReturnRate: realizedRet,
+			StrategyName:       p.StrategyName,
+			ExchangeName:       p.Exchange,
 			Status: func() string {
 				if p.Status == "open" {
 					return "active"
@@ -478,9 +486,9 @@ func GetDashboard(c *gin.Context) {
 			}
 			_ = database.DB.Model(&models.StrategyPosition{}).
 				Select(`
-				COALESCE(SUM(CASE WHEN realized_pnl > 0 THEN realized_pnl ELSE 0 END), 0) AS gross_profit,
-				COALESCE(SUM(CASE WHEN realized_pnl < 0 THEN realized_pnl ELSE 0 END), 0) AS gross_loss,
-				COALESCE(SUM(realized_pnl), 0) AS realized_pnl,
+				COALESCE(SUM(CASE WHEN realized_pn_l > 0 THEN realized_pn_l ELSE 0 END), 0) AS gross_profit,
+				COALESCE(SUM(CASE WHEN realized_pn_l < 0 THEN realized_pn_l ELSE 0 END), 0) AS gross_loss,
+				COALESCE(SUM(realized_pn_l), 0) AS realized_pnl,
 				COALESCE(SUM(realized_notional), 0) AS realized_notional
 			`).
 				Where("owner_id = ? AND status = ? AND close_time >= ?", uid, "closed", start).
@@ -626,9 +634,9 @@ func GetPnLSummary(c *gin.Context) {
 		}
 		_ = database.DB.Model(&models.StrategyPosition{}).
 			Select(`
-				COALESCE(SUM(CASE WHEN realized_pnl > 0 THEN realized_pnl ELSE 0 END), 0) AS gross_profit,
-				COALESCE(SUM(CASE WHEN realized_pnl < 0 THEN realized_pnl ELSE 0 END), 0) AS gross_loss,
-				COALESCE(SUM(realized_pnl), 0) AS realized_pnl,
+				COALESCE(SUM(CASE WHEN realized_pn_l > 0 THEN realized_pn_l ELSE 0 END), 0) AS gross_profit,
+				COALESCE(SUM(CASE WHEN realized_pn_l < 0 THEN realized_pn_l ELSE 0 END), 0) AS gross_loss,
+				COALESCE(SUM(realized_pn_l), 0) AS realized_pnl,
 				COALESCE(SUM(realized_notional), 0) AS realized_notional
 			`).
 			Where("owner_id = ? AND status = ? AND close_time >= ?", uid, "closed", start).
@@ -757,11 +765,18 @@ func ClosePosition(c *gin.Context) {
 		})
 
 		if hasExisting {
+			newClosedQty := existing.ClosedQty + qty
+			newAvgClose := existing.AvgClosePrice
+			if newClosedQty > 0 {
+				newAvgClose = ((existing.AvgClosePrice * existing.ClosedQty) + (exitPrice * qty)) / newClosedQty
+			}
 			database.DB.Model(&models.StrategyPosition{}).Where("id = ?", existing.ID).
 				Updates(map[string]interface{}{
 					"amount":            0,
 					"avg_price":         entryPrice,
-					"realized_pnl":      prevRealizedPnL + realized,
+					"closed_qty":        newClosedQty,
+					"avg_close_price":   newAvgClose,
+					"realized_pn_l":     prevRealizedPnL + realized,
 					"realized_notional": prevRealizedNotional + realizedNotional,
 					"status":            "closed",
 					"close_time":        order.Timestamp,
@@ -776,6 +791,8 @@ func ClosePosition(c *gin.Context) {
 				Symbol:           symbol,
 				Amount:           0,
 				AvgPrice:         entryPrice,
+				ClosedQty:        qty,
+				AvgClosePrice:    exitPrice,
 				RealizedPnL:      realized,
 				RealizedNotional: realizedNotional,
 				Status:           "closed",
@@ -783,6 +800,10 @@ func ClosePosition(c *gin.Context) {
 				CloseTime:        order.Timestamp,
 				UpdatedAt:        now,
 			})
+		}
+
+		if strategyID != "" && strategyID != "manual" {
+			_ = stratMgr.SendToStrategy(strategyID, "order", order)
 		}
 
 		c.JSON(http.StatusOK, gin.H{"status": "success"})

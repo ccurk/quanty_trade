@@ -52,6 +52,14 @@ type Position struct {
 	UnrealizedPnL float64 `json:"unrealized_pnl"`
 	// ReturnRate is the unrealized return rate in percent (PnL / entry value * 100).
 	ReturnRate float64 `json:"return_rate"`
+	// ClosedQty is the cumulative closed quantity (history positions).
+	ClosedQty float64 `json:"closed_qty,omitempty"`
+	// AvgClosePrice is the VWAP close price (history positions).
+	AvgClosePrice float64 `json:"avg_close_price,omitempty"`
+	// RealizedPnL is the realized PnL (history positions).
+	RealizedPnL float64 `json:"realized_pnl,omitempty"`
+	// RealizedReturnRate is realized return rate in percent.
+	RealizedReturnRate float64 `json:"realized_return_rate,omitempty"`
 	// StrategyName is the strategy instance name that owns this position.
 	StrategyName string `json:"strategy_name"`
 	// ExchangeName is the exchange name (e.g. Binance).

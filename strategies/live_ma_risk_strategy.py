@@ -27,6 +27,8 @@ class LiveMARiskStrategy(BaseStrategy):
         super().__init__(config)
         self.symbol = config.get("symbol", self.symbol)
         self.leverage = _i(config.get("leverage", 0), 0)
+        self.debug = bool(config.get("debug", False))
+        self.debug_interval_bars = max(1, _i(config.get("debug_interval_bars", 10), 10))
 
         self.fast_window = max(1, _i(config.get("fast_window", 10), 10))
         self.slow_window = max(self.fast_window, _i(config.get("slow_window", 30), 30))
@@ -55,6 +57,10 @@ class LiveMARiskStrategy(BaseStrategy):
         self.day_start_equity = None
         self.realized_pnl_today = 0.0
 
+    def _dlog(self, message):
+        if self.debug:
+            self.log(message)
+
     def on_candle(self, candle):
         close = _f(candle.get("close", 0), 0.0)
         if close <= 0:
@@ -68,6 +74,15 @@ class LiveMARiskStrategy(BaseStrategy):
         if len(self.closes) > self.slow_window:
             self.closes.pop(0)
 
+        if self.debug and (self.bar_index % self.debug_interval_bars == 0):
+            qty0 = self.position_qty()
+            avg0 = self.position_avg_price()
+            pending = 1 if (self.symbol in self.pending_orders) else 0
+            cooldown_left = max(self.cooldown_until_bar - self.bar_index, 0)
+            self._dlog(
+                f"DEBUG bar={self.bar_index} close={close:.6f} len={len(self.closes)}/{self.slow_window} qty={qty0:.6f} avg={avg0:.6f} pending={pending} cooldown_left={cooldown_left} trades_today={self.trades_today}/{self.max_trades_per_day}"
+            )
+
         if self.symbol in self.pending_orders:
             return
 
@@ -79,15 +94,18 @@ class LiveMARiskStrategy(BaseStrategy):
                 self.highest_price = close
 
             if self._blocked_by_daily_loss(close, qty, avg):
+                self._dlog(f"EXIT daily_loss bar={self.bar_index} close={close:.6f} qty={qty:.6f} avg={avg:.6f}")
                 self.close_position()
                 return
 
             if self._should_exit(close, avg):
+                self._dlog(f"EXIT tp/sl/trail bar={self.bar_index} close={close:.6f} qty={qty:.6f} avg={avg:.6f}")
                 self.close_position()
                 return
 
             if self.max_hold_bars > 0 and self.entry_bar_index is not None:
                 if (self.bar_index - self.entry_bar_index) >= self.max_hold_bars:
+                    self._dlog(f"EXIT max_hold bar={self.bar_index} hold_bars={self.bar_index - self.entry_bar_index} max_hold_bars={self.max_hold_bars}")
                     self.close_position()
                     return
 
@@ -102,18 +120,31 @@ class LiveMARiskStrategy(BaseStrategy):
 
         if qty <= 0 and fast_ma > slow_ma:
             if self._can_open_new_trade():
+                self._dlog(f"BUY signal bar={self.bar_index} fast={fast_ma:.6f} slow={slow_ma:.6f} close={close:.6f} amt={self.trade_amount}")
                 self.buy(self.trade_amount, 0)
                 self.trades_today += 1
                 self.entry_bar_index = self.bar_index
                 self.highest_price = close
+            else:
+                self._dlog(f"BUY blocked bar={self.bar_index} trades_today={self.trades_today}/{self.max_trades_per_day}")
             return
 
         if qty > 0 and fast_ma < slow_ma:
+            self._dlog(f"EXIT ma_cross bar={self.bar_index} fast={fast_ma:.6f} slow={slow_ma:.6f} close={close:.6f} qty={qty:.6f} avg={avg:.6f}")
             self.close_position()
             return
 
     def on_order(self, order):
-        return
+        if not isinstance(order, dict):
+            return
+        sym = order.get("symbol") or self.symbol
+        status = str(order.get("status") or "").lower()
+        side = str(order.get("side") or "").lower()
+        qty = _f(order.get("amount", 0), 0.0)
+        price = _f(order.get("price", 0), 0.0)
+        if self.debug:
+            pending = 1 if (sym in self.pending_orders) else 0
+            self._dlog(f"ORDER sym={sym} side={side} status={status} qty={qty:.6f} price={price:.6f} pending={pending}")
 
     def on_position(self, position):
         if not isinstance(position, dict):
@@ -131,6 +162,8 @@ class LiveMARiskStrategy(BaseStrategy):
                 self.entry_bar_index = self.bar_index
             if self.highest_price is None and avg > 0:
                 self.highest_price = avg
+            if self.debug:
+                self._dlog(f"POSITION open bar={self.bar_index} qty={qty:.6f} avg={avg:.6f}")
             return
 
         if status == "closed" or qty <= 0:
@@ -138,6 +171,9 @@ class LiveMARiskStrategy(BaseStrategy):
                 self.cooldown_until_bar = self.bar_index + self.cooldown_bars
             self.entry_bar_index = None
             self.highest_price = None
+            if self.debug:
+                cooldown_left = max(self.cooldown_until_bar - self.bar_index, 0)
+                self._dlog(f"POSITION closed bar={self.bar_index} cooldown_left={cooldown_left}")
 
     def _should_exit(self, close, entry):
         if entry <= 0:

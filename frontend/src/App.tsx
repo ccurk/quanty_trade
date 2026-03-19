@@ -42,6 +42,10 @@ interface Position {
   current_price?: number;
   unrealized_pnl?: number;
   return_rate?: number;
+  closed_qty?: number;
+  avg_close_price?: number;
+  realized_pnl?: number;
+  realized_return_rate?: number;
   strategy_name: string;
   exchange_name: string;
   status: string;
@@ -1297,8 +1301,8 @@ const App: React.FC = () => {
                     <th className="px-4 md:px-6 py-4">交易所</th>
                     <th className="px-4 md:px-6 py-4">数量</th>
                     <th className="px-4 md:px-6 py-4">均价</th>
-                    <th className="px-4 md:px-6 py-4">最新价</th>
-                    <th className="px-4 md:px-6 py-4">未实现盈亏</th>
+                    <th className="px-4 md:px-6 py-4">{positionStatus === 'active' ? '最新价' : '平仓均价'}</th>
+                    <th className="px-4 md:px-6 py-4">{positionStatus === 'active' ? '未实现盈亏' : '已实现盈亏'}</th>
                     <th className="px-4 md:px-6 py-4">回报率</th>
                     <th className="px-4 md:px-6 py-4">{positionStatus === 'active' ? '开仓时间' : '平仓时间'}</th>
                     <th className="px-4 md:px-6 py-4">状态</th>
@@ -1318,13 +1322,30 @@ const App: React.FC = () => {
                       <td className="px-4 md:px-6 py-4 font-mono">{p.amount}</td>
                       <td className="px-4 md:px-6 py-4 font-mono">${p.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                       <td className="px-4 md:px-6 py-4 font-mono">
-                        {typeof p.current_price === 'number' && p.current_price > 0 ? `$${p.current_price.toLocaleString(undefined, { minimumFractionDigits: 4 })}` : '--'}
+                        {positionStatus === 'active'
+                          ? (typeof p.current_price === 'number' && p.current_price > 0 ? `$${p.current_price.toLocaleString(undefined, { minimumFractionDigits: 4 })}` : '--')
+                          : (typeof p.avg_close_price === 'number' && p.avg_close_price > 0 ? `$${p.avg_close_price.toLocaleString(undefined, { minimumFractionDigits: 4 })}` : '--')
+                        }
                       </td>
-                      <td className={`px-4 md:px-6 py-4 font-mono ${typeof p.unrealized_pnl === 'number' ? (p.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500') : ''}`}>
-                        {typeof p.unrealized_pnl === 'number' ? `$${p.unrealized_pnl.toFixed(2)}` : '--'}
+                      <td className={`px-4 md:px-6 py-4 font-mono ${
+                        positionStatus === 'active'
+                          ? (typeof p.unrealized_pnl === 'number' ? (p.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500') : '')
+                          : (typeof p.realized_pnl === 'number' ? (p.realized_pnl >= 0 ? 'text-green-500' : 'text-red-500') : '')
+                      }`}>
+                        {positionStatus === 'active'
+                          ? (typeof p.unrealized_pnl === 'number' ? `$${p.unrealized_pnl.toFixed(2)}` : '--')
+                          : (typeof p.realized_pnl === 'number' ? `$${p.realized_pnl.toFixed(2)}` : '--')
+                        }
                       </td>
-                      <td className={`px-4 md:px-6 py-4 font-mono ${typeof p.return_rate === 'number' ? (p.return_rate >= 0 ? 'text-green-500' : 'text-red-500') : ''}`}>
-                        {typeof p.return_rate === 'number' ? `${p.return_rate.toFixed(2)}%` : '--'}
+                      <td className={`px-4 md:px-6 py-4 font-mono ${
+                        positionStatus === 'active'
+                          ? (typeof p.return_rate === 'number' ? (p.return_rate >= 0 ? 'text-green-500' : 'text-red-500') : '')
+                          : (typeof p.realized_return_rate === 'number' ? (p.realized_return_rate >= 0 ? 'text-green-500' : 'text-red-500') : '')
+                      }`}>
+                        {positionStatus === 'active'
+                          ? (typeof p.return_rate === 'number' ? `${p.return_rate.toFixed(2)}%` : '--')
+                          : (typeof p.realized_return_rate === 'number' ? `${p.realized_return_rate.toFixed(2)}%` : '--')
+                        }
                       </td>
                       <td className="px-4 md:px-6 py-4 text-xs text-gray-500 font-mono">
                         {new Date(positionStatus === 'active' ? p.open_time : (p.close_time || '')).toLocaleString()}

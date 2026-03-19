@@ -317,6 +317,8 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 			Symbol:           symbol,
 			Amount:           executedQty,
 			AvgPrice:         avgPrice,
+			ClosedQty:        0,
+			AvgClosePrice:    0,
 			RealizedPnL:      0,
 			RealizedNotional: 0,
 			Status:           "open",
@@ -351,11 +353,18 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 		realized := executedQty * (avgPrice - pos.AvgPrice)
 		newRealizedPnL := pos.RealizedPnL + realized
 		newRealizedNotional := pos.RealizedNotional + (executedQty * pos.AvgPrice)
+		newClosedQty := pos.ClosedQty + executedQty
+		newAvgClose := pos.AvgClosePrice
+		if newClosedQty > 0 {
+			newAvgClose = ((pos.AvgClosePrice * pos.ClosedQty) + (avgPrice * executedQty)) / newClosedQty
+		}
 		if newAmt <= 0 {
 			database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
 				Updates(map[string]interface{}{
 					"amount":            0,
-					"realized_pnl":      newRealizedPnL,
+					"closed_qty":        newClosedQty,
+					"avg_close_price":   newAvgClose,
+					"realized_pn_l":     newRealizedPnL,
 					"realized_notional": newRealizedNotional,
 					"status":            "closed",
 					"close_time":        eventTime,
@@ -363,6 +372,8 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 				})
 			if hub != nil {
 				pos.Amount = 0
+				pos.ClosedQty = newClosedQty
+				pos.AvgClosePrice = newAvgClose
 				pos.RealizedPnL = newRealizedPnL
 				pos.RealizedNotional = newRealizedNotional
 				pos.Status = "closed"
@@ -372,9 +383,11 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 			return
 		}
 		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
-			Updates(map[string]interface{}{"amount": newAmt, "realized_pnl": newRealizedPnL, "realized_notional": newRealizedNotional, "updated_at": now})
+			Updates(map[string]interface{}{"amount": newAmt, "closed_qty": newClosedQty, "avg_close_price": newAvgClose, "realized_pn_l": newRealizedPnL, "realized_notional": newRealizedNotional, "updated_at": now})
 		if hub != nil {
 			pos.Amount = newAmt
+			pos.ClosedQty = newClosedQty
+			pos.AvgClosePrice = newAvgClose
 			pos.RealizedPnL = newRealizedPnL
 			pos.RealizedNotional = newRealizedNotional
 			hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
@@ -666,6 +679,16 @@ func (inst *StrategyInstance) readStdout() {
 					"owner_id":    inst.OwnerID,
 					"error":       fmt.Sprintf("Failed to place order: %v", err),
 				})
+				_ = inst.SendData("order", map[string]interface{}{
+					"id":              clientOrderID,
+					"client_order_id": clientOrderID,
+					"symbol":          symbol,
+					"side":            normalizedSide,
+					"amount":          amount,
+					"price":           price,
+					"status":          "failed",
+					"timestamp":       time.Now(),
+				})
 			} else {
 				database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
 					Updates(map[string]interface{}{
@@ -771,6 +794,16 @@ func (m *Manager) ListStrategies(ownerID uint, isAdmin bool) []*StrategyInstance
 // GetExchange exposes the exchange connector for API handlers.
 func (m *Manager) GetExchange() exchange.Exchange {
 	return m.exchange
+}
+
+func (m *Manager) SendToStrategy(id string, dataType string, data interface{}) error {
+	m.mu.RLock()
+	inst, ok := m.instances[id]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("strategy %s not found", id)
+	}
+	return inst.SendData(dataType, data)
 }
 
 // Clear stops all running strategies and clears the in-memory registry.

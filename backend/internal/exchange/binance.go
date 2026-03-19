@@ -586,6 +586,9 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 		if avgPx > 0 {
 			px = avgPx
 		}
+		if strings.ToLower(resp.Status) == "partially_filled" && executedQty > 0 {
+			status = "filled"
+		}
 		ts := time.Now()
 		if resp.UpdateTime > 0 {
 			ts = time.UnixMilli(resp.UpdateTime)
@@ -665,7 +668,7 @@ func (b *BinanceExchange) waitUSDMOrderFinal(cred binanceCred, symbol string, cl
 	}
 
 	var last usdmOrderFinal
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 30; i++ {
 		params := url.Values{}
 		params.Set("symbol", symbol)
 		if strings.TrimSpace(clientOrderID) != "" {
@@ -686,7 +689,7 @@ func (b *BinanceExchange) waitUSDMOrderFinal(cred binanceCred, symbol string, cl
 		last = parsed
 
 		st := strings.ToLower(parsed.Status)
-		if st == "filled" || st == "canceled" || st == "rejected" || st == "expired" {
+		if st == "filled" || st == "canceled" || st == "rejected" || st == "expired" || st == "partially_filled" {
 			return &parsed, nil
 		}
 		time.Sleep(200 * time.Millisecond)
