@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -296,9 +297,58 @@ func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params
 }
 
 func (b *BinanceExchange) FetchCandles(symbol string, timeframe string, limit int) ([]Candle, error) {
-	end := time.Now()
-	start := end.Add(-time.Duration(limit) * time.Minute)
-	return b.FetchHistoricalCandles(symbol, timeframe, start, end)
+	interval, err := binanceInterval(timeframe)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	sym := binanceSymbol(symbol)
+	params := url.Values{}
+	params.Set("symbol", sym)
+	params.Set("interval", interval)
+	params.Set("limit", strconv.Itoa(limit))
+
+	path := "/api/v3/klines"
+	if b.market == "usdm" {
+		path = "/fapi/v1/klines"
+	}
+
+	body, _, err := b.publicRequest(context.Background(), path, params)
+	if err != nil {
+		return nil, err
+	}
+
+	var raw [][]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]Candle, 0, len(raw))
+	for _, k := range raw {
+		if len(k) < 6 {
+			continue
+		}
+		openTimeMs, _ := toInt64(k[0])
+		open, _ := toFloat64(k[1])
+		high, _ := toFloat64(k[2])
+		low, _ := toFloat64(k[3])
+		closeP, _ := toFloat64(k[4])
+		vol, _ := toFloat64(k[5])
+		out = append(out, Candle{
+			Timestamp: time.UnixMilli(openTimeMs),
+			Open:      open,
+			High:      high,
+			Low:       low,
+			Close:     closeP,
+			Volume:    vol,
+		})
+	}
+	return out, nil
 }
 
 func (b *BinanceExchange) FetchHistoricalCandles(symbol string, timeframe string, startTime, endTime time.Time) ([]Candle, error) {
@@ -1043,48 +1093,66 @@ func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle))
 	stream := sym + "@kline_1m"
 	wsURL := b.wsBaseURL + "/ws/" + stream
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		return err
-	}
-
 	go func() {
-		defer conn.Close()
+		backoff := 1 * time.Second
+		maxBackoff := 30 * time.Second
 		for {
-			_, msg, err := conn.ReadMessage()
+			conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 			if err != nil {
-				return
-			}
-			var payload struct {
-				K struct {
-					T int64  `json:"t"`
-					O string `json:"o"`
-					H string `json:"h"`
-					L string `json:"l"`
-					C string `json:"c"`
-					V string `json:"v"`
-					X bool   `json:"x"`
-				} `json:"k"`
-			}
-			if err := json.Unmarshal(msg, &payload); err != nil {
+				log.Printf("[BINANCE WS] kline connect failed symbol=%s url=%s err=%v", symbol, wsURL, err)
+				time.Sleep(backoff)
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
 				continue
 			}
-			if !payload.K.X {
-				continue
+			log.Printf("[BINANCE WS] kline connected symbol=%s stream=%s", symbol, stream)
+			backoff = 1 * time.Second
+
+			for {
+				_, msg, err := conn.ReadMessage()
+				if err != nil {
+					_ = conn.Close()
+					log.Printf("[BINANCE WS] kline disconnected symbol=%s err=%v (reconnect in %s)", symbol, err, backoff)
+					time.Sleep(backoff)
+					backoff *= 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+					break
+				}
+				var payload struct {
+					K struct {
+						T int64  `json:"t"`
+						O string `json:"o"`
+						H string `json:"h"`
+						L string `json:"l"`
+						C string `json:"c"`
+						V string `json:"v"`
+						X bool   `json:"x"`
+					} `json:"k"`
+				}
+				if err := json.Unmarshal(msg, &payload); err != nil {
+					continue
+				}
+				if !payload.K.X {
+					continue
+				}
+				open, _ := strconv.ParseFloat(payload.K.O, 64)
+				high, _ := strconv.ParseFloat(payload.K.H, 64)
+				low, _ := strconv.ParseFloat(payload.K.L, 64)
+				closeP, _ := strconv.ParseFloat(payload.K.C, 64)
+				vol, _ := strconv.ParseFloat(payload.K.V, 64)
+				callback(Candle{
+					Timestamp: time.UnixMilli(payload.K.T),
+					Open:      open,
+					High:      high,
+					Low:       low,
+					Close:     closeP,
+					Volume:    vol,
+				})
 			}
-			open, _ := strconv.ParseFloat(payload.K.O, 64)
-			high, _ := strconv.ParseFloat(payload.K.H, 64)
-			low, _ := strconv.ParseFloat(payload.K.L, 64)
-			closeP, _ := strconv.ParseFloat(payload.K.C, 64)
-			vol, _ := strconv.ParseFloat(payload.K.V, 64)
-			callback(Candle{
-				Timestamp: time.UnixMilli(payload.K.T),
-				Open:      open,
-				High:      high,
-				Low:       low,
-				Close:     closeP,
-				Volume:    vol,
-			})
 		}
 	}()
 

@@ -1036,6 +1036,11 @@ func SaveTemplate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "模板名称不能为空"})
+		return
+	}
 
 	userIDValue, ok := c.Get("user_id")
 	if !ok {
@@ -1106,7 +1111,7 @@ func SaveTemplate(c *gin.Context) {
 			Code:        req.Code,
 		}
 		if err := database.DB.Create(&template).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save template"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 	}

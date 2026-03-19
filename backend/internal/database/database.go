@@ -74,6 +74,21 @@ func InitDB() {
 
 	if dbType == "mysql" {
 		_ = DB.Exec("ALTER TABLE strategy_templates DROP FOREIGN KEY fk_strategy_templates_author").Error
+		_ = DB.Exec(`
+			UPDATE strategy_templates
+			SET
+				name = IF(name = '' OR name IS NULL, CONCAT('template_', id), name),
+				author_id = IF(author_id = 0, 1, author_id)
+			WHERE name = '' OR name IS NULL OR author_id = 0
+		`).Error
+	} else {
+		_ = DB.Exec(`
+			UPDATE strategy_templates
+			SET
+				name = CASE WHEN name = '' OR name IS NULL THEN ('template_' || id) ELSE name END,
+				author_id = CASE WHEN author_id = 0 THEN 1 ELSE author_id END
+			WHERE name = '' OR name IS NULL OR author_id = 0
+		`).Error
 	}
 	log.Println("Database schema is up to date.")
 

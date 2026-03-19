@@ -26,8 +26,8 @@ func initLogging() {
 	}
 	_ = os.MkdirAll(logDir, 0o755)
 
-	logPath := filepath.Join(logDir, "server.log")
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	serverPath := filepath.Join(logDir, "server.log")
+	serverFile, err := os.OpenFile(serverPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		log.SetOutput(os.Stdout)
 		gin.DefaultWriter = os.Stdout
@@ -35,12 +35,25 @@ func initLogging() {
 		return
 	}
 
-	mw := io.MultiWriter(os.Stdout, f)
-	log.SetOutput(mw)
+	gatewayPath := filepath.Join(logDir, "gateway.log")
+	gatewayFile, err := os.OpenFile(gatewayPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		mw := io.MultiWriter(os.Stdout, serverFile)
+		log.SetOutput(mw)
+		log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+		gin.DefaultWriter = os.Stdout
+		gin.DefaultErrorWriter = mw
+		return
+	}
+
+	businessWriter := io.MultiWriter(os.Stdout, serverFile)
+	gatewayWriter := io.MultiWriter(os.Stdout, gatewayFile)
+
+	log.SetOutput(businessWriter)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	gin.DefaultWriter = mw
-	gin.DefaultErrorWriter = mw
+	gin.DefaultWriter = gatewayWriter
+	gin.DefaultErrorWriter = businessWriter
 }
 
 func main() {
@@ -66,7 +79,9 @@ func main() {
 		gin.SetMode(mode)
 	}
 
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.Logger())
+	r.Use(gin.Recovery())
 	r.Use(api.APILogger()) // Global API Logging
 	r.Use(api.CORSMiddleware())
 

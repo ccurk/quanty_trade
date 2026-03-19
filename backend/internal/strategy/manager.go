@@ -216,6 +216,29 @@ func (m *Manager) StartStrategy(id string) error {
 	inst.Status = StatusRunning
 	inst.mu.Unlock()
 
+	if database.DB != nil {
+		debugOn := false
+		if raw, ok := inst.Config["debug"]; ok {
+			if v, ok := raw.(bool); ok {
+				debugOn = v
+			} else if v, ok := raw.(float64); ok {
+				debugOn = v != 0
+			}
+		}
+		if debugOn {
+			cfg := make(map[string]interface{}, len(inst.Config))
+			for k, v := range inst.Config {
+				cfg[k] = v
+			}
+			cfg["debug"] = false
+			if b, err := json.Marshal(cfg); err == nil {
+				_ = database.DB.Model(&models.StrategyInstance{}).Where("id = ?", inst.ID).
+					Updates(map[string]interface{}{"config": string(b), "updated_at": time.Now()}).Error
+				inst.Config["debug"] = false
+			}
+		}
+	}
+
 	if ex, ok := inst.exchange.(interface {
 		EnsureUserDataStream(ownerID uint, hub *ws.Hub) error
 	}); ok {

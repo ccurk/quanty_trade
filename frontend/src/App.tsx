@@ -143,6 +143,11 @@ const getCfgNumber = (cfg: Record<string, unknown>, key: string, fallback: numbe
   return typeof v === 'number' ? v : fallback;
 };
 
+const getCfgBool = (cfg: Record<string, unknown>, key: string, fallback: boolean) => {
+  const v = cfg[key];
+  return typeof v === 'boolean' ? v : fallback;
+};
+
 interface Toast {
   id: number;
   message: string;
@@ -270,6 +275,7 @@ const App: React.FC = () => {
   const [newStratName, setNewStratName] = useState('');
   const [newStratConfig, setNewStratConfig] = useState({
     symbol: 'BTC/USDT',
+    side: 'buy',
     leverage: 20,
     fast_window: 10,
     slow_window: 30,
@@ -286,6 +292,9 @@ const App: React.FC = () => {
     take_profit: 5,
     stop_loss: 2,
     close_yield: 10,
+    debug: false,
+    debug_interval_bars: 10,
+    repeat_on_flat: false,
   });
   const [selectedTemplate, setSelectedTemplate] = useState<number>(0);
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
@@ -491,13 +500,15 @@ const App: React.FC = () => {
   };
 
   const saveStrategyTemplate = async () => {
-    if (!devName) {
+    const name = devName.trim();
+    if (!name) {
       showToast('请输入模板名称', 'warning');
       return;
     }
     try {
+      showToast(`正在保存模板：${name}`, 'success');
       await axios.post('/api/templates', {
-        name: devName,
+        name,
         description: devDesc,
         code: devCode,
         is_draft: false
@@ -710,6 +721,7 @@ const App: React.FC = () => {
       setNewStratName('');
       setNewStratConfig({
         symbol: 'BTC/USDT',
+        side: 'buy',
         leverage: 20,
         fast_window: 10,
         slow_window: 30,
@@ -726,6 +738,9 @@ const App: React.FC = () => {
         take_profit: 5,
         stop_loss: 2,
         close_yield: 10,
+        debug: false,
+        debug_interval_bars: 10,
+        repeat_on_flat: false,
       });
       setSelectedTemplate(0);
       setActiveTab('strategies');
@@ -1018,6 +1033,7 @@ const App: React.FC = () => {
                 setNewStratName('');
                 setNewStratConfig({
                   symbol: 'BTC/USDT',
+                  side: 'buy',
                   leverage: 20,
                   fast_window: 10,
                   slow_window: 30,
@@ -1034,6 +1050,9 @@ const App: React.FC = () => {
                   take_profit: 5,
                   stop_loss: 2,
                   close_yield: 10,
+                  debug: false,
+                  debug_interval_bars: 10,
+                  repeat_on_flat: false,
                 });
                 setShowCreateModal(true);
               }}
@@ -1111,6 +1130,7 @@ const App: React.FC = () => {
                           setStrategyToEdit(s); 
                           setNewStratConfig({
                             symbol: getCfgString(s.config, 'symbol', 'BTC/USDT'),
+                            side: getCfgString(s.config, 'side', 'buy'),
                             leverage: getCfgNumber(s.config, 'leverage', 20),
                             fast_window: getCfgNumber(s.config, 'fast_window', 10),
                             slow_window: getCfgNumber(s.config, 'slow_window', 30),
@@ -1127,13 +1147,19 @@ const App: React.FC = () => {
                             take_profit: getCfgNumber(s.config, 'take_profit', 5),
                             stop_loss: getCfgNumber(s.config, 'stop_loss', 2),
                             close_yield: getCfgNumber(s.config, 'close_yield', 10),
+                            debug: Boolean(getCfgNumber(s.config, 'debug', 0)),
+                            debug_interval_bars: getCfgNumber(s.config, 'debug_interval_bars', 10),
+                            repeat_on_flat: getCfgBool(s.config, 'repeat_on_flat', false),
                           });
                           setShowEditConfigModal(true); 
                         }}
                         className={`p-2.5 rounded-xl transition border ${s.status === 'running' ? 'opacity-50 cursor-not-allowed text-gray-600' : 'text-gray-400 hover:bg-gray-50 border-gray-200'} ${isDarkMode ? (s.status === 'running' ? 'bg-gray-900 border-gray-800' : 'bg-gray-800 hover:bg-gray-700 border-gray-700') : ''}`}
                         title={s.status === 'running' ? "运行中的策略无法修改配置" : "配置参数：修改交易对、仓位比例等运行参数"}
                       >
-                        <Settings size={20} />
+                        <div className="flex items-center gap-2">
+                          <Settings size={18} />
+                          <span className="hidden md:inline text-sm font-bold">配置</span>
+                        </div>
                       </button>
                   <button
                     onClick={() => { 
@@ -1169,13 +1195,12 @@ const App: React.FC = () => {
               </thead>
               <tbody className={`divide-y ${isDarkMode ? 'divide-gray-800' : 'divide-gray-100'}`}>
                 {templates.filter(t => 
-                  (t.author_id === user?.id || user?.role === 'admin') && 
                   !t.is_draft &&
                   (t.name.toLowerCase().includes(templateSearch.toLowerCase()) || 
                    (t.description || '').toLowerCase().includes(templateSearch.toLowerCase()))
                 ).map(t => (
                   <tr key={t.id} className={`transition ${isDarkMode ? 'hover:bg-gray-800/30' : 'hover:bg-gray-50'}`}>
-                    <td className="px-6 py-4 font-bold">{t.name}</td>
+                    <td className="px-6 py-4 font-bold">{t.name || `template_${t.id}`}</td>
                     <td className="px-6 py-4 text-sm text-gray-500 truncate max-w-xs">{t.description || '暂无描述'}</td>
                     <td className="px-6 py-4">
                       <div className="flex flex-col gap-1">
@@ -1206,7 +1231,7 @@ const App: React.FC = () => {
                         <button
                           onClick={() => {
                             setDevCode(t.code || '');
-                            setDevCodeName(t.name);
+                            setDevCodeName(t.name || `template_${t.id}`);
                             setDevCodeDesc(t.description || '');
                             setActiveTab('develop');
                           }}
@@ -1690,7 +1715,7 @@ const App: React.FC = () => {
                   className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                 >
                   <option value={0}>请选择一个模板</option>
-                  {templates.filter(t => t.is_enabled).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  {templates.filter(t => t.is_enabled).map(t => <option key={t.id} value={t.id}>{t.name || `template_${t.id}`}</option>)}
                 </select>
               </div>
               {selectedTemplate !== 0 && (
@@ -1886,6 +1911,52 @@ const App: React.FC = () => {
                     type="number"
                     value={newStratConfig.max_trades_per_day}
                     onChange={(e) => setNewStratConfig({ ...newStratConfig, max_trades_per_day: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">下单方向</label>
+                  <select
+                    value={newStratConfig.side}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, side: e.target.value })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  >
+                    <option value="buy">buy</option>
+                    <option value="sell">sell</option>
+                  </select>
+                </div>
+                <div className="flex items-end">
+                  <button
+                    onClick={() => setNewStratConfig({ ...newStratConfig, repeat_on_flat: !newStratConfig.repeat_on_flat })}
+                    className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl border transition ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white hover:bg-gray-700' : 'bg-gray-50 border-gray-200 text-gray-900 hover:bg-gray-100'}`}
+                    title="仅对基础下单等脚本有效：平仓/仓位归零后自动再次下单"
+                    type="button"
+                  >
+                    <span className="text-sm font-medium text-gray-500">平仓后重入</span>
+                    <span className={`w-11 h-6 rounded-full transition relative ${newStratConfig.repeat_on_flat ? 'bg-blue-600' : (isDarkMode ? 'bg-gray-700' : 'bg-gray-300')}`}>
+                      <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all ${newStratConfig.repeat_on_flat ? 'left-5.5' : 'left-0.5'}`} />
+                    </span>
+                  </button>
+                </div>
+                <div className="flex items-end">
+                  <button
+                    onClick={() => setNewStratConfig({ ...newStratConfig, debug: !newStratConfig.debug })}
+                    className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl border transition ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white hover:bg-gray-700' : 'bg-gray-50 border-gray-200 text-gray-900 hover:bg-gray-100'}`}
+                    title="开启后会输出 DEBUG 日志，用于定位不下单原因"
+                    type="button"
+                  >
+                    <span className="text-sm font-medium text-gray-500">调试日志</span>
+                    <span className={`w-11 h-6 rounded-full transition relative ${newStratConfig.debug ? 'bg-blue-600' : (isDarkMode ? 'bg-gray-700' : 'bg-gray-300')}`}>
+                      <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all ${newStratConfig.debug ? 'left-5.5' : 'left-0.5'}`} />
+                    </span>
+                  </button>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">调试间隔</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.debug_interval_bars}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, debug_interval_bars: Number(e.target.value) })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>
