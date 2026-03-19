@@ -411,6 +411,192 @@ type PnLSummaryResponse struct {
 	Month         PnLPeriodSummary `json:"month"`
 }
 
+type DashboardResponse struct {
+	UpdatedAt time.Time `json:"updated_at"`
+
+	Account struct {
+		Exchange string `json:"exchange"`
+		Market   string `json:"market"`
+		UserID   uint   `json:"user_id"`
+	} `json:"account"`
+
+	PnL PnLSummaryResponse `json:"pnl"`
+
+	Positions struct {
+		OpenCount     int     `json:"open_count"`
+		OpenSymbols   int     `json:"open_symbols"`
+		OpenNotional  float64 `json:"open_notional"`
+		UnrealizedPnL float64 `json:"unrealized_pnl"`
+	} `json:"positions"`
+
+	Orders struct {
+		Total     int64 `json:"total"`
+		Filled    int64 `json:"filled"`
+		Rejected  int64 `json:"rejected"`
+		Failed    int64 `json:"failed"`
+		Requested int64 `json:"requested"`
+		New       int64 `json:"new"`
+	} `json:"orders"`
+
+	Strategies struct {
+		Running int64 `json:"running"`
+		Stopped int64 `json:"stopped"`
+		Error   int64 `json:"error"`
+		Total   int64 `json:"total"`
+	} `json:"strategies"`
+}
+
+func GetDashboard(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	uid := userID.(uint)
+
+	now := time.Now()
+
+	var pnlResp PnLSummaryResponse
+	func() {
+		loc := now.Location()
+		startDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+		weekOffset := (int(now.Weekday()) + 6) % 7
+		startWeek := startDay.AddDate(0, 0, -weekOffset)
+		startMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
+
+		unrealized := 0.0
+		if bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+			if ps, err := bx.FetchPositions(uid, "active"); err == nil {
+				for _, p := range ps {
+					unrealized += p.UnrealizedPnL
+				}
+			}
+		}
+
+		period := func(start time.Time) PnLPeriodSummary {
+			var row struct {
+				GrossProfit      float64
+				GrossLoss        float64
+				RealizedPnL      float64
+				RealizedNotional float64
+			}
+			_ = database.DB.Model(&models.StrategyPosition{}).
+				Select(`
+				COALESCE(SUM(CASE WHEN realized_pnl > 0 THEN realized_pnl ELSE 0 END), 0) AS gross_profit,
+				COALESCE(SUM(CASE WHEN realized_pnl < 0 THEN realized_pnl ELSE 0 END), 0) AS gross_loss,
+				COALESCE(SUM(realized_pnl), 0) AS realized_pnl,
+				COALESCE(SUM(realized_notional), 0) AS realized_notional
+			`).
+				Where("owner_id = ? AND status = ? AND close_time >= ?", uid, "closed", start).
+				Scan(&row).Error
+
+			ret := 0.0
+			if row.RealizedNotional > 0 {
+				ret = (row.RealizedPnL / row.RealizedNotional) * 100
+			}
+			return PnLPeriodSummary{
+				StartTime:         start,
+				GrossProfit:       row.GrossProfit,
+				GrossLoss:         row.GrossLoss,
+				RealizedPnL:       row.RealizedPnL,
+				RealizedNotional:  row.RealizedNotional,
+				RealizedReturnPct: ret,
+				UnrealizedPnL:     unrealized,
+				TotalPnL:          row.RealizedPnL + unrealized,
+			}
+		}
+
+		pnlResp = PnLSummaryResponse{
+			UpdatedAt:     now,
+			UnrealizedPnL: unrealized,
+			Day:           period(startDay),
+			Week:          period(startWeek),
+			Month:         period(startMonth),
+		}
+	}()
+
+	openCount := 0
+	openSymbols := 0
+	openNotional := 0.0
+	unrealized := 0.0
+	if bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		if ps, err := bx.FetchPositions(uid, "active"); err == nil {
+			openCount = len(ps)
+			syms := map[string]struct{}{}
+			for _, p := range ps {
+				syms[strings.ToUpper(p.Symbol)] = struct{}{}
+				unrealized += p.UnrealizedPnL
+				cp := p.CurrentPrice
+				if cp <= 0 {
+					cp = p.Price
+				}
+				if cp > 0 {
+					openNotional += p.Amount * cp
+				}
+			}
+			openSymbols = len(syms)
+		}
+	}
+
+	var ordersAgg struct {
+		Total     int64
+		Filled    int64
+		Rejected  int64
+		Failed    int64
+		Requested int64
+		New       int64
+	}
+	_ = database.DB.Model(&models.StrategyOrder{}).
+		Select(`
+			COUNT(*) AS total,
+			SUM(CASE WHEN status = 'filled' THEN 1 ELSE 0 END) AS filled,
+			SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+			SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+			SUM(CASE WHEN status = 'requested' THEN 1 ELSE 0 END) AS requested,
+			SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS new
+		`).
+		Where("owner_id = ?", uid).
+		Scan(&ordersAgg).Error
+
+	var stratAgg struct {
+		Running int64
+		Stopped int64
+		Error   int64
+		Total   int64
+	}
+	_ = database.DB.Model(&models.StrategyInstance{}).
+		Select(`
+			COUNT(*) AS total,
+			SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+			SUM(CASE WHEN status = 'stopped' THEN 1 ELSE 0 END) AS stopped,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error
+		`).
+		Where("owner_id = ?", uid).
+		Scan(&stratAgg).Error
+
+	resp := DashboardResponse{
+		UpdatedAt: now,
+		PnL:       pnlResp,
+	}
+	resp.Account.Exchange = stratMgr.GetExchange().GetName()
+	if bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange); ok {
+		resp.Account.Market = bx.Market()
+	}
+	resp.Account.UserID = uid
+	resp.Positions.OpenCount = openCount
+	resp.Positions.OpenSymbols = openSymbols
+	resp.Positions.OpenNotional = openNotional
+	resp.Positions.UnrealizedPnL = unrealized
+	resp.Orders.Total = ordersAgg.Total
+	resp.Orders.Filled = ordersAgg.Filled
+	resp.Orders.Rejected = ordersAgg.Rejected
+	resp.Orders.Failed = ordersAgg.Failed
+	resp.Orders.Requested = ordersAgg.Requested
+	resp.Orders.New = ordersAgg.New
+	resp.Strategies.Total = stratAgg.Total
+	resp.Strategies.Running = stratAgg.Running
+	resp.Strategies.Stopped = stratAgg.Stopped
+	resp.Strategies.Error = stratAgg.Error
+
+	c.JSON(http.StatusOK, resp)
+}
+
 func GetPnLSummary(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	uid := userID.(uint)

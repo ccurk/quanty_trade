@@ -111,6 +111,7 @@ func main() {
 
 		// Stats
 		protected.GET("/stats/pnl", api.GetPnLSummary)
+		protected.GET("/stats/dashboard", api.GetDashboard)
 
 		// Strategy Square
 		protected.GET("/templates", api.ListTemplates)

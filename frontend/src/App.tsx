@@ -68,6 +68,36 @@ interface PnLSummaryResponse {
   month: PnLPeriodSummary;
 }
 
+interface DashboardResponse {
+  updated_at: string;
+  account: {
+    exchange: string;
+    market: string;
+    user_id: number;
+  };
+  pnl: PnLSummaryResponse;
+  positions: {
+    open_count: number;
+    open_symbols: number;
+    open_notional: number;
+    unrealized_pnl: number;
+  };
+  orders: {
+    total: number;
+    filled: number;
+    rejected: number;
+    failed: number;
+    requested: number;
+    new: number;
+  };
+  strategies: {
+    running: number;
+    stopped: number;
+    error: number;
+    total: number;
+  };
+}
+
 interface EquityPoint {
   timestamp: string;
   equity: number;
@@ -211,7 +241,7 @@ const App: React.FC = () => {
   const [positionStatus, setPositionStatus] = useState<'active' | 'closed'>('active');
   const [logs, setLogs] = useState<string[]>([]);
   const [users, setUsers] = useState<User[]>([]);
-  const [activeTab, setActiveTab] = useState<'strategies' | 'templates' | 'positions' | 'stats' | 'logs' | 'square' | 'admin' | 'develop'>('strategies');
+  const [activeTab, setActiveTab] = useState<'strategies' | 'templates' | 'positions' | 'stats' | 'logs' | 'square' | 'admin' | 'develop'>('stats');
   
   // Search States
   const [stratSearch, setStratSearch] = useState('');
@@ -254,7 +284,7 @@ const App: React.FC = () => {
     close_yield: 10,
   });
   const [selectedTemplate, setSelectedTemplate] = useState<number>(0);
-  const [pnlSummary, setPnlSummary] = useState<PnLSummaryResponse | null>(null);
+  const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   
   // Backtest State
   const [showBacktestModal, setShowBacktestModal] = useState(false);
@@ -342,21 +372,21 @@ const App: React.FC = () => {
   }, [token]);
 
   useEffect(() => {
-    let pnlTimer: number | undefined;
+    let dashTimer: number | undefined;
     if (user && token) {
       fetchStrategies();
       fetchTemplates();
       fetchPositions(positionStatus);
-      fetchPnLSummary();
+      fetchDashboard();
       if (user.role === 'admin') fetchUsers();
       connectWS();
-      pnlTimer = window.setInterval(() => {
-        fetchPnLSummary();
+      dashTimer = window.setInterval(() => {
+        fetchDashboard();
       }, 5000);
     }
     return () => {
       if (ws.current) ws.current.close();
-      if (pnlTimer) window.clearInterval(pnlTimer);
+      if (dashTimer) window.clearInterval(dashTimer);
     };
   }, [user, token, positionStatus]);
 
@@ -520,12 +550,12 @@ const App: React.FC = () => {
     }
   };
 
-  const fetchPnLSummary = async () => {
+  const fetchDashboard = async () => {
     try {
-      const res = await axios.get('/api/stats/pnl');
-      setPnlSummary(res.data);
+      const res = await axios.get('/api/stats/dashboard');
+      setDashboard(res.data);
     } catch (err) {
-      console.error('Failed to fetch pnl summary', err);
+      console.error('Failed to fetch dashboard', err);
     }
   };
 
@@ -535,7 +565,7 @@ const App: React.FC = () => {
         await axios.post(`/api/positions/close?symbol=${symbol}`);
         showToast(`已请求平仓 ${symbol}`, 'success');
         fetchPositions(positionStatus);
-        fetchPnLSummary();
+        fetchDashboard();
       } catch (err: unknown) {
         showToast(getAxiosErrorMessage(err) || '平仓失败', 'error');
       }
@@ -554,7 +584,7 @@ const App: React.FC = () => {
 
       if (type === 'order') {
         fetchPositions(positionStatus); // Refresh positions on order
-        fetchPnLSummary();
+        fetchDashboard();
       } else if (type === 'log') {
         const data = parsed.data;
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${typeof data === 'string' ? data : ''}`, ...prev.slice(0, 99)]);
@@ -567,7 +597,7 @@ const App: React.FC = () => {
         const lastPrice = typeof d.last_price === 'number' ? d.last_price : '';
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] EXEC ${symbol} ${side} ${status} qty=${executedQty} price=${lastPrice}`, ...prev.slice(0, 99)]);
         fetchPositions(positionStatus);
-        fetchPnLSummary();
+        fetchDashboard();
       } else if (type === 'backtest_progress') {
         const msgUserID = parsed.user_id;
         if (user && typeof msgUserID === 'number' && msgUserID === user.id) {
@@ -607,7 +637,7 @@ const App: React.FC = () => {
         const status = typeof d.status === 'string' ? d.status : '';
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] Position ${sym} amount=${amt} status=${status}`, ...prev.slice(0, 99)]);
         fetchPositions(positionStatus);
-        fetchPnLSummary();
+        fetchDashboard();
       } else if (type === 'error') {
         const msg = typeof parsed.error === 'string' ? parsed.error : '发生错误';
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] ERROR ${msg}`, ...prev.slice(0, 99)]);
@@ -801,12 +831,12 @@ const App: React.FC = () => {
         </div>
 
         <nav className="flex-1 px-4 py-4 md:py-0 space-y-2">
+          <NavItem isDarkMode={isDarkMode} active={activeTab === 'stats'} onClick={() => { setActiveTab('stats'); setIsSidebarOpen(false); }} icon={<Activity size={20} />} label="数据面板" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'strategies'} onClick={() => { setActiveTab('strategies'); setIsSidebarOpen(false); }} icon={<LayoutDashboard size={20} />} label="我的策略" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'templates'} onClick={() => { setActiveTab('templates'); setIsSidebarOpen(false); }} icon={<List size={20} />} label="模板列表" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'develop'} onClick={() => { setActiveTab('develop'); setIsSidebarOpen(false); }} icon={<Code size={20} />} label="代码开发" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'square'} onClick={() => { setActiveTab('square'); setIsSidebarOpen(false); }} icon={<ShoppingBag size={20} />} label="策略广场" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'positions'} onClick={() => { setActiveTab('positions'); setIsSidebarOpen(false); }} icon={<List size={20} />} label="仓位管理" />
-          <NavItem isDarkMode={isDarkMode} active={activeTab === 'stats'} onClick={() => { setActiveTab('stats'); setIsSidebarOpen(false); }} icon={<Activity size={20} />} label="统计" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'logs'} onClick={() => { setActiveTab('logs'); setIsSidebarOpen(false); }} icon={<Terminal size={20} />} label="系统日志" />
           {user.role === 'admin' && (
             <NavItem isDarkMode={isDarkMode} active={activeTab === 'admin'} onClick={() => { setActiveTab('admin'); setIsSidebarOpen(false); }} icon={<ShieldCheck size={20} />} label="系统管理" />
@@ -876,7 +906,7 @@ const App: React.FC = () => {
               {activeTab === 'develop' && '策略代码开发'}
               {activeTab === 'square' && '策略广场'}
               {activeTab === 'positions' && '实时持仓'}
-              {activeTab === 'stats' && '收益统计'}
+              {activeTab === 'stats' && '数据面板'}
               {activeTab === 'logs' && '实时日志'}
               {activeTab === 'admin' && '用户管理'}
             </h2>
@@ -909,7 +939,7 @@ const App: React.FC = () => {
               </div>
             )}
             <button 
-              onClick={() => { fetchStrategies(); fetchTemplates(); fetchPositions(positionStatus); fetchPnLSummary(); if (user.role === 'admin') fetchUsers(); }} 
+              onClick={() => { fetchStrategies(); fetchTemplates(); fetchPositions(positionStatus); fetchDashboard(); if (user.role === 'admin') fetchUsers(); }} 
               className={`p-2 rounded-lg transition shadow-sm border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
               title="立即刷新：手动同步后端最新策略、持仓和模板数据"
             >
@@ -1336,20 +1366,41 @@ const App: React.FC = () => {
           <div className="space-y-6">
             <div className="flex items-center justify-between">
               <div className="text-sm text-gray-500">
-                更新时间：{pnlSummary ? new Date(pnlSummary.updated_at).toLocaleString() : '--'}
+                更新时间：{dashboard ? new Date(dashboard.updated_at).toLocaleString() : '--'}
               </div>
               <button
-                onClick={fetchPnLSummary}
+                onClick={fetchDashboard}
                 className={`px-4 py-2 rounded-xl font-bold transition shadow-sm border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
               >
-                刷新统计
+                刷新面板
               </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                <div className="text-xs text-gray-500 uppercase font-bold mb-2">交易所</div>
+                <div className="font-bold">{dashboard ? `${dashboard.account.exchange} / ${dashboard.account.market}` : '--'}</div>
+              </div>
+              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                <div className="text-xs text-gray-500 uppercase font-bold mb-2">持仓数量</div>
+                <div className="font-mono font-bold">{dashboard ? dashboard.positions.open_count : '--'}</div>
+              </div>
+              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                <div className="text-xs text-gray-500 uppercase font-bold mb-2">持仓名义额</div>
+                <div className="font-mono font-bold">{dashboard ? `$${dashboard.positions.open_notional.toFixed(2)}` : '--'}</div>
+              </div>
+              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                <div className="text-xs text-gray-500 uppercase font-bold mb-2">未实现盈亏</div>
+                <div className={`font-mono font-bold ${dashboard && dashboard.positions.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                  {dashboard ? `$${dashboard.positions.unrealized_pnl.toFixed(2)}` : '--'}
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {(['day', 'week', 'month'] as const).map((k) => {
-                const p = pnlSummary ? pnlSummary[k] : null;
-                const title = k === 'day' ? '今日统计' : k === 'week' ? '本周统计' : '本月统计';
+                const p = dashboard ? dashboard.pnl[k] : null;
+                const title = k === 'day' ? '今日收益' : k === 'week' ? '本周收益' : '本月收益';
                 const total = p ? p.total_pnl : 0;
                 return (
                   <div key={k} className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
@@ -1362,7 +1413,7 @@ const App: React.FC = () => {
                     <div className="grid grid-cols-2 gap-3 text-sm">
                       <div className="text-gray-500">总收入</div>
                       <div className="font-mono">{p ? `$${p.gross_profit.toFixed(2)}` : '--'}</div>
-                      <div className="text-gray-500">总盈亏</div>
+                      <div className="text-gray-500">已实现</div>
                       <div className={`font-mono ${p && p.realized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `$${p.realized_pnl.toFixed(2)}` : '--'}</div>
                       <div className="text-gray-500">未实现</div>
                       <div className={`font-mono ${p && p.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `$${p.unrealized_pnl.toFixed(2)}` : '--'}</div>
@@ -1372,6 +1423,52 @@ const App: React.FC = () => {
                   </div>
                 );
               })}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                <div className="text-xs text-gray-500 uppercase font-bold mb-2">策略状态</div>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="text-gray-500">运行中</div>
+                  <div className="font-mono">{dashboard ? dashboard.strategies.running : '--'}</div>
+                  <div className="text-gray-500">已停止</div>
+                  <div className="font-mono">{dashboard ? dashboard.strategies.stopped : '--'}</div>
+                  <div className="text-gray-500">异常</div>
+                  <div className="font-mono">{dashboard ? dashboard.strategies.error : '--'}</div>
+                  <div className="text-gray-500">总数</div>
+                  <div className="font-mono">{dashboard ? dashboard.strategies.total : '--'}</div>
+                </div>
+              </div>
+              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                <div className="text-xs text-gray-500 uppercase font-bold mb-2">订单状态</div>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="text-gray-500">已成交</div>
+                  <div className="font-mono">{dashboard ? dashboard.orders.filled : '--'}</div>
+                  <div className="text-gray-500">新建</div>
+                  <div className="font-mono">{dashboard ? dashboard.orders.new : '--'}</div>
+                  <div className="text-gray-500">请求中</div>
+                  <div className="font-mono">{dashboard ? dashboard.orders.requested : '--'}</div>
+                  <div className="text-gray-500">失败</div>
+                  <div className="font-mono">{dashboard ? dashboard.orders.failed : '--'}</div>
+                  <div className="text-gray-500">拒绝</div>
+                  <div className="font-mono">{dashboard ? dashboard.orders.rejected : '--'}</div>
+                  <div className="text-gray-500">总数</div>
+                  <div className="font-mono">{dashboard ? dashboard.orders.total : '--'}</div>
+                </div>
+              </div>
+              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                <div className="text-xs text-gray-500 uppercase font-bold mb-2">持仓概览</div>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="text-gray-500">开仓条目</div>
+                  <div className="font-mono">{dashboard ? dashboard.positions.open_count : '--'}</div>
+                  <div className="text-gray-500">交易对数</div>
+                  <div className="font-mono">{dashboard ? dashboard.positions.open_symbols : '--'}</div>
+                  <div className="text-gray-500">名义额</div>
+                  <div className="font-mono">{dashboard ? `$${dashboard.positions.open_notional.toFixed(2)}` : '--'}</div>
+                  <div className="text-gray-500">未实现</div>
+                  <div className={`font-mono ${dashboard && dashboard.positions.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{dashboard ? `$${dashboard.positions.unrealized_pnl.toFixed(2)}` : '--'}</div>
+                </div>
+              </div>
             </div>
           </div>
         )}
