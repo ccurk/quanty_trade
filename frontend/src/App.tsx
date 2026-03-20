@@ -292,12 +292,15 @@ const App: React.FC = () => {
     leverage: 20,
     fast_window: 10,
     slow_window: 30,
+    entry_mode: 'crossover',
+    confirm_bars: 1,
     trade_amount: 0.01,
     take_profit_pct: 0.03,
     stop_loss_pct: 0.01,
     trailing_stop_pct: 0.005,
     max_hold_bars: 0,
     cooldown_bars: 0,
+    status_interval_bars: 60,
     max_trades_per_day: 3,
     max_concurrent_positions: 1,
     warmup_bars: 100,
@@ -799,12 +802,15 @@ const App: React.FC = () => {
         leverage: 20,
         fast_window: 10,
         slow_window: 30,
+        entry_mode: 'crossover',
+        confirm_bars: 1,
         trade_amount: 0.01,
         take_profit_pct: 0.03,
         stop_loss_pct: 0.01,
         trailing_stop_pct: 0.005,
         max_hold_bars: 0,
         cooldown_bars: 0,
+        status_interval_bars: 60,
         max_trades_per_day: 3,
         max_concurrent_positions: 1,
         warmup_bars: 100,
@@ -1112,12 +1118,15 @@ const App: React.FC = () => {
                   leverage: 20,
                   fast_window: 10,
                   slow_window: 30,
+                  entry_mode: 'crossover',
+                  confirm_bars: 1,
                   trade_amount: 0.01,
                   take_profit_pct: 0.03,
                   stop_loss_pct: 0.01,
                   trailing_stop_pct: 0.005,
                   max_hold_bars: 0,
                   cooldown_bars: 0,
+                  status_interval_bars: 60,
                   max_trades_per_day: 3,
                   max_concurrent_positions: 1,
                   warmup_bars: 100,
@@ -1209,12 +1218,15 @@ const App: React.FC = () => {
                             leverage: getCfgNumber(s.config, 'leverage', 20),
                             fast_window: getCfgNumber(s.config, 'fast_window', 10),
                             slow_window: getCfgNumber(s.config, 'slow_window', 30),
+                            entry_mode: getCfgString(s.config, 'entry_mode', 'crossover'),
+                            confirm_bars: getCfgNumber(s.config, 'confirm_bars', 1),
                             trade_amount: getCfgNumber(s.config, 'trade_amount', 0.01),
                             take_profit_pct: getCfgNumber(s.config, 'take_profit_pct', 0.03),
                             stop_loss_pct: getCfgNumber(s.config, 'stop_loss_pct', 0.01),
                             trailing_stop_pct: getCfgNumber(s.config, 'trailing_stop_pct', 0.005),
                             max_hold_bars: getCfgNumber(s.config, 'max_hold_bars', 0),
                             cooldown_bars: getCfgNumber(s.config, 'cooldown_bars', 0),
+                            status_interval_bars: getCfgNumber(s.config, 'status_interval_bars', 60),
                             max_trades_per_day: getCfgNumber(s.config, 'max_trades_per_day', 3),
                             max_concurrent_positions: getCfgNumber(s.config, 'max_concurrent_positions', 1),
                             warmup_bars: getCfgNumber(s.config, 'warmup_bars', 100),
@@ -1222,7 +1234,7 @@ const App: React.FC = () => {
                             take_profit: getCfgNumber(s.config, 'take_profit', 5),
                             stop_loss: getCfgNumber(s.config, 'stop_loss', 2),
                             close_yield: getCfgNumber(s.config, 'close_yield', 10),
-                            debug: Boolean(getCfgNumber(s.config, 'debug', 0)),
+                            debug: getCfgBool(s.config, 'debug', false),
                             debug_interval_bars: getCfgNumber(s.config, 'debug_interval_bars', 10),
                             repeat_on_flat: getCfgBool(s.config, 'repeat_on_flat', false),
                           });
@@ -1788,6 +1800,26 @@ const App: React.FC = () => {
                   />
                 </div>
                 <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">入场模式</label>
+                  <select
+                    value={newStratConfig.entry_mode}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, entry_mode: e.target.value })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  >
+                    <option value="crossover">金叉入场</option>
+                    <option value="trend">趋势入场</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">确认根数</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.confirm_bars}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, confirm_bars: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
                   <label className="block text-sm font-medium text-gray-500 mb-2">下单数量</label>
                   <input
                     type="number"
@@ -1862,6 +1894,15 @@ const App: React.FC = () => {
                     type="number"
                     value={newStratConfig.cooldown_bars}
                     onChange={(e) => setNewStratConfig({ ...newStratConfig, cooldown_bars: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">心跳间隔</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.status_interval_bars}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, status_interval_bars: Number(e.target.value) })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>
@@ -1988,6 +2029,26 @@ const App: React.FC = () => {
                   />
                 </div>
                 <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">入场模式</label>
+                  <select
+                    value={newStratConfig.entry_mode}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, entry_mode: e.target.value })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  >
+                    <option value="crossover">金叉入场</option>
+                    <option value="trend">趋势入场</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">确认根数</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.confirm_bars}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, confirm_bars: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
                   <label className="block text-sm font-medium text-gray-500 mb-2">杠杆</label>
                   <input
                     type="number"
@@ -2071,6 +2132,15 @@ const App: React.FC = () => {
                     type="number"
                     value={newStratConfig.max_trades_per_day}
                     onChange={(e) => setNewStratConfig({ ...newStratConfig, max_trades_per_day: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">心跳间隔</label>
+                  <input
+                    type="number"
+                    value={newStratConfig.status_interval_bars}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, status_interval_bars: Number(e.target.value) })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>

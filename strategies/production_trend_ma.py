@@ -99,6 +99,12 @@ class ProductionTrendMAStrategy(BaseStrategy):
             self.confirm_bars = 1
         if self.confirm_bars > 5:
             self.confirm_bars = 5
+        self.entry_mode = str(config.get("entry_mode", "crossover") or "crossover").strip().lower()
+        if self.entry_mode not in ("crossover", "trend"):
+            self.entry_mode = "crossover"
+        self.status_interval_bars = _i(config.get("status_interval_bars", 60), 60)
+        if self.status_interval_bars < 0:
+            self.status_interval_bars = 0
 
         self.debug = _b(config.get("debug", False), False)
         self.debug_interval_bars = _i(config.get("debug_interval_bars", 10), 10)
@@ -121,6 +127,7 @@ class ProductionTrendMAStrategy(BaseStrategy):
         self._last_fast = None
         self._last_slow = None
         self._confirm_left = 0
+        self._trend_up_count = 0
 
         self._log_config()
 
@@ -132,7 +139,8 @@ class ProductionTrendMAStrategy(BaseStrategy):
             f"tp={self.take_profit_pct} sl={self.stop_loss_pct} ts={self.trailing_stop_pct} "
             f"max_hold={self.max_hold_bars} cooldown={self.cooldown_bars} "
             f"max_trades_day={self.max_trades_per_day} reentry={self.allow_reentry} "
-            f"confirm_bars={self.confirm_bars} debug={self.debug} debug_int={self.debug_interval_bars}"
+            f"confirm_bars={self.confirm_bars} entry_mode={self.entry_mode} status_int={self.status_interval_bars} "
+            f"debug={self.debug} debug_int={self.debug_interval_bars}"
         )
 
     def _on_new_day(self, day):
@@ -247,6 +255,14 @@ class ProductionTrendMAStrategy(BaseStrategy):
         if fast is None or slow is None:
             return
 
+        if self.status_interval_bars > 0 and (self._bar % self.status_interval_bars == 0):
+            ok, reason = self._can_open()
+            self.log(
+                f"HEARTBEAT bar={self._bar} close={close_price} fast={fast:.6f} slow={slow:.6f} "
+                f"in_pos={1 if self.in_position() else 0} pending={1 if (self.symbol in self.pending_orders) else 0} "
+                f"can_open={1 if ok else 0} reason={reason} trades_today={self.trades_today}"
+            )
+
         if self.debug and (self._bar % self.debug_interval_bars == 0):
             self.log(
                 f"DEBUG bar={self._bar} close={close_price} fast={fast:.6f} slow={slow:.6f} "
@@ -255,6 +271,27 @@ class ProductionTrendMAStrategy(BaseStrategy):
             )
 
         if self.in_position():
+            return
+
+        if self.entry_mode == "trend":
+            if fast > slow:
+                self._trend_up_count += 1
+            else:
+                self._trend_up_count = 0
+
+            if self._trend_up_count < self.confirm_bars:
+                return
+
+            ok, reason = self._can_open()
+            if not ok:
+                if self.debug:
+                    self.log(f"ENTRY blocked bar={self._bar} reason={reason}")
+                return
+
+            self.log(f"ENTRY long(trend) bar={self._bar} close={close_price} qty={self.trade_amount}")
+            self.buy(self.trade_amount, 0)
+            self.trades_today += 1
+            self._trend_up_count = 0
             return
 
         if crossed_up:
@@ -274,7 +311,7 @@ class ProductionTrendMAStrategy(BaseStrategy):
                     self.log(f"ENTRY blocked bar={self._bar} reason={reason}")
                 return
 
-            self.log(f"ENTRY long bar={self._bar} close={close_price} qty={self.trade_amount}")
+            self.log(f"ENTRY long(crossover) bar={self._bar} close={close_price} qty={self.trade_amount}")
             self.buy(self.trade_amount, 0)
             self.trades_today += 1
             return
