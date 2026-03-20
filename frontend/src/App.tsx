@@ -451,6 +451,7 @@ const App: React.FC = () => {
   const [devDesc, setDevCodeDesc] = useState(() => localStorage.getItem('dev_desc') || '');
   const [devTemplateType, setDevTemplateType] = useState<'strategy' | 'selector'>(() => (localStorage.getItem('dev_template_type') as 'strategy' | 'selector') || 'strategy');
   const [devTemplateId, setDevTemplateId] = useState<number>(() => Number(localStorage.getItem('dev_template_id') || '0'));
+  const [devNameIsComposing, setDevNameIsComposing] = useState(false);
   const [isTestingCode, setIsTestingCode] = useState(false);
   const [testResult, setDevTestResult] = useState<{valid: boolean, error?: string} | null>(null);
   const devNameInputRef = useRef<HTMLInputElement | null>(null);
@@ -612,19 +613,21 @@ const App: React.FC = () => {
 
   const saveStrategyTemplate = async () => {
     const readName = () => {
-      const byState = (devName || '').trim();
-      if (byState) return byState;
       const byDom = (devNameInputRef.current?.value || '').trim();
-      return byDom;
+      if (byDom) return byDom;
+      const byState = (devName || '').trim();
+      return byState;
     };
-    let name = readName();
-    if (!name) {
-      await new Promise<void>(resolve => setTimeout(() => resolve(), 0));
-      name = readName();
-      if (!name) {
-        showToast('请输入模板名称', 'warning');
-        return;
+    if (devNameIsComposing) {
+      for (let i = 0; i < 10; i += 1) {
+        await new Promise<void>(resolve => setTimeout(() => resolve(), 20));
+        if (!devNameIsComposing) break;
       }
+    }
+    const name = readName();
+    if (!name) {
+      showToast('请输入模板名称', 'warning');
+      return;
     }
     try {
       showToast(`正在保存模板：${name}`, 'success');
@@ -1281,6 +1284,11 @@ const App: React.FC = () => {
                   placeholder="模板名称 (必填)"
                   value={devName}
                   onChange={(e) => setDevCodeName(e.target.value)}
+                  onCompositionStart={() => setDevNameIsComposing(true)}
+                  onCompositionEnd={(e) => {
+                    setDevNameIsComposing(false);
+                    setDevCodeName(e.currentTarget.value);
+                  }}
                   ref={devNameInputRef}
                   className={`px-4 py-2 rounded-xl border transition outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-200'}`}
                 />

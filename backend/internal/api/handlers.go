@@ -1210,6 +1210,7 @@ func SaveTemplate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "模板名称不能为空"})
@@ -1276,6 +1277,7 @@ func SaveTemplate(c *gin.Context) {
 
 	if err == nil {
 		// Update existing
+		template.Name = req.Name
 		template.Description = req.Description
 		template.Code = req.Code
 		template.IsDraft = req.IsDraft
