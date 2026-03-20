@@ -59,6 +59,31 @@ class BaseStrategy(ABC):
             pass
         self._send_to_backend("order", order_request)
 
+    def send_order_for(self, symbol, side, amount, price=0):
+        if not symbol:
+            self.log("Cannot send order: symbol is empty")
+            return
+        if self.trace:
+            try:
+                self.log(f"TRACE send_order symbol={symbol} side={side} amount={float(amount)} price={float(price)}")
+            except Exception:
+                self.log(f"TRACE send_order symbol={symbol} side={side} amount={amount} price={price}")
+        order_request = {
+            "symbol": symbol,
+            "side": side,
+            "amount": amount,
+            "price": price
+        }
+        lev = self.config.get("leverage")
+        try:
+            if lev is not None:
+                lev_int = int(lev)
+                if lev_int > 0:
+                    order_request["leverage"] = lev_int
+        except Exception:
+            pass
+        self._send_to_backend("order", order_request)
+
     def buy(self, amount, price=0):
         self._mark_pending("buy", amount, price)
         self.send_order("buy", amount, price)
@@ -66,6 +91,14 @@ class BaseStrategy(ABC):
     def sell(self, amount, price=0):
         self._mark_pending("sell", amount, price)
         self.send_order("sell", amount, price)
+
+    def buy_for(self, symbol, amount, price=0):
+        self._mark_pending_for(symbol, "buy", amount, price)
+        self.send_order_for(symbol, "buy", amount, price)
+
+    def sell_for(self, symbol, amount, price=0):
+        self._mark_pending_for(symbol, "sell", amount, price)
+        self.send_order_for(symbol, "sell", amount, price)
 
     def close_position(self, price=0):
         pos = self.get_position()
@@ -75,6 +108,15 @@ class BaseStrategy(ABC):
         if qty <= 0:
             return
         self.sell(qty, price)
+
+    def close_position_for(self, symbol, price=0):
+        pos = self.get_position(symbol)
+        if not pos:
+            return
+        qty = float(pos.get("qty", 0) or 0)
+        if qty <= 0:
+            return
+        self.sell_for(symbol, qty, price)
 
     def get_position(self, symbol=None):
         sym = symbol or self.symbol
@@ -110,16 +152,20 @@ class BaseStrategy(ABC):
     def _send_to_backend(self, msg_type, data):
         print(json.dumps({"type": msg_type, "data": data}), flush=True)
 
-    def _mark_pending(self, side, amount, price):
-        if not self.symbol:
+    def _mark_pending_for(self, symbol, side, amount, price):
+        sym = symbol or self.symbol
+        if not sym:
             return
-        self.pending_orders[self.symbol] = {
+        self.pending_orders[sym] = {
             "side": side,
             "amount": amount,
             "price": price
         }
         if self.trace:
-            self.log(f"TRACE pending set symbol={self.symbol} side={side}")
+            self.log(f"TRACE pending set symbol={sym} side={side}")
+
+    def _mark_pending(self, side, amount, price):
+        self._mark_pending_for(self.symbol, side, amount, price)
 
     def _clear_pending(self, symbol=None):
         sym = symbol or self.symbol

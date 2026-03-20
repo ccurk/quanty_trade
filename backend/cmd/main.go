@@ -124,6 +124,9 @@ func main() {
 		protected.GET("/positions", api.ListPositions)
 		protected.POST("/positions/close", api.ClosePosition)
 
+		// Markets
+		protected.GET("/markets/symbols", api.ListMarketSymbols)
+
 		// Stats
 		protected.GET("/stats/pnl", api.GetPnLSummary)
 		protected.GET("/stats/dashboard", api.GetDashboard)

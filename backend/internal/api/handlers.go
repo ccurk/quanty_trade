@@ -453,6 +453,36 @@ func ListPositions(c *gin.Context) {
 	c.JSON(http.StatusOK, resp{Items: positions, Total: total, Page: page, PageSize: pageSize})
 }
 
+func ListMarketSymbols(c *gin.Context) {
+	quote := strings.TrimSpace(c.Query("quote"))
+	minPrice, _ := strconv.ParseFloat(strings.TrimSpace(c.Query("min_price")), 64)
+	maxPrice, _ := strconv.ParseFloat(strings.TrimSpace(c.Query("max_price")), 64)
+	minVol, _ := strconv.ParseFloat(strings.TrimSpace(c.Query("min_quote_volume_24h")), 64)
+	limit, _ := strconv.Atoi(strings.TrimSpace(c.Query("limit")))
+	excludeStable := c.DefaultQuery("exclude_stable", "true") != "false"
+	baseAssetsRaw := strings.TrimSpace(c.Query("base_assets"))
+	var baseAssets []string
+	if baseAssetsRaw != "" {
+		for _, p := range strings.Split(baseAssetsRaw, ",") {
+			if s := strings.TrimSpace(p); s != "" {
+				baseAssets = append(baseAssets, s)
+			}
+		}
+	}
+
+	ex, ok := stratMgr.GetExchange().(*exchange.BinanceExchange)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "exchange does not support symbol selection"})
+		return
+	}
+	out, err := ex.FetchMarketSymbols(quote, minPrice, maxPrice, minVol, limit, excludeStable, baseAssets)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 type PnLPeriodSummary struct {
 	StartTime         time.Time `json:"start_time"`
 	EndTime           time.Time `json:"end_time,omitempty"`

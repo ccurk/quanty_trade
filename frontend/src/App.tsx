@@ -287,6 +287,7 @@ const App: React.FC = () => {
   const [strategyToEdit, setStrategyToEdit] = useState<Strategy | null>(null);
   const [newStratName, setNewStratName] = useState('');
   const [newStratConfig, setNewStratConfig] = useState({
+    symbol_mode: 'fixed',
     symbol: 'BTC/USDT',
     side: 'buy',
     leverage: 20,
@@ -311,6 +312,13 @@ const App: React.FC = () => {
     debug: false,
     debug_interval_bars: 10,
     repeat_on_flat: false,
+    selector_quote: 'USDT',
+    selector_min_price: 0,
+    selector_max_price: 0,
+    selector_min_quote_volume_24h: 0,
+    selector_max_symbols: 5,
+    selector_exclude_stable: true,
+    selector_base_assets: '',
   });
   const [selectedTemplate, setSelectedTemplate] = useState<number>(0);
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
@@ -797,6 +805,7 @@ const App: React.FC = () => {
       setShowCreateModal(false);
       setNewStratName('');
       setNewStratConfig({
+        symbol_mode: 'fixed',
         symbol: 'BTC/USDT',
         side: 'buy',
         leverage: 20,
@@ -821,6 +830,13 @@ const App: React.FC = () => {
         debug: false,
         debug_interval_bars: 10,
         repeat_on_flat: false,
+        selector_quote: 'USDT',
+        selector_min_price: 0,
+        selector_max_price: 0,
+        selector_min_quote_volume_24h: 0,
+        selector_max_symbols: 5,
+        selector_exclude_stable: true,
+        selector_base_assets: '',
       });
       setSelectedTemplate(0);
       setActiveTab('strategies');
@@ -1113,6 +1129,7 @@ const App: React.FC = () => {
                 setSelectedTemplate(0);
                 setNewStratName('');
                 setNewStratConfig({
+                  symbol_mode: 'fixed',
                   symbol: 'BTC/USDT',
                   side: 'buy',
                   leverage: 20,
@@ -1137,6 +1154,13 @@ const App: React.FC = () => {
                   debug: false,
                   debug_interval_bars: 10,
                   repeat_on_flat: false,
+                  selector_quote: 'USDT',
+                  selector_min_price: 0,
+                  selector_max_price: 0,
+                  selector_min_quote_volume_24h: 0,
+                  selector_max_symbols: 5,
+                  selector_exclude_stable: true,
+                  selector_base_assets: '',
                 });
                 setShowCreateModal(true);
               }}
@@ -1213,6 +1237,7 @@ const App: React.FC = () => {
 
                           setStrategyToEdit(s); 
                           setNewStratConfig({
+                            symbol_mode: getCfgString(s.config, 'symbol_mode', 'fixed'),
                             symbol: getCfgString(s.config, 'symbol', 'BTC/USDT'),
                             side: getCfgString(s.config, 'side', 'buy'),
                             leverage: getCfgNumber(s.config, 'leverage', 20),
@@ -1237,6 +1262,13 @@ const App: React.FC = () => {
                             debug: getCfgBool(s.config, 'debug', false),
                             debug_interval_bars: getCfgNumber(s.config, 'debug_interval_bars', 10),
                             repeat_on_flat: getCfgBool(s.config, 'repeat_on_flat', false),
+                            selector_quote: getCfgString(s.config, 'selector_quote', 'USDT'),
+                            selector_min_price: getCfgNumber(s.config, 'selector_min_price', 0),
+                            selector_max_price: getCfgNumber(s.config, 'selector_max_price', 0),
+                            selector_min_quote_volume_24h: getCfgNumber(s.config, 'selector_min_quote_volume_24h', 0),
+                            selector_max_symbols: getCfgNumber(s.config, 'selector_max_symbols', 5),
+                            selector_exclude_stable: getCfgBool(s.config, 'selector_exclude_stable', true),
+                            selector_base_assets: getCfgString(s.config, 'selector_base_assets', ''),
                           });
                           setShowEditConfigModal(true); 
                         }}
@@ -1769,6 +1801,20 @@ const App: React.FC = () => {
                   />
                 </div>
                 <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">交易对模式</label>
+                  <select
+                    value={newStratConfig.symbol_mode}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, symbol_mode: e.target.value })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  >
+                    <option value="fixed">指定交易对</option>
+                    <option value="selector">选币模式</option>
+                  </select>
+                </div>
+              </div>
+
+              {newStratConfig.symbol_mode === 'fixed' ? (
+                <div>
                   <label className="block text-sm font-medium text-gray-500 mb-2">交易对</label>
                   <input 
                     type="text" 
@@ -1778,7 +1824,77 @@ const App: React.FC = () => {
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   />
                 </div>
-              </div>
+              ) : (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 mb-2">计价币</label>
+                    <input
+                      type="text"
+                      value={newStratConfig.selector_quote}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_quote: e.target.value })}
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 mb-2">最低价格</label>
+                    <input
+                      type="number"
+                      value={newStratConfig.selector_min_price}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_min_price: Number(e.target.value) })}
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 mb-2">最高价格</label>
+                    <input
+                      type="number"
+                      value={newStratConfig.selector_max_price}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_max_price: Number(e.target.value) })}
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 mb-2">最多交易对</label>
+                    <input
+                      type="number"
+                      value={newStratConfig.selector_max_symbols}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_max_symbols: Number(e.target.value) })}
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-500 mb-2">24h 成交额下限（Quote）</label>
+                    <input
+                      type="number"
+                      value={newStratConfig.selector_min_quote_volume_24h}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_min_quote_volume_24h: Number(e.target.value) })}
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-500 mb-2">基础币白名单（逗号分隔）</label>
+                    <input
+                      type="text"
+                      value={newStratConfig.selector_base_assets}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_base_assets: e.target.value })}
+                      placeholder="例如: BTC,ETH,SOL"
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    />
+                  </div>
+                  <div className="flex items-end md:col-span-2">
+                    <button
+                      onClick={() => setNewStratConfig({ ...newStratConfig, selector_exclude_stable: !newStratConfig.selector_exclude_stable })}
+                      className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl border transition ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white hover:bg-gray-700' : 'bg-gray-50 border-gray-200 text-gray-900 hover:bg-gray-100'}`}
+                      type="button"
+                    >
+                      <span className="text-sm font-medium text-gray-500">排除稳定币</span>
+                      <span className={`w-11 h-6 rounded-full transition relative ${newStratConfig.selector_exclude_stable ? 'bg-blue-600' : (isDarkMode ? 'bg-gray-700' : 'bg-gray-300')}`}>
+                        <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all ${newStratConfig.selector_exclude_stable ? 'left-5.5' : 'left-0.5'}`} />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
@@ -1990,13 +2106,15 @@ const App: React.FC = () => {
             <div className="space-y-4 mb-8">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-500 mb-2">交易对</label>
-                  <input
-                    type="text"
-                    value={newStratConfig.symbol}
-                    onChange={(e) => setNewStratConfig({ ...newStratConfig, symbol: e.target.value })}
+                  <label className="block text-sm font-medium text-gray-500 mb-2">交易对模式</label>
+                  <select
+                    value={newStratConfig.symbol_mode}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, symbol_mode: e.target.value })}
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
-                  />
+                  >
+                    <option value="fixed">指定交易对</option>
+                    <option value="selector">选币模式</option>
+                  </select>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-500 mb-2">下单数量</label>
@@ -2008,6 +2126,88 @@ const App: React.FC = () => {
                   />
                 </div>
               </div>
+
+              {newStratConfig.symbol_mode === 'fixed' ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">交易对</label>
+                  <input
+                    type="text"
+                    value={newStratConfig.symbol}
+                    onChange={(e) => setNewStratConfig({ ...newStratConfig, symbol: e.target.value })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 mb-2">计价币</label>
+                    <input
+                      type="text"
+                      value={newStratConfig.selector_quote}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_quote: e.target.value })}
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 mb-2">最低价格</label>
+                    <input
+                      type="number"
+                      value={newStratConfig.selector_min_price}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_min_price: Number(e.target.value) })}
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 mb-2">最高价格</label>
+                    <input
+                      type="number"
+                      value={newStratConfig.selector_max_price}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_max_price: Number(e.target.value) })}
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 mb-2">最多交易对</label>
+                    <input
+                      type="number"
+                      value={newStratConfig.selector_max_symbols}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_max_symbols: Number(e.target.value) })}
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-500 mb-2">24h 成交额下限（Quote）</label>
+                    <input
+                      type="number"
+                      value={newStratConfig.selector_min_quote_volume_24h}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_min_quote_volume_24h: Number(e.target.value) })}
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-500 mb-2">基础币白名单（逗号分隔）</label>
+                    <input
+                      type="text"
+                      value={newStratConfig.selector_base_assets}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_base_assets: e.target.value })}
+                      placeholder="例如: BTC,ETH,SOL"
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    />
+                  </div>
+                  <div className="flex items-end md:col-span-2">
+                    <button
+                      onClick={() => setNewStratConfig({ ...newStratConfig, selector_exclude_stable: !newStratConfig.selector_exclude_stable })}
+                      className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl border transition ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white hover:bg-gray-700' : 'bg-gray-50 border-gray-200 text-gray-900 hover:bg-gray-100'}`}
+                      type="button"
+                    >
+                      <span className="text-sm font-medium text-gray-500">排除稳定币</span>
+                      <span className={`w-11 h-6 rounded-full transition relative ${newStratConfig.selector_exclude_stable ? 'bg-blue-600' : (isDarkMode ? 'bg-gray-700' : 'bg-gray-300')}`}>
+                        <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all ${newStratConfig.selector_exclude_stable ? 'left-5.5' : 'left-0.5'}`} />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
