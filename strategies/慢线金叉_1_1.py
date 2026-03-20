@@ -102,7 +102,7 @@ class ProductionTrendMAStrategy(BaseStrategy):
         self.entry_mode = str(config.get("entry_mode", "crossover") or "crossover").strip().lower()
         if self.entry_mode not in ("crossover", "trend"):
             self.entry_mode = "crossover"
-        self.status_interval_bars = _i(config.get("status_interval_bars", 10), 10)
+        self.status_interval_bars = _i(config.get("status_interval_bars", 60), 60)
         if self.status_interval_bars < 0:
             self.status_interval_bars = 0
 
@@ -128,7 +128,6 @@ class ProductionTrendMAStrategy(BaseStrategy):
         self._last_slow = None
         self._confirm_left = 0
         self._trend_up_count = 0
-        self._just_closed = False
 
         self._log_config()
 
@@ -346,25 +345,10 @@ class ProductionTrendMAStrategy(BaseStrategy):
             self.high_water = 0.0
             if self.cooldown_bars > 0:
                 self.cooldown_until = self._bar + self.cooldown_bars
-            self._trend_up_count = 0
-            self._confirm_left = 0
-            self._just_closed = True
             if self.allow_reentry:
                 self._confirm_left = 0
             if self.debug:
                 self.log(f"STATE flat bar={self._bar} cooldown_until={self.cooldown_until}")
-            if self.allow_reentry and self.entry_mode == "trend" and self.cooldown_bars == 0:
-                fast = self._last_fast
-                slow = self._last_slow
-                if fast is not None and slow is not None and fast > slow:
-                    ok, reason = self._can_open()
-                    if ok:
-                        self.log(f"ENTRY long(trend,reentry) bar={self._bar} qty={self.trade_amount}")
-                        self.buy(self.trade_amount, 0)
-                        self.trades_today += 1
-                        self._just_closed = False
-                    elif self.debug:
-                        self.log(f"ENTRY blocked bar={self._bar} reason={reason}")
 
     def on_position(self, position):
         if not isinstance(position, dict):

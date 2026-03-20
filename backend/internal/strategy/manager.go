@@ -249,6 +249,17 @@ func (m *Manager) StartStrategy(id string) error {
 	symbol, _ := inst.Config["symbol"].(string)
 	if symbol != "" {
 		warmup := 50
+		minWarmup := 50
+		if v, ok := inst.Config["slow_window"].(float64); ok && int(v) > 0 {
+			if int(v)+2 > minWarmup {
+				minWarmup = int(v) + 2
+			}
+		}
+		if v, ok := inst.Config["window"].(float64); ok && int(v) > 0 {
+			if int(v)+2 > minWarmup {
+				minWarmup = int(v) + 2
+			}
+		}
 		if raw, ok := inst.Config["warmup_bars"]; ok {
 			if v, ok := raw.(float64); ok {
 				warmup = int(v)
@@ -260,6 +271,9 @@ func (m *Manager) StartStrategy(id string) error {
 			if v, ok := inst.Config["window"].(float64); ok && int(v) > warmup {
 				warmup = int(v)
 			}
+		}
+		if warmup < minWarmup {
+			warmup = minWarmup
 		}
 		if warmup > 0 {
 			if candles, err := inst.exchange.FetchCandles(symbol, "1m", warmup); err == nil && len(candles) > 0 {
