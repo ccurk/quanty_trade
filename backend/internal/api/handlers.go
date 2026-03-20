@@ -267,7 +267,55 @@ func CreateStrategy(c *gin.Context) {
 	json.Unmarshal([]byte(instance.Config), &config)
 
 	var template models.StrategyTemplate
-	database.DB.First(&template, instance.TemplateID)
+	if err := database.DB.First(&template, instance.TemplateID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+		return
+	}
+
+	// Fallback: older templates可能没有持久化 Path，或 Path 指向目录，尝试落盘修复
+	needsWrite := strings.TrimSpace(template.Path) == ""
+	if !needsWrite {
+		if fi, err := os.Stat(template.Path); err != nil || (err == nil && fi.IsDir()) {
+			needsWrite = true
+		}
+	}
+	if needsWrite {
+		if strings.TrimSpace(template.Code) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "模板未保存代码文件，请先在模板列表编辑并保存"})
+			return
+		}
+		filename := fmt.Sprintf("%s_%d.py", template.Name, template.AuthorID)
+		filename = strings.ReplaceAll(filename, " ", "_")
+		filename = filepath.Base(filename)
+		strategiesDir := conf.C().Paths.StrategiesDir
+		if strategiesDir == "" {
+			strategiesDir = conf.Path("strategies")
+		}
+		absDir, err := filepath.Abs(strategiesDir)
+		if err != nil {
+			logger.WithTrace(TraceID(c)).Errorf("CreateStrategy resolve dir failed err=%v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve strategies dir"})
+			return
+		}
+		if err := os.MkdirAll(absDir, 0o755); err != nil {
+			logger.WithTrace(TraceID(c)).Errorf("CreateStrategy mkdir dir failed err=%v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to prepare strategies dir"})
+			return
+		}
+		absPath := filepath.Join(absDir, filename)
+		if err := os.WriteFile(absPath, []byte(template.Code), 0o644); err != nil {
+			logger.WithTrace(TraceID(c)).Errorf("CreateStrategy write code failed err=%v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist template code"})
+			return
+		}
+		template.Path = absPath
+		if err := database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", template.ID).
+			Updates(map[string]interface{}{"path": absPath, "updated_at": time.Now()}).Error; err != nil {
+			logger.WithTrace(TraceID(c)).Errorf("CreateStrategy update template path failed err=%v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update template path"})
+			return
+		}
+	}
 
 	stratMgr.AddStrategy(instance.ID, instance.Name, template.Path, userID.(uint), config)
 
@@ -982,6 +1030,13 @@ func ClosePosition(c *gin.Context) {
 				notify.Status = "filled"
 			}
 			_ = stratMgr.SendToStrategy(strategyID, "order", &notify)
+			_ = stratMgr.SendToStrategy(strategyID, "position", map[string]interface{}{
+				"symbol":          symbol,
+				"status":          "closed",
+				"qty":             0.0,
+				"avg_price":       entryPrice,
+				"avg_close_price": exitPrice,
+			})
 		}
 
 		c.JSON(http.StatusOK, gin.H{"status": "success"})
@@ -1038,6 +1093,13 @@ func ClosePosition(c *gin.Context) {
 			notify.Status = "filled"
 		}
 		_ = stratMgr.SendToStrategy(pos.StrategyID, "order", &notify)
+		_ = stratMgr.SendToStrategy(pos.StrategyID, "position", map[string]interface{}{
+			"symbol":          pos.Symbol,
+			"status":          "closed",
+			"qty":             0.0,
+			"avg_price":       pos.AvgPrice,
+			"avg_close_price": order.Price,
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})

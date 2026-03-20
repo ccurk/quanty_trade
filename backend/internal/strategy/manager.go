@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"quanty_trade/internal/conf"
@@ -958,10 +959,41 @@ func (m *Manager) SyncFromDB(db *gorm.DB) error {
 			var config map[string]interface{}
 			json.Unmarshal([]byte(inst.Config), &config)
 
+			path := strings.TrimSpace(inst.Template.Path)
+			needsWrite := path == ""
+			if !needsWrite {
+				if fi, err := os.Stat(path); err != nil || (err == nil && fi.IsDir()) {
+					needsWrite = true
+				}
+			}
+			if needsWrite && strings.TrimSpace(inst.Template.Code) != "" {
+				filename := fmt.Sprintf("%s_%d.py", inst.Template.Name, inst.Template.AuthorID)
+				filename = strings.ReplaceAll(filename, " ", "_")
+				filename = filepath.Base(filename)
+				strategiesDir := conf.C().Paths.StrategiesDir
+				if strategiesDir == "" {
+					strategiesDir = conf.Path("strategies")
+				}
+				absDir, err := filepath.Abs(strategiesDir)
+				if err == nil {
+					_ = os.MkdirAll(absDir, 0o755)
+					absPath := filepath.Join(absDir, filename)
+					if err := os.WriteFile(absPath, []byte(inst.Template.Code), 0o644); err == nil {
+						path = absPath
+						_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", inst.Template.ID).
+							Updates(map[string]interface{}{"path": absPath, "updated_at": time.Now()}).Error
+						logger.Infof("[SYNC PATH FIX] template_id=%d path=%s", inst.Template.ID, absPath)
+					}
+				}
+			}
+			if path == "" {
+				path = inst.Template.Path
+			}
+
 			m.instances[inst.ID] = &StrategyInstance{
 				ID:        inst.ID,
 				Name:      inst.Name,
-				Path:      inst.Template.Path,
+				Path:      path,
 				Config:    config,
 				Status:    StatusStopped,
 				OwnerID:   inst.OwnerID,
