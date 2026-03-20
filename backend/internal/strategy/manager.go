@@ -87,6 +87,11 @@ type StrategyInstance struct {
 	hub *ws.Hub
 	// exchange is the exchange implementation (mock/binance/etc.).
 	exchange exchange.Exchange
+
+	mgr *Manager
+
+	selectorActiveSymbol string
+	selectorLastSymbol   string
 }
 
 // Manager manages lifecycle of all strategy instances and coordinates exchange access.
@@ -129,6 +134,96 @@ func NewManager(hub *ws.Hub, ex exchange.Exchange) *Manager {
 	}
 }
 
+func pickBestSymbolForInstance(inst *StrategyInstance) (string, []string, error) {
+	if inst == nil {
+		return "", nil, fmt.Errorf("nil instance")
+	}
+	bx, ok := inst.exchange.(*exchange.BinanceExchange)
+	if !ok {
+		return "", nil, fmt.Errorf("exchange does not support selector")
+	}
+
+	cfg := inst.Config
+	if raw, ok := inst.Config["selector_id"].(string); ok && strings.TrimSpace(raw) != "" {
+		var sel models.StrategySelector
+		if err := database.DB.Where("id = ? AND owner_id = ?", strings.TrimSpace(raw), inst.OwnerID).First(&sel).Error; err == nil {
+			var selCfg map[string]interface{}
+			if err := json.Unmarshal([]byte(sel.Config), &selCfg); err == nil {
+				merged := make(map[string]interface{}, len(inst.Config)+len(selCfg))
+				for k, v := range inst.Config {
+					merged[k] = v
+				}
+				for k, v := range selCfg {
+					if strings.HasPrefix(k, "selector_") {
+						merged[k] = v
+					}
+				}
+				cfg = merged
+			}
+		}
+	}
+	quote, _ := cfg["selector_quote"].(string)
+	minPrice, _ := cfg["selector_min_price"].(float64)
+	maxPrice, _ := cfg["selector_max_price"].(float64)
+	minVol, _ := cfg["selector_min_quote_volume_24h"].(float64)
+	maxSymbols := 5
+	if v, ok := cfg["selector_max_symbols"].(float64); ok && int(v) > 0 {
+		maxSymbols = int(v)
+	}
+	excludeStable := true
+	if raw, ok := cfg["selector_exclude_stable"]; ok {
+		if v, ok := raw.(bool); ok {
+			excludeStable = v
+		} else if v, ok := raw.(float64); ok {
+			excludeStable = v != 0
+		}
+	}
+	var baseAssets []string
+	if raw, ok := cfg["selector_base_assets"]; ok {
+		if xs, ok := raw.([]interface{}); ok {
+			for _, it := range xs {
+				if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
+					baseAssets = append(baseAssets, s)
+				}
+			}
+		} else if s, ok := raw.(string); ok && strings.TrimSpace(s) != "" {
+			for _, p := range strings.Split(s, ",") {
+				if v := strings.TrimSpace(p); v != "" {
+					baseAssets = append(baseAssets, v)
+				}
+			}
+		}
+	}
+
+	cands, err := bx.FetchMarketSymbols(quote, minPrice, maxPrice, minVol, maxSymbols, excludeStable, baseAssets)
+	if err != nil {
+		return "", nil, err
+	}
+	symbols := make([]string, 0, len(cands))
+	for _, c := range cands {
+		symbols = append(symbols, c.Symbol)
+	}
+	if len(symbols) == 0 {
+		return "", nil, fmt.Errorf("no symbols matched selector filters")
+	}
+
+	chosen := symbols[0]
+	excludeLast := true
+	if raw, ok := cfg["selector_exclude_last"]; ok {
+		if v, ok := raw.(bool); ok {
+			excludeLast = v
+		} else if v, ok := raw.(float64); ok {
+			excludeLast = v != 0
+		}
+	}
+	if excludeLast && inst.selectorLastSymbol != "" && exchange.NormalizeSymbol(chosen) == exchange.NormalizeSymbol(inst.selectorLastSymbol) {
+		if len(symbols) > 1 {
+			chosen = symbols[1]
+		}
+	}
+	return chosen, symbols, nil
+}
+
 // AddStrategy registers an in-memory strategy instance. It does not start the process.
 //
 // Typical usage:
@@ -147,6 +242,7 @@ func (m *Manager) AddStrategy(id, name, path string, ownerID uint, config map[st
 		CreatedAt: time.Now(),
 		hub:       m.hub,
 		exchange:  m.exchange,
+		mgr:       m,
 	}
 	m.instances[id] = inst
 	return inst
@@ -179,7 +275,38 @@ func (m *Manager) StartStrategy(id string) error {
 	}
 
 	log.Printf("[STRATEGY START] id=%s owner=%d name=%s path=%s", inst.ID, inst.OwnerID, inst.Name, inst.Path)
-	configJSON, _ := json.Marshal(inst.Config)
+
+	runCfg := make(map[string]interface{}, len(inst.Config)+4)
+	for k, v := range inst.Config {
+		runCfg[k] = v
+	}
+
+	mode := ""
+	if raw, ok := inst.Config["symbol_mode"].(string); ok {
+		mode = strings.ToLower(strings.TrimSpace(raw))
+	}
+	fixedSymbol := ""
+	if raw, ok := inst.Config["symbol"].(string); ok {
+		fixedSymbol = strings.TrimSpace(raw)
+	}
+	activeSymbol := fixedSymbol
+	if mode == "selector" && fixedSymbol == "" {
+		if chosen, symbols, err := pickBestSymbolForInstance(inst); err == nil && strings.TrimSpace(chosen) != "" {
+			activeSymbol = chosen
+			inst.selectorActiveSymbol = activeSymbol
+			runCfg["symbol"] = activeSymbol
+			inst.Config["active_symbol"] = activeSymbol
+			inst.Config["symbols"] = symbols
+			log.Printf("[STRATEGY SELECT] id=%s owner=%d symbol=%s candidates=%d", inst.ID, inst.OwnerID, activeSymbol, len(symbols))
+		} else if err != nil {
+			log.Printf("[STRATEGY SELECT ERROR] id=%s owner=%d err=%v", inst.ID, inst.OwnerID, err)
+		}
+	} else if fixedSymbol != "" {
+		inst.selectorActiveSymbol = ""
+		inst.Config["active_symbol"] = ""
+	}
+
+	configJSON, _ := json.Marshal(runCfg)
 
 	absPath, err := resolveStrategyPath(inst.Path)
 	if err != nil {
@@ -245,81 +372,9 @@ func (m *Manager) StartStrategy(id string) error {
 		_ = ex.EnsureUserDataStream(inst.OwnerID, inst.hub)
 	}
 
-	// Start data feed
-	symbols := make([]string, 0)
-	if mode, ok := inst.Config["symbol_mode"].(string); ok && strings.ToLower(strings.TrimSpace(mode)) == "selector" {
-		if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok {
-			quote, _ := inst.Config["selector_quote"].(string)
-			minPrice, _ := inst.Config["selector_min_price"].(float64)
-			maxPrice, _ := inst.Config["selector_max_price"].(float64)
-			minVol, _ := inst.Config["selector_min_quote_volume_24h"].(float64)
-			maxSymbols := 5
-			if v, ok := inst.Config["selector_max_symbols"].(float64); ok && int(v) > 0 {
-				maxSymbols = int(v)
-			}
-			excludeStable := true
-			if raw, ok := inst.Config["selector_exclude_stable"]; ok {
-				if v, ok := raw.(bool); ok {
-					excludeStable = v
-				} else if v, ok := raw.(float64); ok {
-					excludeStable = v != 0
-				}
-			}
-			var baseAssets []string
-			if raw, ok := inst.Config["selector_base_assets"]; ok {
-				if xs, ok := raw.([]interface{}); ok {
-					for _, it := range xs {
-						if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
-							baseAssets = append(baseAssets, s)
-						}
-					}
-				} else if s, ok := raw.(string); ok && strings.TrimSpace(s) != "" {
-					for _, p := range strings.Split(s, ",") {
-						if v := strings.TrimSpace(p); v != "" {
-							baseAssets = append(baseAssets, v)
-						}
-					}
-				}
-			}
-			if cands, err := bx.FetchMarketSymbols(quote, minPrice, maxPrice, minVol, maxSymbols, excludeStable, baseAssets); err == nil && len(cands) > 0 {
-				for _, c := range cands {
-					symbols = append(symbols, c.Symbol)
-				}
-				inst.Config["symbols"] = symbols
-				log.Printf("[STRATEGY SYMBOLS] id=%s owner=%d count=%d", inst.ID, inst.OwnerID, len(symbols))
-			} else if err != nil {
-				log.Printf("[STRATEGY SYMBOLS ERROR] id=%s owner=%d err=%v", inst.ID, inst.OwnerID, err)
-			}
-		}
-	}
-
-	if raw, ok := inst.Config["symbols"]; ok {
-		if xs, ok := raw.([]interface{}); ok {
-			for _, it := range xs {
-				if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
-					symbols = append(symbols, s)
-				}
-			}
-		} else if xs, ok := raw.([]string); ok {
-			for _, s := range xs {
-				if strings.TrimSpace(s) != "" {
-					symbols = append(symbols, s)
-				}
-			}
-		}
-	}
-
-	if len(symbols) == 0 {
-		if symbol, _ := inst.Config["symbol"].(string); strings.TrimSpace(symbol) != "" {
-			symbols = append(symbols, symbol)
-		}
-	}
-
-	if len(symbols) > 20 {
-		symbols = symbols[:20]
-	}
-
-	if len(symbols) == 0 {
+	// Start data feed (single active symbol)
+	symbol := activeSymbol
+	if symbol == "" {
 		log.Printf("[STRATEGY START WARN] id=%s owner=%d reason=no symbol in config", inst.ID, inst.OwnerID)
 		database.DB.Create(&models.StrategyLog{
 			StrategyID: inst.ID,
@@ -363,34 +418,11 @@ func (m *Manager) StartStrategy(id string) error {
 		}
 
 		if warmup > 0 {
-			for _, sym := range symbols {
-				sym := sym
-				if candles, err := inst.exchange.FetchCandles(sym, "1m", warmup); err == nil && len(candles) > 0 {
-					log.Printf("[STRATEGY WARMUP] id=%s owner=%d symbol=%s bars=%d", inst.ID, inst.OwnerID, sym, len(candles))
-					for _, candle := range candles {
-						payload := map[string]interface{}{
-							"symbol":    sym,
-							"timestamp": candle.Timestamp,
-							"open":      candle.Open,
-							"high":      candle.High,
-							"low":       candle.Low,
-							"close":     candle.Close,
-							"volume":    candle.Volume,
-						}
-						_ = inst.SendData("candle", payload)
-					}
-				} else if err != nil {
-					log.Printf("[STRATEGY WARMUP ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, err)
-				}
-			}
-		}
-
-		for _, sym := range symbols {
-			sym := sym
-			go func() {
-				if err := inst.exchange.SubscribeCandles(sym, func(candle exchange.Candle) {
+			if candles, err := inst.exchange.FetchCandles(symbol, "1m", warmup); err == nil && len(candles) > 0 {
+				log.Printf("[STRATEGY WARMUP] id=%s owner=%d symbol=%s bars=%d", inst.ID, inst.OwnerID, symbol, len(candles))
+				for _, candle := range candles {
 					payload := map[string]interface{}{
-						"symbol":    sym,
+						"symbol":    symbol,
 						"timestamp": candle.Timestamp,
 						"open":      candle.Open,
 						"high":      candle.High,
@@ -398,30 +430,47 @@ func (m *Manager) StartStrategy(id string) error {
 						"close":     candle.Close,
 						"volume":    candle.Volume,
 					}
-					inst.SendData("candle", payload)
-					inst.hub.BroadcastJSON(map[string]interface{}{
-						"type":        "candle",
-						"strategy_id": inst.ID,
-						"owner_id":    inst.OwnerID,
-						"data":        payload,
-					})
-				}); err != nil {
-					log.Printf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, err)
-					database.DB.Create(&models.StrategyLog{
-						StrategyID: inst.ID,
-						Level:      "error",
-						Message:    fmt.Sprintf("SubscribeCandles error: %v", err),
-						CreatedAt:  time.Now(),
-					})
-					inst.hub.BroadcastJSON(map[string]interface{}{
-						"type":        "error",
-						"strategy_id": inst.ID,
-						"owner_id":    inst.OwnerID,
-						"error":       fmt.Sprintf("SubscribeCandles error: %v", err),
-					})
+					_ = inst.SendData("candle", payload)
 				}
-			}()
+			} else if err != nil {
+				log.Printf("[STRATEGY WARMUP ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, symbol, err)
+			}
 		}
+
+		go func() {
+			if err := inst.exchange.SubscribeCandles(symbol, func(candle exchange.Candle) {
+				payload := map[string]interface{}{
+					"symbol":    symbol,
+					"timestamp": candle.Timestamp,
+					"open":      candle.Open,
+					"high":      candle.High,
+					"low":       candle.Low,
+					"close":     candle.Close,
+					"volume":    candle.Volume,
+				}
+				inst.SendData("candle", payload)
+				inst.hub.BroadcastJSON(map[string]interface{}{
+					"type":        "candle",
+					"strategy_id": inst.ID,
+					"owner_id":    inst.OwnerID,
+					"data":        payload,
+				})
+			}); err != nil {
+				log.Printf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, symbol, err)
+				database.DB.Create(&models.StrategyLog{
+					StrategyID: inst.ID,
+					Level:      "error",
+					Message:    fmt.Sprintf("SubscribeCandles error: %v", err),
+					CreatedAt:  time.Now(),
+				})
+				inst.hub.BroadcastJSON(map[string]interface{}{
+					"type":        "error",
+					"strategy_id": inst.ID,
+					"owner_id":    inst.OwnerID,
+					"error":       fmt.Sprintf("SubscribeCandles error: %v", err),
+				})
+			}
+		}()
 	}
 
 	go inst.readStdout()
@@ -841,6 +890,28 @@ func (inst *StrategyInstance) readStdout() {
 
 				if strings.ToLower(order.Status) == "filled" {
 					applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, order.Timestamp)
+					if normalizedSide == "sell" {
+						mode := ""
+						if raw, ok := inst.Config["symbol_mode"].(string); ok {
+							mode = strings.ToLower(strings.TrimSpace(raw))
+						}
+						if mode == "selector" && inst.mgr != nil && inst.selectorActiveSymbol != "" && exchange.NormalizeSymbol(inst.selectorActiveSymbol) == exchange.NormalizeSymbol(symbol) {
+							var openCount int64
+							database.DB.Model(&models.StrategyPosition{}).
+								Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
+								Count(&openCount)
+							if openCount == 0 {
+								inst.selectorLastSymbol = inst.selectorActiveSymbol
+								inst.selectorActiveSymbol = ""
+								inst.Config["active_symbol"] = ""
+								go func() {
+									time.Sleep(200 * time.Millisecond)
+									_ = inst.mgr.StopStrategy(inst.ID, false)
+									_ = inst.mgr.StartStrategy(inst.ID)
+								}()
+							}
+						}
+					}
 				}
 			}
 		case "log":
@@ -897,6 +968,7 @@ func (m *Manager) SyncFromDB(db *gorm.DB) error {
 				CreatedAt: inst.CreatedAt,
 				hub:       m.hub,
 				exchange:  m.exchange,
+				mgr:       m,
 			}
 
 		}

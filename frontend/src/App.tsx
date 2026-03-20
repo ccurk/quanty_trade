@@ -338,6 +338,7 @@ const App: React.FC = () => {
   const [newStratConfig, setNewStratConfig] = useState({
     symbol_mode: 'fixed',
     symbol: 'BTC/USDT',
+    selector_id: '',
     side: 'buy',
     leverage: 20,
     fast_window: 10,
@@ -933,6 +934,7 @@ const App: React.FC = () => {
       setNewStratConfig({
         symbol_mode: 'fixed',
         symbol: 'BTC/USDT',
+        selector_id: '',
         side: 'buy',
         leverage: 20,
         fast_window: 10,
@@ -1259,6 +1261,7 @@ const App: React.FC = () => {
                 setNewStratConfig({
                   symbol_mode: 'fixed',
                   symbol: 'BTC/USDT',
+                  selector_id: '',
                   side: 'buy',
                   leverage: 20,
                   fast_window: 10,
@@ -1367,6 +1370,7 @@ const App: React.FC = () => {
                           setNewStratConfig({
                             symbol_mode: getCfgString(s.config, 'symbol_mode', 'fixed'),
                             symbol: getCfgString(s.config, 'symbol', 'BTC/USDT'),
+                            selector_id: getCfgString(s.config, 'selector_id', ''),
                             side: getCfgString(s.config, 'side', 'buy'),
                             leverage: getCfgNumber(s.config, 'leverage', 20),
                             fast_window: getCfgNumber(s.config, 'fast_window', 10),
@@ -2058,7 +2062,21 @@ const App: React.FC = () => {
                   />
                 </div>
               ) : (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 mb-2">关联选币器（可选）</label>
+                    <select
+                      value={newStratConfig.selector_id}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_id: e.target.value })}
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    >
+                      <option value="">不关联（使用下方筛选条件）</option>
+                      {selectors.map(sel => (
+                        <option key={sel.id} value={sel.id}>{sel.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-500 mb-2">计价币</label>
                     <input
@@ -2126,6 +2144,7 @@ const App: React.FC = () => {
                       </span>
                     </button>
                   </div>
+                </div>
                 </div>
               )}
 
@@ -2554,7 +2573,21 @@ const App: React.FC = () => {
                   />
                 </div>
               ) : (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 mb-2">关联选币器（可选）</label>
+                    <select
+                      value={newStratConfig.selector_id}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, selector_id: e.target.value })}
+                      className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                    >
+                      <option value="">不关联（使用下方筛选条件）</option>
+                      {selectors.map(sel => (
+                        <option key={sel.id} value={sel.id}>{sel.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-500 mb-2">计价币</label>
                     <input
@@ -2622,6 +2655,7 @@ const App: React.FC = () => {
                       </span>
                     </button>
                   </div>
+                </div>
                 </div>
               )}
 

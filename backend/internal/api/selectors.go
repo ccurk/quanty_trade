@@ -26,10 +26,18 @@ type CreateSelectorRequest struct {
 }
 
 func ListSelectors(c *gin.Context) {
-	userIDValue, _ := c.Get("user_id")
-	uid := userIDValue.(uint)
-	userRole, _ := c.Get("user_role")
-	role := userRole.(string)
+	userIDValue, ok := c.Get("user_id")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	uid, ok := userIDValue.(uint)
+	if !ok || uid == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	roleValue, _ := c.Get("role")
+	role, _ := roleValue.(string)
 
 	var selectors []models.StrategySelector
 	q := database.DB.Model(&models.StrategySelector{})
@@ -56,8 +64,16 @@ func CreateSelector(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "配置必须是合法 JSON"})
 		return
 	}
-	userIDValue, _ := c.Get("user_id")
-	uid := userIDValue.(uint)
+	userIDValue, ok := c.Get("user_id")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	uid, ok := userIDValue.(uint)
+	if !ok || uid == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
 
 	id := models.GenerateUUID()
 	now := time.Now()
