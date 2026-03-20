@@ -10,6 +10,7 @@ import (
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
+	"quanty_trade/internal/selector"
 	"quanty_trade/internal/strategy"
 	"quanty_trade/internal/ws"
 	"strconv"
@@ -98,6 +99,9 @@ func main() {
 	mgr := strategy.NewManager(hub, ex)
 	mgr.SyncFromDB(database.DB)
 	api.SetManager(mgr)
+	selMgr := selector.NewManager(mgr)
+	selMgr.Start()
+	api.SetSelectorManager(selMgr)
 
 	// Auth Routes
 	r.POST("/api/login", api.Login)
@@ -126,6 +130,14 @@ func main() {
 
 		// Markets
 		protected.GET("/markets/symbols", api.ListMarketSymbols)
+
+		// Selectors
+		protected.GET("/selectors", api.ListSelectors)
+		protected.POST("/selectors", api.CreateSelector)
+		protected.POST("/selectors/:id/start", api.StartSelector)
+		protected.POST("/selectors/:id/stop", api.StopSelector)
+		protected.POST("/selectors/:id/reconcile", api.ReconcileSelector)
+		protected.GET("/selectors/:id/children", api.ListSelectorChildren)
 
 		// Stats
 		protected.GET("/stats/pnl", api.GetPnLSummary)

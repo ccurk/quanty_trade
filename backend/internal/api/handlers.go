@@ -843,6 +843,21 @@ func ClosePosition(c *gin.Context) {
 				if v, ok := cfg["symbol"].(string); ok && exchange.NormalizeSymbol(v) == want {
 					return si.ID, si.Name
 				}
+				if raw, ok := cfg["symbols"]; ok {
+					if xs, ok := raw.([]interface{}); ok {
+						for _, it := range xs {
+							if s, ok := it.(string); ok && exchange.NormalizeSymbol(s) == want {
+								return si.ID, si.Name
+							}
+						}
+					} else if xs, ok := raw.([]string); ok {
+						for _, s := range xs {
+							if exchange.NormalizeSymbol(s) == want {
+								return si.ID, si.Name
+							}
+						}
+					}
+				}
 			}
 			return "", ""
 		}
@@ -1154,16 +1169,21 @@ func validateStrategyCode(code string) []string {
 	}
 
 	hasOpen := strings.Contains(c, ".buy(") ||
+		strings.Contains(c, ".buy_for(") ||
 		strings.Contains(c, "send_order(\"buy") ||
-		strings.Contains(c, "send_order('buy")
+		strings.Contains(c, "send_order('buy") ||
+		strings.Contains(c, "send_order_for(")
 	if !hasOpen {
 		missing = append(missing, "开仓下单 buy()/send_order(buy)")
 	}
 
 	hasClose := strings.Contains(c, ".close_position(") ||
+		strings.Contains(c, ".close_position_for(") ||
 		strings.Contains(c, ".sell(") ||
+		strings.Contains(c, ".sell_for(") ||
 		strings.Contains(c, "send_order(\"sell") ||
-		strings.Contains(c, "send_order('sell")
+		strings.Contains(c, "send_order('sell") ||
+		strings.Contains(c, "send_order_for(")
 	if !hasClose {
 		missing = append(missing, "平仓 close_position()/sell()/send_order(sell)")
 	}

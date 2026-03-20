@@ -61,6 +61,8 @@ func InitDB() {
 		&models.User{},
 		&models.StrategyTemplate{},
 		&models.StrategyInstance{},
+		&models.StrategySelector{},
+		&models.StrategySelectorChild{},
 		&models.StrategyLog{},
 		&models.APILog{},
 		&models.Backtest{},

@@ -81,6 +81,9 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
         self.trailing_stop_pct = _f(config.get("trailing_stop_pct", 0.0), 0.0)
         self.cooldown_bars = _i(config.get("cooldown_bars", 0), 0)
         self.max_hold_bars = _i(config.get("max_hold_bars", 0), 0)
+        self.ban_after_exit_bars = _i(config.get("ban_after_exit_bars", 0), 0)
+        if self.ban_after_exit_bars < 0:
+            self.ban_after_exit_bars = 0
         self.max_concurrent_positions = _i(config.get("max_concurrent_positions", 1), 1)
         if self.max_concurrent_positions <= 0:
             self.max_concurrent_positions = 1
@@ -130,6 +133,7 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
                 "entry_bar": 0,
                 "high_water": 0.0,
                 "cooldown_until": 0,
+                "ban_until": 0,
                 "last_fast": None,
                 "last_slow": None,
                 "confirm_left": 0,
@@ -141,7 +145,7 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
             "CONFIG "
             f"symbols={len(self.symbols)} fast={self.fast_window} slow={self.slow_window} "
             f"qty={self.trade_amount} tp={self.take_profit_pct} sl={self.stop_loss_pct} ts={self.trailing_stop_pct} "
-            f"cooldown={self.cooldown_bars} max_hold={self.max_hold_bars} max_concurrent={self.max_concurrent_positions} max_trades_day={self.max_trades_per_day} "
+            f"cooldown={self.cooldown_bars} ban_after_exit={self.ban_after_exit_bars} max_hold={self.max_hold_bars} max_concurrent={self.max_concurrent_positions} max_trades_day={self.max_trades_per_day} "
             f"reentry={self.allow_reentry} entry_mode={self.entry_mode} confirm_bars={self.confirm_bars} "
             f"status_int={self.status_interval_bars} debug={self.debug} debug_int={self.debug_interval_bars}"
         )
@@ -162,12 +166,21 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
             if self.in_position(sym):
                 n += 1
         return n
+
+    def _inflight_positions_count(self):
+        n = 0
+        for sym in self.symbols:
+            if self.in_position(sym) or (sym in self.pending_orders):
+                n += 1
+        return n
  
     def _can_open(self, sym):
         st = self.state.get(sym)
         if st is None:
             return False, "unknown_symbol"
-        if self._open_positions_count() >= self.max_concurrent_positions:
+        if st["bar"] < (st.get("ban_until") or 0):
+            return False, f"ban_after_exit_left={(st.get('ban_until') or 0) - st['bar']}"
+        if self._inflight_positions_count() >= self.max_concurrent_positions:
             return False, "max_concurrent_positions"
         if self.trade_amount <= 0:
             return False, "trade_amount<=0"
@@ -252,6 +265,7 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
                 "entry_bar": 0,
                 "high_water": 0.0,
                 "cooldown_until": 0,
+                "ban_until": 0,
                 "last_fast": None,
                 "last_slow": None,
                 "confirm_left": 0,
@@ -376,11 +390,13 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
             st["high_water"] = 0.0
             if self.cooldown_bars > 0:
                 st["cooldown_until"] = st["bar"] + self.cooldown_bars
+            if self.ban_after_exit_bars > 0:
+                st["ban_until"] = st["bar"] + self.ban_after_exit_bars
             st["trend_up_count"] = 0
             st["confirm_left"] = 0
             st["last_exit_reason"] = ""
             if self.debug:
-                self.log(f"STATE sym={sym} flat bar={st['bar']} cooldown_until={st['cooldown_until']} exit_reason={exit_reason or 'unknown'}")
+                self.log(f"STATE sym={sym} flat bar={st['bar']} cooldown_until={st['cooldown_until']} ban_until={st.get('ban_until') or 0} exit_reason={exit_reason or 'unknown'}")
  
     def on_position(self, position):
         if not isinstance(position, dict):
