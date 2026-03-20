@@ -81,6 +81,9 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
         self.trailing_stop_pct = _f(config.get("trailing_stop_pct", 0.0), 0.0)
         self.cooldown_bars = _i(config.get("cooldown_bars", 0), 0)
         self.max_hold_bars = _i(config.get("max_hold_bars", 0), 0)
+        self.max_concurrent_positions = _i(config.get("max_concurrent_positions", 1), 1)
+        if self.max_concurrent_positions <= 0:
+            self.max_concurrent_positions = 1
         self.max_trades_per_day = _i(config.get("max_trades_per_day", 10), 10)
         if self.max_trades_per_day <= 0:
             self.max_trades_per_day = 10
@@ -131,13 +134,14 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
                 "last_slow": None,
                 "confirm_left": 0,
                 "trend_up_count": 0,
+                "last_exit_reason": "",
             }
  
         self.log(
             "CONFIG "
             f"symbols={len(self.symbols)} fast={self.fast_window} slow={self.slow_window} "
             f"qty={self.trade_amount} tp={self.take_profit_pct} sl={self.stop_loss_pct} ts={self.trailing_stop_pct} "
-            f"cooldown={self.cooldown_bars} max_hold={self.max_hold_bars} max_trades_day={self.max_trades_per_day} "
+            f"cooldown={self.cooldown_bars} max_hold={self.max_hold_bars} max_concurrent={self.max_concurrent_positions} max_trades_day={self.max_trades_per_day} "
             f"reentry={self.allow_reentry} entry_mode={self.entry_mode} confirm_bars={self.confirm_bars} "
             f"status_int={self.status_interval_bars} debug={self.debug} debug_int={self.debug_interval_bars}"
         )
@@ -163,6 +167,8 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
         st = self.state.get(sym)
         if st is None:
             return False, "unknown_symbol"
+        if self._open_positions_count() >= self.max_concurrent_positions:
+            return False, "max_concurrent_positions"
         if self.trade_amount <= 0:
             return False, "trade_amount<=0"
         if self.trades_today >= self.max_trades_per_day:
@@ -199,16 +205,19 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
  
         if self.max_hold_bars > 0 and (st["bar"] - st["entry_bar"]) >= self.max_hold_bars:
             self.log(f"EXIT time_stop sym={sym} bar={st['bar']} hold={st['bar'] - st['entry_bar']}")
+            st["last_exit_reason"] = "time_stop"
             self.close_position_for(sym, 0)
             return
  
         if stop_level > 0 and close_price <= stop_level:
             self.log(f"EXIT stop sym={sym} close={close_price} stop={stop_level} entry={ep} high={st['high_water']}")
+            st["last_exit_reason"] = "stop"
             self.close_position_for(sym, 0)
             return
  
         if tp_level > 0 and close_price >= tp_level:
             self.log(f"EXIT take_profit sym={sym} close={close_price} tp={tp_level} entry={ep}")
+            st["last_exit_reason"] = "take_profit"
             self.close_position_for(sym, 0)
             return
  
@@ -247,6 +256,7 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
                 "last_slow": None,
                 "confirm_left": 0,
                 "trend_up_count": 0,
+                "last_exit_reason": "",
             }
  
         st = self.state[sym]
@@ -273,10 +283,23 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
  
         if self.status_interval_bars > 0 and (st["bar"] % self.status_interval_bars == 0):
             ok, reason = self._can_open(sym)
+            in_pos = 1 if self.in_position(sym) else 0
+            extra = ""
+            if in_pos:
+                ep = float(st.get("entry_price") or 0.0)
+                hw = float(st.get("high_water") or 0.0)
+                if ep > 0:
+                    stop_from_sl = ep * (1.0 - max(0.0, self.stop_loss_pct))
+                    stop_from_ts = 0.0
+                    if self.trailing_stop_pct > 0 and hw > 0:
+                        stop_from_ts = hw * (1.0 - self.trailing_stop_pct)
+                    stop_level = max(stop_from_sl, stop_from_ts)
+                    tp_level = ep * (1.0 + max(0.0, self.take_profit_pct))
+                    extra = f" entry={ep} tp={tp_level} stop={stop_level} high={hw}"
             self.log(
                 f"HEARTBEAT sym={sym} bar={st['bar']} close={close_price} fast={fast:.6f} slow={slow:.6f} "
-                f"in_pos={1 if self.in_position(sym) else 0} pending={1 if (sym in self.pending_orders) else 0} "
-                f"can_open={1 if ok else 0} reason={reason} trades_today={self.trades_today}"
+                f"in_pos={in_pos} pending={1 if (sym in self.pending_orders) else 0} "
+                f"can_open={1 if ok else 0} reason={reason} trades_today={self.trades_today}{extra}"
             )
  
         if self.in_position(sym):
@@ -341,11 +364,13 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
             st["entry_price"] = ep
             st["entry_bar"] = st["bar"]
             st["high_water"] = max(float(st.get("high_water") or 0.0), ep)
+            st["last_exit_reason"] = ""
             if self.debug:
                 self.log(f"STATE sym={sym} entry_price={st['entry_price']} entry_bar={st['entry_bar']}")
             return
  
         if side == "sell":
+            exit_reason = st.get("last_exit_reason") or ""
             st["entry_price"] = 0.0
             st["entry_bar"] = 0
             st["high_water"] = 0.0
@@ -353,8 +378,9 @@ class ProductionSelectorTrendMAStrategy(BaseStrategy):
                 st["cooldown_until"] = st["bar"] + self.cooldown_bars
             st["trend_up_count"] = 0
             st["confirm_left"] = 0
+            st["last_exit_reason"] = ""
             if self.debug:
-                self.log(f"STATE sym={sym} flat bar={st['bar']} cooldown_until={st['cooldown_until']}")
+                self.log(f"STATE sym={sym} flat bar={st['bar']} cooldown_until={st['cooldown_until']} exit_reason={exit_reason or 'unknown'}")
  
     def on_position(self, position):
         if not isinstance(position, dict):
