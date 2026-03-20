@@ -48,6 +48,7 @@ interface Template {
   description: string;
   path: string;
   code?: string;
+  template_type?: 'strategy' | 'selector';
   is_public: boolean;
   is_draft: boolean;
   is_enabled: boolean;
@@ -293,6 +294,7 @@ const App: React.FC = () => {
   const [squareSearch, setSquareSearch] = useState('');
   const [posSearch, setPosSearch] = useState('');
   const [userSearch, setUserSearch] = useState('');
+  const [templateTypeFilter, setTemplateTypeFilter] = useState<'all' | 'strategy' | 'selector'>('all');
 
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -447,6 +449,8 @@ const App: React.FC = () => {
   const [devCode, setDevCode] = useState(() => localStorage.getItem('dev_code') || DEFAULT_STRATEGY_CODE);
   const [devName, setDevCodeName] = useState(() => localStorage.getItem('dev_name') || '');
   const [devDesc, setDevCodeDesc] = useState(() => localStorage.getItem('dev_desc') || '');
+  const [devTemplateType, setDevTemplateType] = useState<'strategy' | 'selector'>(() => (localStorage.getItem('dev_template_type') as 'strategy' | 'selector') || 'strategy');
+  const [devTemplateId, setDevTemplateId] = useState<number>(() => Number(localStorage.getItem('dev_template_id') || '0'));
   const [isTestingCode, setIsTestingCode] = useState(false);
   const [testResult, setDevTestResult] = useState<{valid: boolean, error?: string} | null>(null);
   const devNameInputRef = useRef<HTMLInputElement | null>(null);
@@ -458,7 +462,9 @@ const App: React.FC = () => {
     localStorage.setItem('dev_code', devCode);
     localStorage.setItem('dev_name', devName);
     localStorage.setItem('dev_desc', devDesc);
-  }, [devCode, devName, devDesc]);
+    localStorage.setItem('dev_template_type', devTemplateType);
+    localStorage.setItem('dev_template_id', String(devTemplateId || 0));
+  }, [devCode, devName, devDesc, devTemplateType, devTemplateId]);
 
   useEffect(() => {
     if (isDarkMode) {
@@ -605,20 +611,40 @@ const App: React.FC = () => {
   };
 
   const saveStrategyTemplate = async () => {
-    const rawName = devNameInputRef.current?.value ?? devName;
-    const name = rawName.trim();
+    const readName = () => {
+      const byState = (devName || '').trim();
+      if (byState) return byState;
+      const byDom = (devNameInputRef.current?.value || '').trim();
+      return byDom;
+    };
+    let name = readName();
     if (!name) {
-      showToast('请输入模板名称', 'warning');
-      return;
+      await new Promise<void>(resolve => setTimeout(() => resolve(), 0));
+      name = readName();
+      if (!name) {
+        showToast('请输入模板名称', 'warning');
+        return;
+      }
     }
     try {
       showToast(`正在保存模板：${name}`, 'success');
-      await axios.post('/api/templates', {
-        name,
-        description: devDesc,
-        code: devCode,
-        is_draft: false
-      });
+      if (devTemplateId && devTemplateId > 0) {
+        await axios.put(`/api/templates/${devTemplateId}`, {
+          name,
+          description: devDesc,
+          code: devCode,
+          template_type: devTemplateType,
+          is_draft: false
+        });
+      } else {
+        await axios.post('/api/templates', {
+          name,
+          description: devDesc,
+          code: devCode,
+          template_type: devTemplateType,
+          is_draft: false
+        });
+      }
       await fetchTemplates();
       await fetchStrategies();
       setActiveTab('templates');
@@ -627,9 +653,11 @@ const App: React.FC = () => {
       setDevCodeName('');
       setDevCodeDesc('');
       setDevCode(DEFAULT_STRATEGY_CODE);
+      setDevTemplateId(0);
       localStorage.removeItem('dev_name');
       localStorage.removeItem('dev_desc');
       localStorage.removeItem('dev_code');
+      localStorage.removeItem('dev_template_id');
     } catch (err: unknown) {
       showToast(getAxiosErrorMessage(err) || '保存失败', 'error');
     }
@@ -1223,6 +1251,17 @@ const App: React.FC = () => {
                 />
               </div>
             )}
+            {activeTab === 'templates' && (
+              <select
+                value={templateTypeFilter}
+                onChange={(e) => setTemplateTypeFilter(e.target.value as 'all' | 'strategy' | 'selector')}
+                className={`px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+              >
+                <option value="all">全部</option>
+                <option value="strategy">策略模版</option>
+                <option value="selector">选币模版</option>
+              </select>
+            )}
             <button 
               onClick={() => { fetchStrategies(); fetchSelectors(); fetchTemplates(); fetchPositions(positionStatus); fetchDashboard(); if (user.role === 'admin') fetchUsers(); }} 
               className={`p-2 rounded-lg transition shadow-sm border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
@@ -1236,7 +1275,7 @@ const App: React.FC = () => {
         {activeTab === 'develop' && (
           <div className="space-y-6">
             <div className={`p-6 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                 <input 
                   type="text" 
                   placeholder="模板名称 (必填)"
@@ -1252,7 +1291,20 @@ const App: React.FC = () => {
                   onChange={(e) => setDevCodeDesc(e.target.value)}
                   className={`px-4 py-2 rounded-xl border transition outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-200'}`}
                 />
+                <select
+                  value={devTemplateType}
+                  onChange={(e) => setDevTemplateType(e.target.value as 'strategy' | 'selector')}
+                  className={`px-4 py-2 rounded-xl border transition outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'}`}
+                >
+                  <option value="strategy">策略模版</option>
+                  <option value="selector">选币模版</option>
+                </select>
               </div>
+              {devTemplateId > 0 && (
+                <div className="text-xs text-gray-500 mb-4">
+                  正在编辑模板 ID：{devTemplateId}
+                </div>
+              )}
               <div className="border rounded-xl overflow-hidden mb-4 h-[500px]">
                 <Editor
                   height="100%"
@@ -1513,7 +1565,7 @@ const App: React.FC = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {selectors.map(sel => {
-                const tplName = templates.find(t => t.id === sel.executor_template_id)?.name || `template_${sel.executor_template_id}`;
+                const tplName = templates.find(t => t.id === sel.executor_template_id)?.name || `未命名模板#${sel.executor_template_id}`;
                 const children = selectorChildren[sel.id] || [];
                 return (
                   <div key={sel.id} className={`p-6 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
@@ -1619,6 +1671,7 @@ const App: React.FC = () => {
               <thead className={`text-xs uppercase tracking-wider ${isDarkMode ? 'bg-gray-800/50 text-gray-400' : 'bg-gray-50 text-gray-500'}`}>
                 <tr>
                   <th className="px-6 py-4">模板名称</th>
+                  <th className="px-6 py-4">类型</th>
                   <th className="px-6 py-4">描述</th>
                   <th className="px-6 py-4">状态</th>
                   <th className="px-6 py-4 text-right">操作</th>
@@ -1627,11 +1680,17 @@ const App: React.FC = () => {
               <tbody className={`divide-y ${isDarkMode ? 'divide-gray-800' : 'divide-gray-100'}`}>
                 {templates.filter(t => 
                   !t.is_draft &&
-                  (t.name.toLowerCase().includes(templateSearch.toLowerCase()) || 
-                   (t.description || '').toLowerCase().includes(templateSearch.toLowerCase()))
+                  (templateTypeFilter === 'all' || (t.template_type || 'strategy') === templateTypeFilter) &&
+                  (((t.name || '').toLowerCase().includes(templateSearch.toLowerCase())) || 
+                   ((t.description || '').toLowerCase().includes(templateSearch.toLowerCase())))
                 ).map(t => (
                   <tr key={t.id} className={`transition ${isDarkMode ? 'hover:bg-gray-800/30' : 'hover:bg-gray-50'}`}>
-                    <td className="px-6 py-4 font-bold">{t.name || `template_${t.id}`}</td>
+                    <td className="px-6 py-4 font-bold">{t.name || `未命名模板#${t.id}`}</td>
+                    <td className="px-6 py-4">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider w-fit ${isDarkMode ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-700'}`}>
+                        {(t.template_type || 'strategy') === 'selector' ? '选币模版' : '策略模版'}
+                      </span>
+                    </td>
                     <td className="px-6 py-4 text-sm text-gray-500 truncate max-w-xs">{t.description || '暂无描述'}</td>
                     <td className="px-6 py-4">
                       <div className="flex flex-col gap-1">
@@ -1662,8 +1721,10 @@ const App: React.FC = () => {
                         <button
                           onClick={() => {
                             setDevCode(t.code || '');
-                            setDevCodeName(t.name || `template_${t.id}`);
+                            setDevCodeName(t.name || `未命名模板#${t.id}`);
                             setDevCodeDesc(t.description || '');
+                            setDevTemplateType(t.template_type || 'strategy');
+                            setDevTemplateId(t.id);
                             setActiveTab('develop');
                           }}
                           className="p-1.5 text-blue-400 hover:bg-blue-900/20 rounded-lg transition"
@@ -2359,7 +2420,7 @@ const App: React.FC = () => {
                   className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                 >
                   <option value={0}>请选择一个模板</option>
-                  {templates.filter(t => t.is_enabled).map(t => <option key={t.id} value={t.id}>{t.name || `template_${t.id}`}</option>)}
+                  {templates.filter(t => t.is_enabled).map(t => <option key={t.id} value={t.id}>{t.name || `未命名模板#${t.id}`}</option>)}
                 </select>
               </div>
               {selectedTemplate !== 0 && (
@@ -2417,7 +2478,7 @@ const App: React.FC = () => {
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   >
                     <option value={0}>请选择一个模板</option>
-                    {templates.filter(t => t.is_enabled).map(t => <option key={t.id} value={t.id}>{t.name || `template_${t.id}`}</option>)}
+                    {templates.filter(t => t.is_enabled).map(t => <option key={t.id} value={t.id}>{t.name || `未命名模板#${t.id}`}</option>)}
                   </select>
                 </div>
               </div>
@@ -2599,7 +2660,7 @@ const App: React.FC = () => {
                     className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
                   >
                     <option value={0}>请选择一个模板</option>
-                    {templates.filter(t => t.is_enabled).map(t => <option key={t.id} value={t.id}>{t.name || `template_${t.id}`}</option>)}
+                    {templates.filter(t => t.is_enabled).map(t => <option key={t.id} value={t.id}>{t.name || `未命名模板#${t.id}`}</option>)}
                   </select>
                 </div>
               </div>

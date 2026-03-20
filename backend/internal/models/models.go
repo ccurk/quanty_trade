@@ -48,7 +48,8 @@ type StrategyTemplate struct {
 	// Description is a human-readable summary shown in UI.
 	Description string `json:"description"`
 	// Path is the Python file path (absolute or relative, depending on deployment).
-	Path string `gorm:"not null" json:"path"`
+	Path         string `gorm:"not null" json:"path"`
+	TemplateType string `gorm:"default:'strategy'" json:"template_type"`
 	// AuthorID references the user who created/published this template.
 	AuthorID uint `json:"author_id"`
 	// Author is the joined author record (used in list endpoints).

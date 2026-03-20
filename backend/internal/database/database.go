@@ -79,7 +79,7 @@ func InitDB() {
 		_ = DB.Exec(`
 			UPDATE strategy_templates
 			SET
-				name = IF(name = '' OR name IS NULL, CONCAT('template_', id), name),
+				name = IF(name = '' OR name IS NULL, CONCAT('untitled_', REPLACE(UUID(), '-', '')), name),
 				author_id = IF(author_id = 0, 1, author_id)
 			WHERE name = '' OR name IS NULL OR author_id = 0
 		`).Error
@@ -87,7 +87,7 @@ func InitDB() {
 		_ = DB.Exec(`
 			UPDATE strategy_templates
 			SET
-				name = CASE WHEN name = '' OR name IS NULL THEN ('template_' || id) ELSE name END,
+				name = CASE WHEN name = '' OR name IS NULL THEN ('untitled_' || lower(hex(randomblob(8)))) ELSE name END,
 				author_id = CASE WHEN author_id = 0 THEN 1 ELSE author_id END
 			WHERE name = '' OR name IS NULL OR author_id = 0
 		`).Error

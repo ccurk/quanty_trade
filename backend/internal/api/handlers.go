@@ -1148,10 +1148,19 @@ func GetStrategyLogs(c *gin.Context) {
 }
 
 type SaveTemplateRequest struct {
-	Name        string `json:"name" binding:"required"`
-	Description string `json:"description"`
-	Code        string `json:"code" binding:"required"`
-	IsDraft     bool   `json:"is_draft"`
+	Name         string `json:"name" binding:"required"`
+	Description  string `json:"description"`
+	Code         string `json:"code" binding:"required"`
+	IsDraft      bool   `json:"is_draft"`
+	TemplateType string `json:"template_type"`
+}
+
+type UpdateTemplateRequest struct {
+	Name         string `json:"name" binding:"required"`
+	Description  string `json:"description"`
+	Code         string `json:"code" binding:"required"`
+	IsDraft      bool   `json:"is_draft"`
+	TemplateType string `json:"template_type"`
 }
 
 func validateStrategyCode(code string) []string {
@@ -1206,6 +1215,14 @@ func SaveTemplate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "模板名称不能为空"})
 		return
 	}
+	templateType := strings.ToLower(strings.TrimSpace(req.TemplateType))
+	if templateType == "" {
+		templateType = "strategy"
+	}
+	if templateType != "strategy" && templateType != "selector" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "模板类型必须是 strategy 或 selector"})
+		return
+	}
 
 	userIDValue, ok := c.Get("user_id")
 	if !ok {
@@ -1218,7 +1235,7 @@ func SaveTemplate(c *gin.Context) {
 		return
 	}
 
-	if !req.IsDraft {
+	if !req.IsDraft && templateType == "strategy" {
 		missing := validateStrategyCode(req.Code)
 		if len(missing) > 0 {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -1263,17 +1280,19 @@ func SaveTemplate(c *gin.Context) {
 		template.Code = req.Code
 		template.IsDraft = req.IsDraft
 		template.Path = absPath
+		template.TemplateType = templateType
 		database.DB.Save(&template)
 	} else {
 		// Create new
 		template = models.StrategyTemplate{
-			Name:        req.Name,
-			Description: req.Description,
-			Path:        absPath,
-			AuthorID:    userID,
-			IsPublic:    false,
-			IsDraft:     req.IsDraft,
-			Code:        req.Code,
+			Name:         req.Name,
+			Description:  req.Description,
+			Path:         absPath,
+			TemplateType: templateType,
+			AuthorID:     userID,
+			IsPublic:     false,
+			IsDraft:      req.IsDraft,
+			Code:         req.Code,
 		}
 		if err := database.DB.Create(&template).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1281,6 +1300,98 @@ func SaveTemplate(c *gin.Context) {
 		}
 	}
 
+	c.JSON(http.StatusOK, template)
+}
+
+func UpdateTemplate(c *gin.Context) {
+	id := c.Param("id")
+	var req UpdateTemplateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "模板名称不能为空"})
+		return
+	}
+	templateType := strings.ToLower(strings.TrimSpace(req.TemplateType))
+	if templateType == "" {
+		templateType = "strategy"
+	}
+	if templateType != "strategy" && templateType != "selector" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "模板类型必须是 strategy 或 selector"})
+		return
+	}
+
+	userIDValue, ok := c.Get("user_id")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	userID, ok := userIDValue.(uint)
+	if !ok || userID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	userRole, _ := c.Get("role")
+
+	var template models.StrategyTemplate
+	if err := database.DB.Where("id = ?", id).First(&template).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+		return
+	}
+	if template.AuthorID != userID && userRole != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Permission denied"})
+		return
+	}
+
+	if !req.IsDraft && templateType == "strategy" {
+		missing := validateStrategyCode(req.Code)
+		if len(missing) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   fmt.Sprintf("策略模板缺少必备实现: %s", strings.Join(missing, "、")),
+				"missing": missing,
+			})
+			return
+		}
+	}
+
+	filename := fmt.Sprintf("%s_%d.py", req.Name, template.AuthorID)
+	filename = strings.ReplaceAll(filename, " ", "_")
+	filename = filepath.Base(filename)
+	strategiesDir := conf.C().Paths.StrategiesDir
+	if strategiesDir == "" {
+		strategiesDir = conf.Path("strategies")
+	}
+	absStrategiesDir, err := filepath.Abs(strategiesDir)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to resolve strategies dir. err: %v", err)})
+		return
+	}
+	if err := os.MkdirAll(absStrategiesDir, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create strategies dir. err: %v", err)})
+		return
+	}
+	absPath := filepath.Join(absStrategiesDir, filename)
+	if err := os.WriteFile(absPath, []byte(req.Code), 0644); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save code file. err: %v", err)})
+		return
+	}
+
+	template.Name = req.Name
+	template.Description = req.Description
+	template.Code = req.Code
+	template.IsDraft = req.IsDraft
+	template.Path = absPath
+	template.TemplateType = templateType
+	template.UpdatedAt = time.Now()
+
+	if err := database.DB.Save(&template).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, template)
 }
 

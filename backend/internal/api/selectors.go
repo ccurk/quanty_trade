@@ -97,10 +97,10 @@ func UpdateSelector(c *gin.Context) {
 	}
 
 	if err := database.DB.Model(&models.StrategySelector{}).Where("id = ?", id).Updates(map[string]interface{}{
-		"name":                 req.Name,
-		"executor_template_id": req.ExecutorTemplate,
-		"config":               req.Config,
-		"updated_at":           time.Now(),
+		"name":              req.Name,
+		"executor_template": req.ExecutorTemplate,
+		"config":            req.Config,
+		"updated_at":        time.Now(),
 	}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

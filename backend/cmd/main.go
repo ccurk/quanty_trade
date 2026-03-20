@@ -147,6 +147,7 @@ func main() {
 		// Strategy Square
 		protected.GET("/templates", api.ListTemplates)
 		protected.POST("/templates", api.SaveTemplate)
+		protected.PUT("/templates/:id", api.UpdateTemplate)
 		protected.POST("/templates/test", api.TestCode)
 		protected.POST("/templates/:id/toggle", api.ToggleTemplateEnabled)
 		protected.DELETE("/templates/:id", api.DeleteTemplate)
