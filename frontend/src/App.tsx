@@ -298,6 +298,7 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showCreateSelectorModal, setShowCreateSelectorModal] = useState(false);
+  const [showEditSelectorModal, setShowEditSelectorModal] = useState(false);
   const [showPublishConfirm, setShowPublishConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showDeleteTemplateConfirm, setShowDeleteTemplateConfirm] = useState(false);
@@ -333,6 +334,19 @@ const App: React.FC = () => {
     max_trades_per_day: 3,
     status_interval_bars: 10,
     repeat_on_flat: true,
+  });
+  const [selectorToEdit, setSelectorToEdit] = useState<StrategySelector | null>(null);
+  const [editSelectorName, setEditSelectorName] = useState('');
+  const [editSelectorExecutorTemplateId, setEditSelectorExecutorTemplateId] = useState<number>(0);
+  const [editSelectorConfig, setEditSelectorConfig] = useState({
+    selector_quote: 'USDT',
+    selector_min_price: 0,
+    selector_max_price: 0,
+    selector_min_quote_volume_24h: 0,
+    selector_max_symbols: 5,
+    selector_exclude_stable: true,
+    selector_base_assets: '',
+    selector_exclude_last: true,
   });
   const [newStratName, setNewStratName] = useState('');
   const [newStratConfig, setNewStratConfig] = useState({
@@ -671,6 +685,32 @@ const App: React.FC = () => {
       showToast('选币器创建成功', 'success');
     } catch (err: unknown) {
       showToast(getAxiosErrorMessage(err) || '创建失败', 'error');
+    }
+  };
+
+  const updateSelector = async () => {
+    if (!selectorToEdit) return;
+    if (!editSelectorName.trim()) {
+      showToast('请输入选币器名称', 'warning');
+      return;
+    }
+    if (!editSelectorExecutorTemplateId) {
+      showToast('请选择执行策略模板', 'warning');
+      return;
+    }
+    try {
+      await axios.put(`/api/selectors/${selectorToEdit.id}`, {
+        name: editSelectorName,
+        executor_template_id: editSelectorExecutorTemplateId,
+        config: JSON.stringify(editSelectorConfig),
+      });
+      setShowEditSelectorModal(false);
+      setSelectorToEdit(null);
+      fetchSelectors();
+      fetchStrategies();
+      showToast('选币器已更新', 'success');
+    } catch (err: unknown) {
+      showToast(getAxiosErrorMessage(err) || '更新失败', 'error');
     }
   };
 
@@ -1504,6 +1544,41 @@ const App: React.FC = () => {
                           启动
                         </button>
                       )}
+                      <button
+                        onClick={() => {
+                          setSelectorToEdit(sel);
+                          setEditSelectorName(sel.name);
+                          setEditSelectorExecutorTemplateId(sel.executor_template_id);
+                          try {
+                            const parsed = JSON.parse(sel.config || '{}') as Record<string, unknown>;
+                            setEditSelectorConfig({
+                              selector_quote: typeof parsed.selector_quote === 'string' ? parsed.selector_quote : 'USDT',
+                              selector_min_price: typeof parsed.selector_min_price === 'number' ? parsed.selector_min_price : 0,
+                              selector_max_price: typeof parsed.selector_max_price === 'number' ? parsed.selector_max_price : 0,
+                              selector_min_quote_volume_24h: typeof parsed.selector_min_quote_volume_24h === 'number' ? parsed.selector_min_quote_volume_24h : 0,
+                              selector_max_symbols: typeof parsed.selector_max_symbols === 'number' ? parsed.selector_max_symbols : 5,
+                              selector_exclude_stable: typeof parsed.selector_exclude_stable === 'boolean' ? parsed.selector_exclude_stable : true,
+                              selector_base_assets: typeof parsed.selector_base_assets === 'string' ? parsed.selector_base_assets : '',
+                              selector_exclude_last: typeof parsed.selector_exclude_last === 'boolean' ? parsed.selector_exclude_last : true,
+                            });
+                          } catch {
+                            setEditSelectorConfig({
+                              selector_quote: 'USDT',
+                              selector_min_price: 0,
+                              selector_max_price: 0,
+                              selector_min_quote_volume_24h: 0,
+                              selector_max_symbols: 5,
+                              selector_exclude_stable: true,
+                              selector_base_assets: '',
+                              selector_exclude_last: true,
+                            });
+                          }
+                          setShowEditSelectorModal(true);
+                        }}
+                        className={`px-4 py-2 rounded-xl font-bold transition border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700 text-white' : 'bg-white hover:bg-gray-50 border-gray-200 text-gray-900'}`}
+                      >
+                        编辑
+                      </button>
                       <button
                         onClick={() => reconcileSelector(sel.id)}
                         className={`px-4 py-2 rounded-xl font-bold transition border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700 text-white' : 'bg-white hover:bg-gray-50 border-gray-200 text-gray-900'}`}
@@ -2495,6 +2570,122 @@ const App: React.FC = () => {
                 className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition shadow-lg shadow-blue-900/20"
               >
                 创建
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showEditSelectorModal && selectorToEdit && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className={`w-full max-w-xl p-8 rounded-2xl shadow-2xl ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
+            <h3 className="text-2xl font-bold mb-6">编辑选币器</h3>
+            <div className="space-y-4 mb-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">选币器名称</label>
+                  <input
+                    type="text"
+                    value={editSelectorName}
+                    onChange={(e) => setEditSelectorName(e.target.value)}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">执行策略模板</label>
+                  <select
+                    value={editSelectorExecutorTemplateId}
+                    onChange={(e) => setEditSelectorExecutorTemplateId(Number(e.target.value))}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  >
+                    <option value={0}>请选择一个模板</option>
+                    {templates.filter(t => t.is_enabled).map(t => <option key={t.id} value={t.id}>{t.name || `template_${t.id}`}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">计价币</label>
+                  <input
+                    type="text"
+                    value={editSelectorConfig.selector_quote}
+                    onChange={(e) => setEditSelectorConfig({ ...editSelectorConfig, selector_quote: e.target.value })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">最低价格</label>
+                  <input
+                    type="number"
+                    value={editSelectorConfig.selector_min_price}
+                    onChange={(e) => setEditSelectorConfig({ ...editSelectorConfig, selector_min_price: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">最高价格</label>
+                  <input
+                    type="number"
+                    value={editSelectorConfig.selector_max_price}
+                    onChange={(e) => setEditSelectorConfig({ ...editSelectorConfig, selector_max_price: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-2">最多交易对</label>
+                  <input
+                    type="number"
+                    value={editSelectorConfig.selector_max_symbols}
+                    onChange={(e) => setEditSelectorConfig({ ...editSelectorConfig, selector_max_symbols: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-500 mb-2">24h 成交额下限（Quote）</label>
+                  <input
+                    type="number"
+                    value={editSelectorConfig.selector_min_quote_volume_24h}
+                    onChange={(e) => setEditSelectorConfig({ ...editSelectorConfig, selector_min_quote_volume_24h: Number(e.target.value) })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-500 mb-2">基础币白名单（逗号分隔）</label>
+                  <input
+                    type="text"
+                    value={editSelectorConfig.selector_base_assets}
+                    onChange={(e) => setEditSelectorConfig({ ...editSelectorConfig, selector_base_assets: e.target.value })}
+                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+                  />
+                </div>
+                <div className="flex items-end md:col-span-2">
+                  <button
+                    onClick={() => setEditSelectorConfig({ ...editSelectorConfig, selector_exclude_stable: !editSelectorConfig.selector_exclude_stable })}
+                    className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl border transition ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white hover:bg-gray-700' : 'bg-gray-50 border-gray-200 text-gray-900 hover:bg-gray-100'}`}
+                    type="button"
+                  >
+                    <span className="text-sm font-medium text-gray-500">排除稳定币</span>
+                    <span className={`w-11 h-6 rounded-full transition relative ${editSelectorConfig.selector_exclude_stable ? 'bg-blue-600' : (isDarkMode ? 'bg-gray-700' : 'bg-gray-300')}`}>
+                      <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all ${editSelectorConfig.selector_exclude_stable ? 'left-5.5' : 'left-0.5'}`} />
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-4">
+              <button
+                onClick={() => { setShowEditSelectorModal(false); setSelectorToEdit(null); }}
+                className={`flex-1 py-3 rounded-xl font-bold transition ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-gray-100 hover:bg-gray-200'}`}
+              >
+                取消
+              </button>
+              <button
+                onClick={updateSelector}
+                className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition shadow-lg shadow-blue-900/20"
+              >
+                保存
               </button>
             </div>
           </div>

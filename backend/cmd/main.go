@@ -134,6 +134,7 @@ func main() {
 		// Selectors
 		protected.GET("/selectors", api.ListSelectors)
 		protected.POST("/selectors", api.CreateSelector)
+		protected.PUT("/selectors/:id", api.UpdateSelector)
 		protected.POST("/selectors/:id/start", api.StartSelector)
 		protected.POST("/selectors/:id/stop", api.StopSelector)
 		protected.POST("/selectors/:id/reconcile", api.ReconcileSelector)
