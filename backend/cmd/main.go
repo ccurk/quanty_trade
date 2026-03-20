@@ -10,10 +10,12 @@ import (
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
+	"quanty_trade/internal/logger"
 	"quanty_trade/internal/selector"
 	"quanty_trade/internal/strategy"
 	"quanty_trade/internal/ws"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -55,6 +57,13 @@ func initLogging() {
 
 	gin.DefaultWriter = gatewayWriter
 	gin.DefaultErrorWriter = businessWriter
+
+	if strings.ToLower(strings.TrimSpace(c.Server.Mode)) == "debug" {
+		logger.SetLevel("debug")
+	} else {
+		logger.SetLevel("info")
+	}
+	logger.SetLevelFromEnv()
 }
 
 func main() {
@@ -83,6 +92,7 @@ func main() {
 	r := gin.New()
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
+	r.Use(api.TraceMiddleware())
 	r.Use(api.APILogger()) // Global API Logging
 	r.Use(api.CORSMiddleware())
 

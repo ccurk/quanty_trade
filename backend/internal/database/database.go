@@ -5,6 +5,7 @@ import (
 	"log"
 	"quanty_trade/internal/auth"
 	"quanty_trade/internal/conf"
+	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 
 	"gorm.io/driver/mysql"
@@ -42,57 +43,24 @@ func InitDB() {
 			c.DB.Name,
 		)
 		DB, err = gorm.Open(mysql.Open(dsn), gormCfg)
-		log.Println("Connecting to MySQL database...")
+		logger.Infof("Connecting to MySQL database...")
 	} else {
 		path := c.DB.SqlitePath
 		if path == "" {
 			path = "quanty.db"
 		}
 		DB, err = gorm.Open(sqlite.Open(path), gormCfg)
-		log.Println("Connecting to SQLite database (local)...")
+		logger.Infof("Connecting to SQLite database (local)...")
 	}
 
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}
 
-	// Auto Migrate: GORM will check if table exists and create/update schema automatically
-	err = DB.AutoMigrate(
-		&models.User{},
-		&models.StrategyTemplate{},
-		&models.StrategyInstance{},
-		&models.StrategySelector{},
-		&models.StrategySelectorChild{},
-		&models.StrategyLog{},
-		&models.APILog{},
-		&models.Backtest{},
-		&models.ExchangeOrderEvent{},
-		&models.StrategyOrder{},
-		&models.StrategyPosition{},
-	)
-	if err != nil {
+	// Migrate user table first so we can bootstrap admin user safely.
+	if err := DB.AutoMigrate(&models.User{}); err != nil {
 		log.Fatal("Failed to migrate database:", err)
 	}
-
-	if dbType == "mysql" {
-		_ = DB.Exec("ALTER TABLE strategy_templates DROP FOREIGN KEY fk_strategy_templates_author").Error
-		_ = DB.Exec(`
-			UPDATE strategy_templates
-			SET
-				name = IF(name = '' OR name IS NULL, CONCAT('untitled_', REPLACE(UUID(), '-', '')), name),
-				author_id = IF(author_id = 0, 1, author_id)
-			WHERE name = '' OR name IS NULL OR author_id = 0
-		`).Error
-	} else {
-		_ = DB.Exec(`
-			UPDATE strategy_templates
-			SET
-				name = CASE WHEN name = '' OR name IS NULL THEN ('untitled_' || lower(hex(randomblob(8)))) ELSE name END,
-				author_id = CASE WHEN author_id = 0 THEN 1 ELSE author_id END
-			WHERE name = '' OR name IS NULL OR author_id = 0
-		`).Error
-	}
-	log.Println("Database schema is up to date.")
 
 	adminUsername := c.Admin.Username
 	if adminUsername == "" {
@@ -120,4 +88,40 @@ func InitDB() {
 			"role":     models.RoleAdmin,
 		})
 	}
+
+	// Auto Migrate: GORM will check if table exists and create/update schema automatically
+	err = DB.AutoMigrate(
+		&models.StrategyTemplate{},
+		&models.StrategyInstance{},
+		&models.StrategySelector{},
+		&models.StrategySelectorChild{},
+		&models.StrategyLog{},
+		&models.APILog{},
+		&models.Backtest{},
+		&models.ExchangeOrderEvent{},
+		&models.StrategyOrder{},
+		&models.StrategyPosition{},
+	)
+	if err != nil {
+		log.Fatal("Failed to migrate database:", err)
+	}
+
+	if dbType == "mysql" {
+		_ = DB.Exec(`
+			UPDATE strategy_templates
+			SET
+				name = IF(name = '' OR name IS NULL, CONCAT('untitled_', REPLACE(UUID(), '-', '')), name),
+				author_id = IF(author_id = 0, ?, author_id)
+			WHERE name = '' OR name IS NULL OR author_id = 0
+		`, admin.ID).Error
+	} else {
+		_ = DB.Exec(`
+			UPDATE strategy_templates
+			SET
+				name = CASE WHEN name = '' OR name IS NULL THEN ('untitled_' || lower(hex(randomblob(8)))) ELSE name END,
+				author_id = CASE WHEN author_id = 0 THEN ? ELSE author_id END
+			WHERE name = '' OR name IS NULL OR author_id = 0
+		`, admin.ID).Error
+	}
+	logger.Infof("Database schema is up to date.")
 }

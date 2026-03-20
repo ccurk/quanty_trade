@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
+	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 	"quanty_trade/internal/secure"
 	"quanty_trade/internal/strategy"
@@ -200,12 +202,15 @@ func APILogger() gin.HandlerFunc {
 			ClientIP:   c.ClientIP(),
 			UserID:     uID,
 			Username:   uName,
+			TraceID:    TraceID(c),
 			CreatedAt:  time.Now(),
 		}
 
 		// Save to DB asynchronously to avoid blocking the request
 		go func(entry models.APILog) {
-			database.DB.Create(&entry)
+			if err := database.DB.Create(&entry).Error; err != nil {
+				logger.WithTrace(entry.TraceID).Errorf("APILog insert failed err=%v", err)
+			}
 		}(logEntry)
 	}
 }
@@ -963,7 +968,20 @@ func ClosePosition(c *gin.Context) {
 		}
 
 		if strategyID != "" && strategyID != "manual" {
-			_ = stratMgr.SendToStrategy(strategyID, "order", order)
+			notify := *order
+			notify.Symbol = symbol
+			notify.Side = strings.ToLower(notify.Side)
+			if notify.Amount <= 0 {
+				notify.Amount = qty
+			}
+			if notify.Price <= 0 {
+				notify.Price = exitPrice
+			}
+			notify.Status = strings.ToLower(strings.TrimSpace(notify.Status))
+			if notify.Status == "" || notify.Status == "new" || notify.Status == "open" || notify.Status == "partially_filled" || notify.Status == "requested" {
+				notify.Status = "filled"
+			}
+			_ = stratMgr.SendToStrategy(strategyID, "order", &notify)
 		}
 
 		c.JSON(http.StatusOK, gin.H{"status": "success"})
@@ -1008,6 +1026,19 @@ func ClosePosition(c *gin.Context) {
 			"status":            order.Status,
 			"updated_at":        time.Now(),
 		})
+
+	if pos.StrategyID != "" && pos.StrategyID != "manual" {
+		notify := *order
+		notify.Side = strings.ToLower(notify.Side)
+		if notify.Amount <= 0 {
+			notify.Amount = pos.Amount
+		}
+		notify.Status = strings.ToLower(strings.TrimSpace(notify.Status))
+		if notify.Status == "" || notify.Status == "new" || notify.Status == "open" || notify.Status == "partially_filled" || notify.Status == "requested" {
+			notify.Status = "filled"
+		}
+		_ = stratMgr.SendToStrategy(pos.StrategyID, "order", &notify)
+	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
@@ -1211,6 +1242,9 @@ func SaveTemplate(c *gin.Context) {
 		return
 	}
 
+	// log debug
+	log.Printf("SaveTemplate req: %+v", req)
+
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "模板名称不能为空"})
@@ -1283,7 +1317,11 @@ func SaveTemplate(c *gin.Context) {
 		template.IsDraft = req.IsDraft
 		template.Path = absPath
 		template.TemplateType = templateType
-		database.DB.Save(&template)
+		if err := database.DB.Save(&template).Error; err != nil {
+			logger.WithTrace(TraceID(c)).Errorf("SaveTemplate update failed err=%v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	} else {
 		// Create new
 		template = models.StrategyTemplate{
@@ -1297,6 +1335,7 @@ func SaveTemplate(c *gin.Context) {
 			Code:         req.Code,
 		}
 		if err := database.DB.Create(&template).Error; err != nil {
+			logger.WithTrace(TraceID(c)).Errorf("SaveTemplate create failed err=%v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -1516,7 +1555,11 @@ func ToggleTemplateEnabled(c *gin.Context) {
 	}
 
 	template.IsEnabled = !template.IsEnabled
-	database.DB.Save(&template)
+	if err := database.DB.Save(&template).Error; err != nil {
+		logger.WithTrace(TraceID(c)).Errorf("ToggleTemplateEnabled save failed err=%v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "is_enabled": template.IsEnabled})
 }

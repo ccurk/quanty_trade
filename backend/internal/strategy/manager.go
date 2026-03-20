@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"os/exec"
 	"path/filepath"
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
+	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 	"quanty_trade/internal/ws"
 	"sort"
@@ -274,7 +274,7 @@ func (m *Manager) StartStrategy(id string) error {
 		return nil
 	}
 
-	log.Printf("[STRATEGY START] id=%s owner=%d name=%s path=%s", inst.ID, inst.OwnerID, inst.Name, inst.Path)
+	logger.Infof("[STRATEGY START] id=%s owner=%d name=%s path=%s", inst.ID, inst.OwnerID, inst.Name, inst.Path)
 
 	runCfg := make(map[string]interface{}, len(inst.Config)+4)
 	for k, v := range inst.Config {
@@ -297,9 +297,9 @@ func (m *Manager) StartStrategy(id string) error {
 			runCfg["symbol"] = activeSymbol
 			inst.Config["active_symbol"] = activeSymbol
 			inst.Config["symbols"] = symbols
-			log.Printf("[STRATEGY SELECT] id=%s owner=%d symbol=%s candidates=%d", inst.ID, inst.OwnerID, activeSymbol, len(symbols))
+			logger.Infof("[STRATEGY SELECT] id=%s owner=%d symbol=%s candidates=%d", inst.ID, inst.OwnerID, activeSymbol, len(symbols))
 		} else if err != nil {
-			log.Printf("[STRATEGY SELECT ERROR] id=%s owner=%d err=%v", inst.ID, inst.OwnerID, err)
+			logger.Errorf("[STRATEGY SELECT ERROR] id=%s owner=%d err=%v", inst.ID, inst.OwnerID, err)
 		}
 	} else if fixedSymbol != "" {
 		inst.selectorActiveSymbol = ""
@@ -375,7 +375,7 @@ func (m *Manager) StartStrategy(id string) error {
 	// Start data feed (single active symbol)
 	symbol := activeSymbol
 	if symbol == "" {
-		log.Printf("[STRATEGY START WARN] id=%s owner=%d reason=no symbol in config", inst.ID, inst.OwnerID)
+		logger.Warnf("[STRATEGY START WARN] id=%s owner=%d reason=no symbol in config", inst.ID, inst.OwnerID)
 		database.DB.Create(&models.StrategyLog{
 			StrategyID: inst.ID,
 			Level:      "error",
@@ -419,7 +419,7 @@ func (m *Manager) StartStrategy(id string) error {
 
 		if warmup > 0 {
 			if candles, err := inst.exchange.FetchCandles(symbol, "1m", warmup); err == nil && len(candles) > 0 {
-				log.Printf("[STRATEGY WARMUP] id=%s owner=%d symbol=%s bars=%d", inst.ID, inst.OwnerID, symbol, len(candles))
+				logger.Infof("[STRATEGY WARMUP] id=%s owner=%d symbol=%s bars=%d", inst.ID, inst.OwnerID, symbol, len(candles))
 				for _, candle := range candles {
 					payload := map[string]interface{}{
 						"symbol":    symbol,
@@ -433,7 +433,7 @@ func (m *Manager) StartStrategy(id string) error {
 					_ = inst.SendData("candle", payload)
 				}
 			} else if err != nil {
-				log.Printf("[STRATEGY WARMUP ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, symbol, err)
+				logger.Errorf("[STRATEGY WARMUP ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, symbol, err)
 			}
 		}
 
@@ -456,7 +456,7 @@ func (m *Manager) StartStrategy(id string) error {
 					"data":        payload,
 				})
 			}); err != nil {
-				log.Printf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, symbol, err)
+				logger.Errorf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, symbol, err)
 				database.DB.Create(&models.StrategyLog{
 					StrategyID: inst.ID,
 					Level:      "error",
@@ -580,7 +580,7 @@ func (inst *StrategyInstance) readStderr(stderr io.ReadCloser) {
 	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
 		msg := scanner.Text()
-		log.Printf("[%s ERROR] %s", inst.Name, msg)
+		logger.Errorf("[%s ERROR] %s", inst.Name, msg)
 		database.DB.Create(&models.StrategyLog{
 			StrategyID: inst.ID,
 			Level:      "error",
@@ -716,7 +716,7 @@ func (inst *StrategyInstance) readStdout() {
 	for scanner.Scan() {
 		var msg map[string]interface{}
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			log.Printf("Error decoding strategy output: %v", err)
+			logger.Errorf("Error decoding strategy output: %v", err)
 			continue
 		}
 
@@ -751,7 +751,7 @@ func (inst *StrategyInstance) readStdout() {
 					Count(&inflightBuy)
 				if int(openCount) >= maxPos {
 					reason := fmt.Sprintf("Max concurrent positions reached (open=%d max=%d)", openCount, maxPos)
-					log.Printf("[ORDER BLOCK] strategy=%s owner=%d symbol=%s side=%s amount=%v price=%v reason=%s", inst.ID, inst.OwnerID, symbol, normalizedSide, amount, price, reason)
+					logger.Warnf("[ORDER BLOCK] strategy=%s owner=%d symbol=%s side=%s amount=%v price=%v reason=%s", inst.ID, inst.OwnerID, symbol, normalizedSide, amount, price, reason)
 					database.DB.Create(&models.StrategyLog{
 						StrategyID: inst.ID,
 						Level:      "error",
@@ -768,7 +768,7 @@ func (inst *StrategyInstance) readStdout() {
 				}
 				if int(openCount+inflightBuy) >= maxPos {
 					reason := fmt.Sprintf("Max concurrent positions reached (open=%d inflight_buy=%d max=%d)", openCount, inflightBuy, maxPos)
-					log.Printf("[ORDER BLOCK] strategy=%s owner=%d symbol=%s side=%s amount=%v price=%v reason=%s", inst.ID, inst.OwnerID, symbol, normalizedSide, amount, price, reason)
+					logger.Warnf("[ORDER BLOCK] strategy=%s owner=%d symbol=%s side=%s amount=%v price=%v reason=%s", inst.ID, inst.OwnerID, symbol, normalizedSide, amount, price, reason)
 					database.DB.Create(&models.StrategyLog{
 						StrategyID: inst.ID,
 						Level:      "error",
@@ -786,7 +786,7 @@ func (inst *StrategyInstance) readStdout() {
 			}
 
 			clientOrderID := models.GenerateUUID()
-			log.Printf("[ORDER REQUEST] strategy=%s owner=%d client_order_id=%s symbol=%s side=%s amount=%v price=%v", inst.ID, inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price)
+			logger.Infof("[ORDER REQUEST] strategy=%s owner=%d client_order_id=%s symbol=%s side=%s amount=%v price=%v", inst.ID, inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price)
 			database.DB.Create(&models.StrategyOrder{
 				StrategyID:   inst.ID,
 				StrategyName: inst.Name,
@@ -828,7 +828,7 @@ func (inst *StrategyInstance) readStdout() {
 					SetLeverage(ownerID uint, symbol string, leverage int) error
 				}); ok {
 					if err := ex.SetLeverage(inst.OwnerID, symbol, leverage); err != nil {
-						log.Printf("[LEVERAGE ERROR] strategy=%s owner=%d symbol=%s leverage=%d err=%v", inst.ID, inst.OwnerID, symbol, leverage, err)
+						logger.Errorf("[LEVERAGE ERROR] strategy=%s owner=%d symbol=%s leverage=%d err=%v", inst.ID, inst.OwnerID, symbol, leverage, err)
 						database.DB.Create(&models.StrategyLog{
 							StrategyID: inst.ID,
 							Level:      "error",
@@ -849,7 +849,7 @@ func (inst *StrategyInstance) readStdout() {
 			if err != nil {
 				database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
 					Updates(map[string]interface{}{"status": "failed", "updated_at": time.Now()})
-				log.Printf("[ORDER ERROR] strategy=%s owner=%d client_order_id=%s symbol=%s side=%s amount=%v price=%v err=%v", inst.ID, inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price, err)
+				logger.Errorf("[ORDER ERROR] strategy=%s owner=%d client_order_id=%s symbol=%s side=%s amount=%v price=%v err=%v", inst.ID, inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price, err)
 				database.DB.Create(&models.StrategyLog{
 					StrategyID: inst.ID,
 					Level:      "error",
@@ -881,7 +881,7 @@ func (inst *StrategyInstance) readStdout() {
 						"avg_price":         order.Price,
 						"updated_at":        time.Now(),
 					})
-				log.Printf("[ORDER OK] strategy=%s owner=%d client_order_id=%s exchange_order_id=%s status=%s filled_qty=%v avg_price=%v", inst.ID, inst.OwnerID, clientOrderID, order.ID, order.Status, order.Amount, order.Price)
+				logger.Infof("[ORDER OK] strategy=%s owner=%d client_order_id=%s exchange_order_id=%s status=%s filled_qty=%v avg_price=%v", inst.ID, inst.OwnerID, clientOrderID, order.ID, order.Status, order.Amount, order.Price)
 				inst.hub.BroadcastJSON(map[string]interface{}{
 					"type": "order",
 					"data": order,
@@ -915,7 +915,7 @@ func (inst *StrategyInstance) readStdout() {
 				}
 			}
 		case "log":
-			log.Printf("[%s LOG] %v", inst.Name, data)
+			logger.Infof("[%s LOG] %v", inst.Name, data)
 
 			// Save to DB
 			logMsg, _ := data.(string)

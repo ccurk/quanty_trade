@@ -155,6 +155,7 @@ type APILog struct {
 	UserID uint `json:"user_id"`
 	// Username is denormalized for easier querying.
 	Username string `json:"username"`
+	TraceID  string `gorm:"index" json:"trace_id"`
 	// CreatedAt is the request timestamp.
 	CreatedAt time.Time `json:"created_at"`
 }
