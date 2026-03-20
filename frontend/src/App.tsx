@@ -56,6 +56,14 @@ interface Template {
   author: { id: number, username: string };
 }
 
+interface MarketSymbol {
+  symbol: string;
+  base_asset: string;
+  quote_asset: string;
+  last_price: number;
+  quote_volume_24h: number;
+}
+
 interface Position {
   symbol: string;
   amount: number;
@@ -321,6 +329,7 @@ const App: React.FC = () => {
     selector_max_symbols: 5,
     selector_exclude_stable: true,
     selector_base_assets: '',
+    selector_fixed_symbols: '',
 
     leverage: 20,
     fast_window: 10,
@@ -348,6 +357,7 @@ const App: React.FC = () => {
     selector_max_symbols: 5,
     selector_exclude_stable: true,
     selector_base_assets: '',
+    selector_fixed_symbols: '',
     selector_exclude_last: true,
   });
   const [newStratName, setNewStratName] = useState('');
@@ -385,8 +395,13 @@ const App: React.FC = () => {
     selector_max_symbols: 5,
     selector_exclude_stable: true,
     selector_base_assets: '',
+    selector_fixed_symbols: '',
   });
   const [selectedTemplate, setSelectedTemplate] = useState<number>(0);
+  const [marketSymbols, setMarketSymbols] = useState<MarketSymbol[]>([]);
+  const [marketSymbolsSearch, setMarketSymbolsSearch] = useState('');
+  const [isLoadingMarketSymbols, setIsLoadingMarketSymbols] = useState(false);
+  const [strategySymbolSearch, setStrategySymbolSearch] = useState('');
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [dashboardRange, setDashboardRange] = useState<'default' | '1m' | '5m' | '1w' | '1mo' | 'custom'>('default');
   const [dashboardStart, setDashboardStart] = useState('');
@@ -692,6 +707,67 @@ const App: React.FC = () => {
       console.error('Failed to fetch selector children', err);
     }
   };
+
+  const loadMarketSymbols = async (cfg: Record<string, unknown>) => {
+    if (isLoadingMarketSymbols) return;
+    setIsLoadingMarketSymbols(true);
+    try {
+      const quote = typeof cfg.selector_quote === 'string' ? cfg.selector_quote : 'USDT';
+      const minPrice = typeof cfg.selector_min_price === 'number' ? cfg.selector_min_price : 0;
+      const maxPrice = typeof cfg.selector_max_price === 'number' ? cfg.selector_max_price : 0;
+      const minVol = typeof cfg.selector_min_quote_volume_24h === 'number' ? cfg.selector_min_quote_volume_24h : 0;
+      const excludeStable = typeof cfg.selector_exclude_stable === 'boolean' ? cfg.selector_exclude_stable : true;
+      const baseAssets = typeof cfg.selector_base_assets === 'string' ? cfg.selector_base_assets : '';
+
+      const params = new URLSearchParams();
+      params.set('quote', quote || 'USDT');
+      params.set('limit', '500');
+      params.set('exclude_stable', excludeStable ? 'true' : 'false');
+      if (minPrice > 0) params.set('min_price', String(minPrice));
+      if (maxPrice > 0) params.set('max_price', String(maxPrice));
+      if (minVol > 0) params.set('min_quote_volume_24h', String(minVol));
+      if (baseAssets.trim()) params.set('base_assets', baseAssets.trim());
+
+      const res = await axios.get(`/api/markets/symbols?${params.toString()}`);
+      setMarketSymbols(Array.isArray(res.data) ? (res.data as MarketSymbol[]) : []);
+    } catch (err: unknown) {
+      showToast(getAxiosErrorMessage(err) || '获取交易对失败', 'error');
+    } finally {
+      setIsLoadingMarketSymbols(false);
+    }
+  };
+
+  const parseFixedSymbols = (raw: string): string[] => {
+    return (raw || '').split(',').map(s => s.trim()).filter(Boolean);
+  };
+
+  useEffect(() => {
+    if (showCreateSelectorModal) {
+      setMarketSymbolsSearch('');
+      if (marketSymbols.length === 0) loadMarketSymbols(newSelectorConfig as unknown as Record<string, unknown>);
+    }
+  }, [showCreateSelectorModal]);
+
+  useEffect(() => {
+    if (showEditSelectorModal) {
+      setMarketSymbolsSearch('');
+      if (marketSymbols.length === 0) loadMarketSymbols(editSelectorConfig as unknown as Record<string, unknown>);
+    }
+  }, [showEditSelectorModal]);
+
+  useEffect(() => {
+    if (showCreateModal && newStratConfig.symbol_mode === 'fixed') {
+      setStrategySymbolSearch('');
+      if (marketSymbols.length === 0) loadMarketSymbols(newStratConfig as unknown as Record<string, unknown>);
+    }
+  }, [showCreateModal, newStratConfig.symbol_mode]);
+
+  useEffect(() => {
+    if (showEditConfigModal && newStratConfig.symbol_mode === 'fixed') {
+      setStrategySymbolSearch('');
+      if (marketSymbols.length === 0) loadMarketSymbols(newStratConfig as unknown as Record<string, unknown>);
+    }
+  }, [showEditConfigModal, newStratConfig.symbol_mode]);
 
   const createSelector = async () => {
     if (!newSelectorName.trim()) {
@@ -1036,6 +1112,7 @@ const App: React.FC = () => {
         selector_max_symbols: 5,
         selector_exclude_stable: true,
         selector_base_assets: '',
+        selector_fixed_symbols: '',
       });
       setSelectedTemplate(0);
       setActiveTab('strategies');
@@ -1392,6 +1469,7 @@ const App: React.FC = () => {
                   selector_max_symbols: 5,
                   selector_exclude_stable: true,
                   selector_base_assets: '',
+                  selector_fixed_symbols: '',
                 });
                 setShowCreateModal(true);
               }}
@@ -1501,6 +1579,7 @@ const App: React.FC = () => {
                             selector_max_symbols: getCfgNumber(s.config, 'selector_max_symbols', 5),
                             selector_exclude_stable: getCfgBool(s.config, 'selector_exclude_stable', true),
                             selector_base_assets: getCfgString(s.config, 'selector_base_assets', ''),
+                            selector_fixed_symbols: getCfgString(s.config, 'selector_fixed_symbols', ''),
                           });
                           setShowEditConfigModal(true); 
                         }}
@@ -1548,6 +1627,7 @@ const App: React.FC = () => {
                     selector_max_symbols: 5,
                     selector_exclude_stable: true,
                     selector_base_assets: '',
+                    selector_fixed_symbols: '',
                     leverage: 20,
                     fast_window: 10,
                     slow_window: 30,
@@ -1619,6 +1699,7 @@ const App: React.FC = () => {
                               selector_max_symbols: typeof parsed.selector_max_symbols === 'number' ? parsed.selector_max_symbols : 5,
                               selector_exclude_stable: typeof parsed.selector_exclude_stable === 'boolean' ? parsed.selector_exclude_stable : true,
                               selector_base_assets: typeof parsed.selector_base_assets === 'string' ? parsed.selector_base_assets : '',
+                              selector_fixed_symbols: typeof parsed.selector_fixed_symbols === 'string' ? parsed.selector_fixed_symbols : '',
                               selector_exclude_last: typeof parsed.selector_exclude_last === 'boolean' ? parsed.selector_exclude_last : true,
                             });
                           } catch {
@@ -1630,6 +1711,7 @@ const App: React.FC = () => {
                               selector_max_symbols: 5,
                               selector_exclude_stable: true,
                               selector_base_assets: '',
+                              selector_fixed_symbols: '',
                               selector_exclude_last: true,
                             });
                           }
@@ -2197,13 +2279,59 @@ const App: React.FC = () => {
               {newStratConfig.symbol_mode === 'fixed' ? (
                 <div>
                   <label className="block text-sm font-medium text-gray-500 mb-2">交易对</label>
-                  <input 
-                    type="text" 
-                    value={newStratConfig.symbol}
-                    onChange={(e) => setNewStratConfig({ ...newStratConfig, symbol: e.target.value })}
-                    placeholder="例如: BTC/USDT"
-                    className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
-                  />
+                  <div className={`rounded-2xl border p-4 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+                    <div className="flex items-center justify-between gap-4 mb-3">
+                      <div className="text-xs text-gray-500">可搜索下拉选择，也可直接编辑当前值</div>
+                      <button
+                        onClick={() => loadMarketSymbols(newStratConfig as unknown as Record<string, unknown>)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+                        disabled={isLoadingMarketSymbols}
+                        type="button"
+                      >
+                        {isLoadingMarketSymbols ? '加载中...' : '刷新列表'}
+                      </button>
+                    </div>
+
+                    <input
+                      type="text"
+                      value={strategySymbolSearch}
+                      onChange={(e) => setStrategySymbolSearch(e.target.value)}
+                      placeholder="搜索交易对，例如 DOGE 或 DOGE/USDT"
+                      className={`w-full px-4 py-2 rounded-xl border text-sm transition outline-none mb-3 ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                    />
+
+                    <div className={`max-h-56 overflow-auto rounded-xl border ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-white'}`}>
+                      {marketSymbols
+                        .filter(ms => {
+                          const q = strategySymbolSearch.trim().toLowerCase();
+                          if (!q) return true;
+                          return ms.symbol.toLowerCase().includes(q) || ms.base_asset.toLowerCase().includes(q) || ms.quote_asset.toLowerCase().includes(q);
+                        })
+                        .slice(0, 200)
+                        .map(ms => (
+                          <button
+                            key={ms.symbol}
+                            type="button"
+                            onClick={() => {
+                              setNewStratConfig({ ...newStratConfig, symbol: ms.symbol });
+                              setStrategySymbolSearch(ms.symbol);
+                            }}
+                            className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between gap-3 ${isDarkMode ? 'hover:bg-gray-900/60 text-gray-100' : 'hover:bg-gray-50 text-gray-900'}`}
+                          >
+                            <span className="font-mono">{ms.symbol}</span>
+                            <span className="text-xs text-gray-500 font-mono">Vol:{Math.round(ms.quote_volume_24h)}</span>
+                          </button>
+                        ))}
+                    </div>
+
+                    <input
+                      type="text"
+                      value={newStratConfig.symbol}
+                      onChange={(e) => setNewStratConfig({ ...newStratConfig, symbol: e.target.value })}
+                      placeholder="例如: BTC/USDT"
+                      className={`w-full mt-3 px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200'}`}
+                    />
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -2549,6 +2677,75 @@ const App: React.FC = () => {
                 </div>
               </div>
 
+              <div className={`rounded-2xl border p-4 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+                <div className="flex items-center justify-between gap-4 mb-3">
+                  <div>
+                    <div className="text-sm font-bold">指定交易对（可搜索多选）</div>
+                    <div className="text-xs text-gray-500">留空则按选币规则自动挑选</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => loadMarketSymbols(newSelectorConfig as unknown as Record<string, unknown>)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+                      disabled={isLoadingMarketSymbols}
+                    >
+                      {isLoadingMarketSymbols ? '加载中...' : '刷新列表'}
+                    </button>
+                    <button
+                      onClick={() => setNewSelectorConfig({ ...newSelectorConfig, selector_fixed_symbols: '' })}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+                    >
+                      清空选择
+                    </button>
+                  </div>
+                </div>
+
+                <input
+                  type="text"
+                  value={marketSymbolsSearch}
+                  onChange={(e) => setMarketSymbolsSearch(e.target.value)}
+                  placeholder="搜索交易对，例如 BTC 或 BTC/USDT"
+                  className={`w-full px-4 py-2 rounded-xl border text-sm transition outline-none mb-3 ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                />
+
+                <div className={`max-h-56 overflow-auto rounded-xl border ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-white'}`}>
+                  {marketSymbols
+                    .filter(ms => {
+                      const q = marketSymbolsSearch.trim().toLowerCase();
+                      if (!q) return true;
+                      return ms.symbol.toLowerCase().includes(q) || ms.base_asset.toLowerCase().includes(q) || ms.quote_asset.toLowerCase().includes(q);
+                    })
+                    .slice(0, 200)
+                    .map(ms => {
+                      const selected = parseFixedSymbols(newSelectorConfig.selector_fixed_symbols);
+                      const checked = selected.includes(ms.symbol);
+                      return (
+                        <label key={ms.symbol} className={`flex items-center justify-between gap-3 px-3 py-2 text-sm cursor-pointer ${isDarkMode ? 'hover:bg-gray-900/60' : 'hover:bg-gray-50'}`}>
+                          <div className="flex items-center gap-3 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                const next = checked ? selected.filter(s => s !== ms.symbol) : [...selected, ms.symbol];
+                                setNewSelectorConfig({ ...newSelectorConfig, selector_fixed_symbols: next.join(',') });
+                              }}
+                            />
+                            <div className="min-w-0">
+                              <div className="font-mono truncate">{ms.symbol}</div>
+                              <div className="text-xs text-gray-500 truncate">{ms.base_asset}/{ms.quote_asset} 价格:{ms.last_price}</div>
+                            </div>
+                          </div>
+                          <div className="text-xs text-gray-500 font-mono">Vol:{Math.round(ms.quote_volume_24h)}</div>
+                        </label>
+                      );
+                    })}
+                </div>
+
+                <div className="mt-3 text-xs text-gray-500">
+                  已选 {parseFixedSymbols(newSelectorConfig.selector_fixed_symbols).length} 个
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-500 mb-2">快线窗口</label>
@@ -2739,6 +2936,77 @@ const App: React.FC = () => {
                       <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all ${editSelectorConfig.selector_exclude_stable ? 'left-5.5' : 'left-0.5'}`} />
                     </span>
                   </button>
+                </div>
+              </div>
+
+              <div className={`rounded-2xl border p-4 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+                <div className="flex items-center justify-between gap-4 mb-3">
+                  <div>
+                    <div className="text-sm font-bold">指定交易对（可搜索多选）</div>
+                    <div className="text-xs text-gray-500">留空则按选币规则自动挑选</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => loadMarketSymbols(editSelectorConfig as unknown as Record<string, unknown>)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+                      disabled={isLoadingMarketSymbols}
+                      type="button"
+                    >
+                      {isLoadingMarketSymbols ? '加载中...' : '刷新列表'}
+                    </button>
+                    <button
+                      onClick={() => setEditSelectorConfig({ ...editSelectorConfig, selector_fixed_symbols: '' })}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+                      type="button"
+                    >
+                      清空选择
+                    </button>
+                  </div>
+                </div>
+
+                <input
+                  type="text"
+                  value={marketSymbolsSearch}
+                  onChange={(e) => setMarketSymbolsSearch(e.target.value)}
+                  placeholder="搜索交易对，例如 BTC 或 BTC/USDT"
+                  className={`w-full px-4 py-2 rounded-xl border text-sm transition outline-none mb-3 ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                />
+
+                <div className={`max-h-56 overflow-auto rounded-xl border ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-white'}`}>
+                  {marketSymbols
+                    .filter(ms => {
+                      const q = marketSymbolsSearch.trim().toLowerCase();
+                      if (!q) return true;
+                      return ms.symbol.toLowerCase().includes(q) || ms.base_asset.toLowerCase().includes(q) || ms.quote_asset.toLowerCase().includes(q);
+                    })
+                    .slice(0, 200)
+                    .map(ms => {
+                      const selected = parseFixedSymbols(editSelectorConfig.selector_fixed_symbols);
+                      const checked = selected.includes(ms.symbol);
+                      return (
+                        <label key={ms.symbol} className={`flex items-center justify-between gap-3 px-3 py-2 text-sm cursor-pointer ${isDarkMode ? 'hover:bg-gray-900/60' : 'hover:bg-gray-50'}`}>
+                          <div className="flex items-center gap-3 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                const next = checked ? selected.filter(s => s !== ms.symbol) : [...selected, ms.symbol];
+                                setEditSelectorConfig({ ...editSelectorConfig, selector_fixed_symbols: next.join(',') });
+                              }}
+                            />
+                            <div className="min-w-0">
+                              <div className="font-mono truncate">{ms.symbol}</div>
+                              <div className="text-xs text-gray-500 truncate">{ms.base_asset}/{ms.quote_asset} 价格:{ms.last_price}</div>
+                            </div>
+                          </div>
+                          <div className="text-xs text-gray-500 font-mono">Vol:{Math.round(ms.quote_volume_24h)}</div>
+                        </label>
+                      );
+                    })}
+                </div>
+
+                <div className="mt-3 text-xs text-gray-500">
+                  已选 {parseFixedSymbols(editSelectorConfig.selector_fixed_symbols).length} 个
                 </div>
               </div>
             </div>

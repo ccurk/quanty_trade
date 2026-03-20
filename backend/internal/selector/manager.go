@@ -3,13 +3,17 @@ package selector
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
+	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 	"quanty_trade/internal/strategy"
 )
@@ -102,13 +106,34 @@ func (m *Manager) Reconcile(selectorID string) error {
 		}
 	}
 
-	cands, err := bx.FetchMarketSymbols(quote, minPrice, maxPrice, minVol, maxSymbols, excludeStable, baseAssets)
-	if err != nil {
-		return err
+	var desired []string
+	var fixedSymbols []string
+	if raw, ok := cfg["selector_fixed_symbols"]; ok {
+		if xs, ok := raw.([]interface{}); ok {
+			for _, it := range xs {
+				if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
+					fixedSymbols = append(fixedSymbols, strings.TrimSpace(s))
+				}
+			}
+		} else if s, ok := raw.(string); ok && strings.TrimSpace(s) != "" {
+			for _, p := range strings.Split(s, ",") {
+				if v := strings.TrimSpace(p); v != "" {
+					fixedSymbols = append(fixedSymbols, v)
+				}
+			}
+		}
 	}
-	desired := make([]string, 0, len(cands))
-	for _, c := range cands {
-		desired = append(desired, c.Symbol)
+	if len(fixedSymbols) > 0 {
+		desired = append(desired, fixedSymbols...)
+	} else {
+		cands, err := bx.FetchMarketSymbols(quote, minPrice, maxPrice, minVol, maxSymbols, excludeStable, baseAssets)
+		if err != nil {
+			return err
+		}
+		desired = make([]string, 0, len(cands))
+		for _, c := range cands {
+			desired = append(desired, c.Symbol)
+		}
 	}
 	sort.Strings(desired)
 
@@ -122,6 +147,57 @@ func (m *Manager) Reconcile(selectorID string) error {
 	template := models.StrategyTemplate{}
 	if err := database.DB.Where("id = ?", sel.ExecutorTemplate).First(&template).Error; err != nil {
 		return err
+	}
+
+	// Ensure template.Path points to a .py file (not a directory)
+	fixedPath := strings.TrimSpace(template.Path)
+	needFix := fixedPath == ""
+	if !needFix {
+		if fi, err := os.Stat(fixedPath); err != nil || (err == nil && fi.IsDir()) {
+			needFix = true
+		}
+	}
+	if needFix {
+		filename := fmt.Sprintf("%s_%d.py", template.Name, template.AuthorID)
+		filename = strings.ReplaceAll(filename, " ", "_")
+		filename = filepath.Base(filename)
+		strategiesDir := conf.C().Paths.StrategiesDir
+		if strategiesDir == "" {
+			strategiesDir = conf.Path("strategies")
+		}
+		absDir, err := filepath.Abs(strategiesDir)
+		if err == nil {
+			_ = os.MkdirAll(absDir, 0o755)
+			candidate := ""
+			if strings.TrimSpace(template.Code) != "" {
+				absPath := filepath.Join(absDir, filename)
+				if err := os.WriteFile(absPath, []byte(template.Code), 0o644); err == nil {
+					candidate = absPath
+				}
+			} else {
+				entries, _ := os.ReadDir(absDir)
+				prefix := strings.ToLower(strings.ReplaceAll(template.Name, " ", "_")) + "_"
+				for _, e := range entries {
+					if e.IsDir() {
+						continue
+					}
+					n := strings.ToLower(e.Name())
+					if strings.HasSuffix(n, ".py") && strings.HasPrefix(n, prefix) {
+						candidate = filepath.Join(absDir, e.Name())
+						break
+					}
+				}
+			}
+			if candidate != "" {
+				fixedPath = candidate
+				_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", template.ID).
+					Updates(map[string]interface{}{"path": candidate, "updated_at": time.Now()}).Error
+				logger.Infof("[SELECTOR PATH FIX] template_id=%d path=%s", template.ID, candidate)
+			}
+		}
+	}
+	if fixedPath == "" {
+		return fmt.Errorf("selector executor template has no valid .py file path")
 	}
 
 	desiredSet := map[string]struct{}{}
@@ -164,7 +240,7 @@ func (m *Manager) Reconcile(selectorID string) error {
 			continue
 		}
 
-		m.stratMgr.AddStrategy(inst.ID, inst.Name, template.Path, inst.OwnerID, childCfg)
+		m.stratMgr.AddStrategy(inst.ID, inst.Name, fixedPath, inst.OwnerID, childCfg)
 		_ = database.DB.Create(&models.StrategySelectorChild{
 			SelectorID: selectorID,
 			StrategyID: inst.ID,

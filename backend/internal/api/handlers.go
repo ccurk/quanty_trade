@@ -280,10 +280,6 @@ func CreateStrategy(c *gin.Context) {
 		}
 	}
 	if needsWrite {
-		if strings.TrimSpace(template.Code) == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "模板未保存代码文件，请先在模板列表编辑并保存"})
-			return
-		}
 		filename := fmt.Sprintf("%s_%d.py", template.Name, template.AuthorID)
 		filename = strings.ReplaceAll(filename, " ", "_")
 		filename = filepath.Base(filename)
@@ -302,12 +298,33 @@ func CreateStrategy(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to prepare strategies dir"})
 			return
 		}
-		absPath := filepath.Join(absDir, filename)
-		if err := os.WriteFile(absPath, []byte(template.Code), 0o644); err != nil {
-			logger.WithTrace(TraceID(c)).Errorf("CreateStrategy write code failed err=%v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist template code"})
-			return
+
+		absPath := ""
+		if strings.TrimSpace(template.Code) != "" {
+			absPath = filepath.Join(absDir, filename)
+			if err := os.WriteFile(absPath, []byte(template.Code), 0o644); err != nil {
+				logger.WithTrace(TraceID(c)).Errorf("CreateStrategy write code failed err=%v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist template code"})
+				return
+			}
+		} else {
+			entries, _ := os.ReadDir(absDir)
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				name := strings.ToLower(e.Name())
+				if strings.HasSuffix(name, ".py") && strings.HasPrefix(name, strings.ToLower(strings.ReplaceAll(template.Name, " ", "_"))+"_") {
+					absPath = filepath.Join(absDir, e.Name())
+					break
+				}
+			}
+			if absPath == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "模板缺少代码文件，请在模板列表编辑并保存一次"})
+				return
+			}
 		}
+
 		template.Path = absPath
 		if err := database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", template.ID).
 			Updates(map[string]interface{}{"path": absPath, "updated_at": time.Now()}).Error; err != nil {

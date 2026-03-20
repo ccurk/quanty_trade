@@ -987,7 +987,7 @@ func (m *Manager) SyncFromDB(db *gorm.DB) error {
 					needsWrite = true
 				}
 			}
-			if needsWrite && strings.TrimSpace(inst.Template.Code) != "" {
+			if needsWrite {
 				filename := fmt.Sprintf("%s_%d.py", inst.Template.Name, inst.Template.AuthorID)
 				filename = strings.ReplaceAll(filename, " ", "_")
 				filename = filepath.Base(filename)
@@ -998,12 +998,32 @@ func (m *Manager) SyncFromDB(db *gorm.DB) error {
 				absDir, err := filepath.Abs(strategiesDir)
 				if err == nil {
 					_ = os.MkdirAll(absDir, 0o755)
-					absPath := filepath.Join(absDir, filename)
-					if err := os.WriteFile(absPath, []byte(inst.Template.Code), 0o644); err == nil {
-						path = absPath
+					candidate := ""
+					if strings.TrimSpace(inst.Template.Code) != "" {
+						absPath := filepath.Join(absDir, filename)
+						if err := os.WriteFile(absPath, []byte(inst.Template.Code), 0o644); err == nil {
+							candidate = absPath
+						}
+					} else {
+						// Try match existing file by name prefix
+						entries, _ := os.ReadDir(absDir)
+						prefix := strings.ToLower(strings.ReplaceAll(inst.Template.Name, " ", "_")) + "_"
+						for _, e := range entries {
+							if e.IsDir() {
+								continue
+							}
+							n := strings.ToLower(e.Name())
+							if strings.HasSuffix(n, ".py") && strings.HasPrefix(n, prefix) {
+								candidate = filepath.Join(absDir, e.Name())
+								break
+							}
+						}
+					}
+					if candidate != "" {
+						path = candidate
 						_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", inst.Template.ID).
-							Updates(map[string]interface{}{"path": absPath, "updated_at": time.Now()}).Error
-						logger.Infof("[SYNC PATH FIX] template_id=%d path=%s", inst.Template.ID, absPath)
+							Updates(map[string]interface{}{"path": candidate, "updated_at": time.Now()}).Error
+						logger.Infof("[SYNC PATH FIX] template_id=%d path=%s", inst.Template.ID, candidate)
 					}
 				}
 			}
