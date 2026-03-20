@@ -31,17 +31,38 @@ import (
 // - Reject paths that escape STRATEGIES_DIR (basic path traversal guard).
 func resolveStrategyPath(p string) (string, error) {
 	if filepath.IsAbs(p) {
+		fi, err := os.Stat(p)
+		if err != nil {
+			return "", err
+		}
+		if fi.IsDir() {
+			return "", fmt.Errorf("strategy path is a directory, need .py file: %s", p)
+		}
 		return p, nil
 	}
 	base := conf.C().Paths.StrategiesDir
 	if base == "" {
-		return filepath.Abs(p)
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return "", err
+		}
+		fi, err := os.Stat(abs)
+		if err != nil {
+			return "", err
+		}
+		if fi.IsDir() {
+			return "", fmt.Errorf("strategy path is a directory, need .py file: %s", abs)
+		}
+		return abs, nil
 	}
 	absBase, err := filepath.Abs(base)
 	if err != nil {
 		return "", err
 	}
 	joined := filepath.Clean(filepath.Join(absBase, p))
+	if fi, err := os.Stat(joined); err == nil && fi.IsDir() {
+		return "", fmt.Errorf("strategy path is a directory, need .py file: %s", joined)
+	}
 	rel, err := filepath.Rel(absBase, joined)
 	if err != nil {
 		return "", err
