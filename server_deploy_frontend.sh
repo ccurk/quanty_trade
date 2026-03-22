@@ -3,7 +3,7 @@ set -euo pipefail
 
 DOCKER_HUB_ID="zhaoxianxinclimber108"
 FRONTEND_IMAGE="${DOCKER_HUB_ID}/quanty_trade-frontend"
-FRONTEND_VERSION="REPLACE_FRONTEND_TAG"
+FRONTEND_VERSION="${FRONTEND_VERSION}"
 
 CONTAINER_NAME="quanty-frontend"
 HOST_PORT="81"
