@@ -3,7 +3,7 @@ set -euo pipefail
 
 DOCKER_HUB_ID="zhaoxianxinclimber108"
 BACKEND_IMAGE="${DOCKER_HUB_ID}/quanty_trade-backend"
-BACKEND_VERSION="REPLACE_BACKEND_TAG"
+BACKEND_VERSION="${BACKEND_VERSION"
 
 CONTAINER_NAME="quanty-backend"
 HOST_PORT="8080"
