@@ -271,6 +271,7 @@ const App: React.FC = () => {
   const [posTotal, setPosTotal] = useState<{ active: number; closed: number }>({ active: 0, closed: 0 });
   const [positionStatus, setPositionStatus] = useState<'active' | 'closed'>('active');
   const [logs, setLogs] = useState<string[]>([]);
+  const [showCandleLogs, setShowCandleLogs] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [activeTab, setActiveTab] = useState<'strategies' | 'templates' | 'positions' | 'stats' | 'logs' | 'square' | 'admin' | 'develop'>('stats');
   
@@ -791,7 +792,9 @@ const App: React.FC = () => {
           const c = isObject(parsed.data) ? parsed.data : {};
           const ts = c.timestamp ? new Date(String(c.timestamp)).toLocaleString() : '';
           const close = typeof c.close === 'number' ? c.close : '';
-          setLogs(prev => [`[${new Date().toLocaleTimeString()}] Candle ${ts} close=${close}`, ...prev.slice(0, 99)]);
+          if (showCandleLogs) {
+            setLogs(prev => [`[${new Date().toLocaleTimeString()}] Candle ${ts} close=${close}`, ...prev.slice(0, 99)]);
+          }
         }
       } else if (type === 'position') {
         const d = isObject(parsed.data) ? parsed.data : {};
@@ -1870,13 +1873,25 @@ const App: React.FC = () => {
         )}
 
         {activeTab === 'logs' && (
-          <div className={`p-4 md:p-6 rounded-2xl font-mono text-xs md:text-sm h-[500px] md:h-[600px] overflow-y-auto border shadow-2xl custom-scrollbar ${isDarkMode ? 'bg-black/80 text-gray-300 border-gray-800' : 'bg-gray-100 text-gray-700 border-gray-200'}`}>
-            {logs.map((log, i) => (
-              <div key={i} className="mb-2 flex gap-2 md:gap-4">
-                <span className="text-gray-500 shrink-0">[{i}]</span>
-                <span className="leading-relaxed break-all md:break-normal">{log}</span>
-              </div>
-            ))}
+          <div>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="text-xs text-gray-500">提示：建议关闭 K 线日志，避免覆盖策略决策日志</div>
+              <button
+                type="button"
+                onClick={() => setShowCandleLogs(v => !v)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+              >
+                {showCandleLogs ? '已开启K线日志' : '已关闭K线日志'}
+              </button>
+            </div>
+            <div className={`p-4 md:p-6 rounded-2xl font-mono text-xs md:text-sm h-[500px] md:h-[600px] overflow-y-auto border shadow-2xl custom-scrollbar ${isDarkMode ? 'bg-black/80 text-gray-300 border-gray-800' : 'bg-gray-100 text-gray-700 border-gray-200'}`}>
+              {logs.map((log, i) => (
+                <div key={i} className="mb-2 flex gap-2 md:gap-4">
+                  <span className="text-gray-500 shrink-0">[{i}]</span>
+                  <span className="leading-relaxed break-all md:break-normal">{log}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

@@ -257,6 +257,8 @@ type StrategyInstance struct {
 	restarting      bool
 	resync          bool
 	resyncLogBootID string
+	stateReadySeen  bool
+	heartbeatSeen   bool
 	feedSymbols     []string
 	candleStops     map[string]func()
 	candlePubCount  map[string]int
@@ -567,21 +569,47 @@ func (m *Manager) StartStrategy(id string) error {
 		if strings.TrimSpace(st.BootID) == "" {
 			return
 		}
+		typ := strings.ToLower(strings.TrimSpace(st.Type))
 		if logTrace {
-			emitStrategyLog(inst, "info", fmt.Sprintf("State recv type=%s boot_id=%s", strings.ToLower(strings.TrimSpace(st.Type)), st.BootID))
+			emitStrategyLog(inst, "info", fmt.Sprintf("State recv type=%s boot_id=%s", typ, st.BootID))
 		}
 		now := time.Now()
 		inst.mu.Lock()
 		changed := inst.bootID != st.BootID
-		if changed || strings.ToLower(strings.TrimSpace(st.Type)) == "ready" {
+		if changed || typ == "ready" {
 			inst.bootID = st.BootID
 			inst.resync = true
 		}
-		if strings.ToLower(strings.TrimSpace(st.Type)) == "ready" || strings.ToLower(strings.TrimSpace(st.Type)) == "heartbeat" {
+		if typ == "ready" {
+			if !inst.stateReadySeen {
+				inst.stateReadySeen = true
+				inst.mu.Unlock()
+				emitStrategyLog(inst, "info", fmt.Sprintf("Strategy ready boot_id=%s", st.BootID))
+				inst.mu.Lock()
+			}
+		}
+		if typ == "heartbeat" {
+			if !inst.heartbeatSeen {
+				inst.heartbeatSeen = true
+				inst.mu.Unlock()
+				emitStrategyLog(inst, "info", fmt.Sprintf("Strategy heartbeat boot_id=%s", st.BootID))
+				inst.mu.Lock()
+			}
+		}
+		if typ == "ready" || typ == "heartbeat" {
 			inst.lastHB = now
 		}
 		inst.mu.Unlock()
 	})
+	go func() {
+		time.Sleep(10 * time.Second)
+		inst.mu.Lock()
+		seen := inst.stateReadySeen
+		inst.mu.Unlock()
+		if !seen {
+			emitStrategyLog(inst, "info", "Waiting strategy ready (python state channel not received yet)")
+		}
+	}()
 	go m.historySyncLoop(ctx, inst, redisBus)
 	go m.healthMonitorLoop(ctx, inst)
 	go m.waitProcessLoop(inst)
@@ -732,10 +760,16 @@ func (m *Manager) StartStrategy(id string) error {
 							emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS connect failed symbol=%s url=%s err=%v", sym, detail, err))
 						case "disconnected":
 							emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS disconnected symbol=%s url=%s err=%v", sym, detail, err))
+						case "rx_raw_first":
+							emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS recv first raw symbol=%s %s", sym, detail))
 						case "rx_first":
 							emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS recv first kline symbol=%s %s", sym, detail))
 						case "rx_first_closed":
 							emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS recv first closed kline symbol=%s %s", sym, detail))
+						case "unmarshal_failed":
+							emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS unmarshal failed symbol=%s err=%s", sym, detail))
+						default:
+							emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS unknown event symbol=%s event=%s detail=%s err=%v", sym, event, detail, err))
 						}
 					})
 				} else {

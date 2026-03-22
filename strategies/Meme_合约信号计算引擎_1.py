@@ -450,6 +450,7 @@ class Strategy:
 
         self.last_signal_ts: dict[str, float] = {}
         self.last_signal_dir: dict[str, str] = {}
+        self.recv_count: dict[str, int] = {s: 0 for s in self.symbols}
 
         self.closes: dict[str, list[float]] = {s: [] for s in self.symbols}
         self.highs: dict[str, list[float]] = {s: [] for s in self.symbols}
@@ -474,6 +475,16 @@ class Strategy:
         Config.VOL_LOOKBACK_BARS = max(2, _i(self.cfg.get("vol_lookback_bars"), Config.VOL_LOOKBACK_BARS))
         Config.COOLDOWN_SEC = max(0, _i(self.cfg.get("cooldown_sec"), Config.COOLDOWN_SEC))
         Config.MAX_BARS = max(50, _i(self.cfg.get("max_bars"), Config.MAX_BARS))
+        self.trace = bool(self.cfg.get("log_trace") or self.cfg.get("debug"))
+        self.log_rx = bool(self.cfg.get("log_rx", True))
+        self.log_decisions = bool(self.cfg.get("log_decisions", True))
+        self.log_every = max(1, _i(self.cfg.get("log_every"), 60))
+        self.log_idle_sec = max(5, _i(self.cfg.get("log_idle_sec"), 30))
+        if self.trace:
+            self.log_rx = True
+            self.log_decisions = True
+            self.log_every = 1
+            self.log_idle_sec = 5
 
     def _candle_ch(self):
         return f"{self.prefix}:candle:{self.strategy_id}"
@@ -563,11 +574,19 @@ class Strategy:
             l = c
 
         self._append_bar(symbol, o, h, l, c)
+        self.recv_count[symbol] = int(self.recv_count.get(symbol) or 0) + 1
+        n_recv = self.recv_count[symbol]
+        if self.log_rx and (self.trace or n_recv % self.log_every == 0):
+            self._log(f"RX candle sym={symbol} n={n_recv} close={c} bars={len(self.closes[symbol])} ts={_now()}")
+        if self.log_rx and n_recv == 1:
+            self._log(f"RX candle first sym={symbol} close={c} ts={_now()}")
 
         closes = self.closes[symbol]
         highs = self.highs[symbol]
         lows = self.lows[symbol]
         if len(closes) < 35:
+            if self.log_decisions and (self.trace or n_recv % self.log_every == 0):
+                self._log(f"SKIP warmup sym={symbol} bars={len(closes)}/35 ts={_now()}")
             return
 
         extra = msg.get("extra") if isinstance(msg.get("extra"), dict) else {}
@@ -588,19 +607,32 @@ class Strategy:
             ls_ratio=float(lr),
         )
         r = analyze(snap, closes, highs, lows)
+        tick_log = self.log_decisions and (self.trace or n_recv % self.log_every == 0)
+        if tick_log:
+            self._log(
+                f"EVAL sym={symbol} price={r.entry_price} passed={r.passed_filter} dir={r.direction} conf={r.confidence:.3f} rsi={r.rsi:.1f} macd_diff={r.macd_diff:+.6f} bb={r.bb_position} atr={r.atr_pct:.2f}% fr={r.funding_rate:+.5f} lr={r.ls_ratio:.2f} ts={_now()}"
+            )
 
         if not r.passed_filter:
+            if tick_log:
+                self._log(f"SKIP filter sym={symbol} reason={r.filter_reason} ts={_now()}")
             return
         if r.direction is None:
+            if tick_log:
+                self._log(f"NO SIGNAL sym={symbol} conf={r.confidence:.3f} ts={_now()}")
             return
 
         now = time.time()
         last_ts = float(self.last_signal_ts.get(symbol) or 0.0)
         if Config.COOLDOWN_SEC > 0 and now-last_ts < float(Config.COOLDOWN_SEC):
+            if tick_log:
+                self._log(f"SKIP cooldown sym={symbol} remain={int(Config.COOLDOWN_SEC-(now-last_ts))}s ts={_now()}")
             return
 
         last_dir = _s(self.last_signal_dir.get(symbol)).strip().lower()
         if last_dir and last_dir == _s(r.direction).strip().lower():
+            if tick_log:
+                self._log(f"SKIP already-signaled sym={symbol} dir={r.direction} ts={_now()}")
             return
 
         self.last_signal_ts[symbol] = now
@@ -611,13 +643,19 @@ class Strategy:
         if not self.strategy_id:
             raise RuntimeError("missing strategy_id")
         self.sub.subscribe(self._candle_ch())
+        self._log(f"SUBSCRIBE candle_ch={self._candle_ch()} ts={_now()}")
         self.pub.publish(self._state_ch(), json.dumps({"type": "ready", "strategy_id": self.strategy_id, "boot_id": self.boot_id, "created_at": _now()}))
+        self._log(f"READY state_ch={self._state_ch()} boot_id={self.boot_id} ts={_now()}")
         t = threading.Thread(target=self._heartbeat_loop, daemon=True)
         t.start()
-        self._log(f"START strategy_id={self.strategy_id} symbols={','.join(self.symbols)} ts={_now()}")
+        self._log(f"START strategy_id={self.strategy_id} symbols={','.join(self.symbols)} trace={self.trace} log_every={self.log_every} ts={_now()}")
+        last_idle = time.time()
         while True:
             item = self.sub.read_pubsub_message()
             if not item:
+                if self.log_rx and time.time() - last_idle >= float(self.log_idle_sec):
+                    last_idle = time.time()
+                    self._log(f"IDLE waiting candle ch={self._candle_ch()} symbols={len(self.symbols)} ts={_now()}")
                 continue
             payload = item.get("data")
             if not payload:

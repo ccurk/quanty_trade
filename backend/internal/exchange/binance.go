@@ -270,6 +270,21 @@ func displayFromBinanceSymbol(raw string, quote string) string {
 	return base + "/" + q
 }
 
+func parseBinanceNum(raw json.RawMessage) (float64, error) {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return 0, fmt.Errorf("empty number")
+	}
+	if strings.HasPrefix(s, "\"") {
+		u, err := strconv.Unquote(s)
+		if err != nil {
+			return 0, err
+		}
+		s = strings.TrimSpace(u)
+	}
+	return strconv.ParseFloat(s, 64)
+}
+
 func (b *BinanceExchange) SelectSymbols(criteria SymbolSelectCriteria) ([]string, error) {
 	quote := strings.ToUpper(strings.TrimSpace(criteria.Quote))
 	if quote == "" {
@@ -1299,6 +1314,8 @@ func (b *BinanceExchange) SubscribeCandlesWithEvents(symbol string, callback fun
 
 			gotFirst := false
 			gotFirstClosed := false
+			gotRawFirst := false
+			loggedUnmarshalErr := false
 			for {
 				select {
 				case <-stop:
@@ -1320,36 +1337,50 @@ func (b *BinanceExchange) SubscribeCandlesWithEvents(symbol string, callback fun
 					}
 					break
 				}
+				if onStatus != nil && !gotRawFirst {
+					gotRawFirst = true
+					head := msg
+					if len(head) > 160 {
+						head = head[:160]
+					}
+					s := strings.ReplaceAll(string(head), "\n", " ")
+					s = strings.ReplaceAll(s, "\r", " ")
+					onStatus("rx_raw_first", fmt.Sprintf("len=%d head=%s", len(msg), s), nil)
+				}
 				var payload struct {
 					K struct {
-						T int64  `json:"t"`
-						O string `json:"o"`
-						H string `json:"h"`
-						L string `json:"l"`
-						C string `json:"c"`
-						V string `json:"v"`
-						X bool   `json:"x"`
+						T int64           `json:"t"`
+						O json.RawMessage `json:"o"`
+						H json.RawMessage `json:"h"`
+						L json.RawMessage `json:"l"`
+						C json.RawMessage `json:"c"`
+						V json.RawMessage `json:"v"`
+						X bool            `json:"x"`
 					} `json:"k"`
 				}
 				if err := json.Unmarshal(msg, &payload); err != nil {
+					if onStatus != nil && !loggedUnmarshalErr {
+						loggedUnmarshalErr = true
+						onStatus("unmarshal_failed", err.Error(), err)
+					}
 					continue
 				}
 				if onStatus != nil && !gotFirst {
 					gotFirst = true
-					onStatus("rx_first", fmt.Sprintf("x=%v t=%d c=%s", payload.K.X, payload.K.T, payload.K.C), nil)
+					onStatus("rx_first", fmt.Sprintf("x=%v t=%d c=%s", payload.K.X, payload.K.T, strings.TrimSpace(string(payload.K.C))), nil)
 				}
 				if onStatus != nil && payload.K.X && !gotFirstClosed {
 					gotFirstClosed = true
-					onStatus("rx_first_closed", fmt.Sprintf("t=%d c=%s", payload.K.T, payload.K.C), nil)
+					onStatus("rx_first_closed", fmt.Sprintf("t=%d c=%s", payload.K.T, strings.TrimSpace(string(payload.K.C))), nil)
 				}
 				if !payload.K.X {
 					continue
 				}
-				open, _ := strconv.ParseFloat(payload.K.O, 64)
-				high, _ := strconv.ParseFloat(payload.K.H, 64)
-				low, _ := strconv.ParseFloat(payload.K.L, 64)
-				closeP, _ := strconv.ParseFloat(payload.K.C, 64)
-				vol, _ := strconv.ParseFloat(payload.K.V, 64)
+				open, _ := parseBinanceNum(payload.K.O)
+				high, _ := parseBinanceNum(payload.K.H)
+				low, _ := parseBinanceNum(payload.K.L)
+				closeP, _ := parseBinanceNum(payload.K.C)
+				vol, _ := parseBinanceNum(payload.K.V)
 				callback(Candle{
 					Timestamp: time.UnixMilli(payload.K.T),
 					Open:      open,
