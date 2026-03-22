@@ -453,15 +453,16 @@ func (m *Manager) StartStrategy(id string) error {
 
 	selectMode := strings.ToLower(strings.TrimSpace(getString(inst.Config["symbol_select_mode"])))
 	autoSymbols := getBool(inst.Config["auto_symbols"])
-	if (selectMode == "filter" || autoSymbols) && strings.TrimSpace(activeSymbol) == "" {
-		minPrice := getNumber(inst.Config["min_price"])
-		maxPrice := getNumber(inst.Config["max_price"])
-		minPrecision := int(getNumber(inst.Config["min_precision"]))
-		minVolatility := getNumber(inst.Config["min_volatility"])
-		limit := int(getNumber(inst.Config["select_limit"]))
-		if limit <= 0 {
-			limit = 20
-		}
+	minPrice := getNumber(inst.Config["min_price"])
+	maxPrice := getNumber(inst.Config["max_price"])
+	minPrecision := int(getNumber(inst.Config["min_precision"]))
+	minVolatility := getNumber(inst.Config["min_volatility"])
+	limit := int(getNumber(inst.Config["select_limit"]))
+	if limit <= 0 {
+		limit = 20
+	}
+	useFilter := strings.TrimSpace(activeSymbol) == "" && (selectMode == "filter" || autoSymbols || minPrice > 0 || maxPrice > 0 || minPrecision > 0 || minVolatility > 0)
+	if useFilter {
 		emitStrategyLog(inst, "info", fmt.Sprintf("Symbol select start mode=%s min_price=%v max_price=%v min_precision=%d min_volatility=%v limit=%d", selectMode, minPrice, maxPrice, minPrecision, minVolatility, limit))
 		criteria := exchange.SymbolSelectCriteria{
 			MinPrice:      minPrice,
@@ -473,18 +474,31 @@ func (m *Manager) StartStrategy(id string) error {
 			OnlySymbols:   feedSymbols,
 		}
 		if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok {
-			selected, err := bx.SelectSymbols(criteria)
+			res, err := bx.SelectSymbolsDetailed(criteria)
 			if err != nil {
 				emitStrategyLog(inst, "error", fmt.Sprintf("Symbol select failed err=%v", err))
-			} else if len(selected) == 0 {
+			} else if len(res.Selected) == 0 {
 				emitStrategyLog(inst, "error", "Symbol select returned empty set")
 			} else {
-				feedSymbols = selected
+				before := append([]string(nil), feedSymbols...)
+				feedSymbols = res.Selected
 				preview := strings.Join(feedSymbols, ",")
 				if len(feedSymbols) > 10 {
 					preview = strings.Join(feedSymbols[:10], ",") + ",..."
 				}
 				emitStrategyLog(inst, "info", fmt.Sprintf("Symbol select ok count=%d mode=%s symbols=%s", len(feedSymbols), selectMode, preview))
+				if logTrace && len(before) > 0 && len(res.Rejected) > 0 {
+					n := 0
+					for _, s := range before {
+						if reason, ok := res.Rejected[s]; ok {
+							emitStrategyLog(inst, "info", fmt.Sprintf("Symbol filtered out symbol=%s reason=%s", s, reason))
+							n++
+							if n >= 20 {
+								break
+							}
+						}
+					}
+				}
 			}
 		} else {
 			emitStrategyLog(inst, "error", "Symbol select requires Binance exchange")

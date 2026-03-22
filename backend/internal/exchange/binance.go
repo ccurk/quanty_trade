@@ -61,6 +61,11 @@ type SymbolSelectCriteria struct {
 	OnlySymbols   []string
 }
 
+type SymbolSelectResult struct {
+	Selected []string
+	Rejected map[string]string
+}
+
 type binanceCred struct {
 	APIKey    string `json:"api_key"`
 	APISecret string `json:"api_secret"`
@@ -286,6 +291,14 @@ func parseBinanceNum(raw json.RawMessage) (float64, error) {
 }
 
 func (b *BinanceExchange) SelectSymbols(criteria SymbolSelectCriteria) ([]string, error) {
+	res, err := b.SelectSymbolsDetailed(criteria)
+	if err != nil {
+		return nil, err
+	}
+	return res.Selected, nil
+}
+
+func (b *BinanceExchange) SelectSymbolsDetailed(criteria SymbolSelectCriteria) (SymbolSelectResult, error) {
 	quote := strings.ToUpper(strings.TrimSpace(criteria.Quote))
 	if quote == "" {
 		quote = "USDT"
@@ -295,7 +308,10 @@ func (b *BinanceExchange) SelectSymbols(criteria SymbolSelectCriteria) ([]string
 		limit = 20
 	}
 	only := map[string]struct{}{}
+	trackReject := false
+	rejected := map[string]string{}
 	if len(criteria.OnlySymbols) > 0 {
+		trackReject = true
 		for _, s := range criteria.OnlySymbols {
 			n := strings.ToUpper(binanceSymbol(s))
 			if n != "" {
@@ -310,7 +326,7 @@ func (b *BinanceExchange) SelectSymbols(criteria SymbolSelectCriteria) ([]string
 	}
 	body, _, err := b.publicRequest(context.Background(), path, nil)
 	if err != nil {
-		return nil, err
+		return SymbolSelectResult{}, err
 	}
 
 	var rows []struct {
@@ -321,7 +337,7 @@ func (b *BinanceExchange) SelectSymbols(criteria SymbolSelectCriteria) ([]string
 		PriceChangePercent string `json:"priceChangePercent"`
 	}
 	if err := json.Unmarshal(body, &rows); err != nil {
-		return nil, err
+		return SymbolSelectResult{}, err
 	}
 
 	type cand struct {
@@ -329,6 +345,7 @@ func (b *BinanceExchange) SelectSymbols(criteria SymbolSelectCriteria) ([]string
 		Score   float64
 	}
 	out := make([]cand, 0, limit)
+	seen := map[string]struct{}{}
 	for _, r := range rows {
 		sym := strings.ToUpper(strings.TrimSpace(r.Symbol))
 		if sym == "" {
@@ -337,6 +354,7 @@ func (b *BinanceExchange) SelectSymbols(criteria SymbolSelectCriteria) ([]string
 		if !strings.HasSuffix(sym, quote) {
 			continue
 		}
+		seen[sym] = struct{}{}
 		if len(only) > 0 {
 			if _, ok := only[sym]; !ok {
 				continue
@@ -345,17 +363,29 @@ func (b *BinanceExchange) SelectSymbols(criteria SymbolSelectCriteria) ([]string
 
 		price, _ := strconv.ParseFloat(strings.TrimSpace(r.LastPrice), 64)
 		if price <= 0 {
+			if trackReject {
+				rejected[displayFromBinanceSymbol(sym, quote)] = "invalid last price"
+			}
 			continue
 		}
 		if criteria.MinPrice > 0 && price < criteria.MinPrice {
+			if trackReject {
+				rejected[displayFromBinanceSymbol(sym, quote)] = fmt.Sprintf("price %v < min_price %v", price, criteria.MinPrice)
+			}
 			continue
 		}
 		if criteria.MaxPrice > 0 && price > criteria.MaxPrice {
+			if trackReject {
+				rejected[displayFromBinanceSymbol(sym, quote)] = fmt.Sprintf("price %v > max_price %v", price, criteria.MaxPrice)
+			}
 			continue
 		}
 
 		prec := decimalPrecisionFromPriceStr(r.LastPrice)
 		if criteria.MinPrecision > 0 && prec < criteria.MinPrecision {
+			if trackReject {
+				rejected[displayFromBinanceSymbol(sym, quote)] = fmt.Sprintf("precision %d < min_precision %d", prec, criteria.MinPrecision)
+			}
 			continue
 		}
 
@@ -371,10 +401,21 @@ func (b *BinanceExchange) SelectSymbols(criteria SymbolSelectCriteria) ([]string
 			score = volPct
 		}
 		if criteria.MinVolatility > 0 && score < criteria.MinVolatility {
+			if trackReject {
+				rejected[displayFromBinanceSymbol(sym, quote)] = fmt.Sprintf("volatility %0.4f < min_volatility %0.4f", score, criteria.MinVolatility)
+			}
 			continue
 		}
 
 		out = append(out, cand{Display: displayFromBinanceSymbol(sym, quote), Score: score})
+	}
+
+	if trackReject {
+		for s := range only {
+			if _, ok := seen[s]; !ok {
+				rejected[displayFromBinanceSymbol(s, quote)] = "symbol not found in ticker"
+			}
+		}
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
@@ -385,7 +426,7 @@ func (b *BinanceExchange) SelectSymbols(criteria SymbolSelectCriteria) ([]string
 	for _, c := range out {
 		symbols = append(symbols, c.Display)
 	}
-	return symbols, nil
+	return SymbolSelectResult{Selected: symbols, Rejected: rejected}, nil
 }
 
 func (b *BinanceExchange) displaySymbol(symbol string) string {

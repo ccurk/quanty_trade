@@ -362,16 +362,6 @@ def _no_signal(snap: MarketSnapshot, reason: str) -> SignalResult:
 def analyze(snapshot: MarketSnapshot, closes: list[float], highs: list[float], lows: list[float]) -> SignalResult:
     price = float(snapshot.price)
 
-    if price > Config.MAX_PRICE:
-        return _no_signal(snapshot, f"币价${price}超上限${Config.MAX_PRICE}")
-
-    if get_decimal_precision(price) < Config.MIN_PRECISION:
-        return _no_signal(snapshot, f"精度不足{Config.MIN_PRECISION}位")
-
-    change_pct = float(snapshot.change_pct_24h)
-    if abs(change_pct) < Config.MIN_VOLATILITY:
-        return _no_signal(snapshot, f"波动{change_pct:.1f}%不足{Config.MIN_VOLATILITY}%")
-
     rsi_val = calc_rsi_pd(closes)
     macd_val, macd_sig = calc_macd_pd(closes)
     _, bb_upper, bb_lower = calc_bollinger_pd(closes)
@@ -463,9 +453,6 @@ class Strategy:
         self._load_config()
 
     def _load_config(self):
-        Config.MAX_PRICE = _f(self.cfg.get("max_price"), Config.MAX_PRICE)
-        Config.MIN_PRECISION = max(0, _i(self.cfg.get("min_precision"), Config.MIN_PRECISION))
-        Config.MIN_VOLATILITY = _f(self.cfg.get("min_volatility"), Config.MIN_VOLATILITY)
         Config.MIN_CONFIDENCE = _f(self.cfg.get("min_confidence"), Config.MIN_CONFIDENCE)
         Config.TP_RATIO = _f(self.cfg.get("tp_ratio"), Config.TP_RATIO)
         Config.SL_RATIO = _f(self.cfg.get("sl_ratio"), Config.SL_RATIO)
