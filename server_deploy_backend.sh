@@ -49,6 +49,10 @@ if [ "${REDIS_ENABLED}" = "true" ]; then
     echo "请先在脚本顶部填写 REDIS_PASSWORD（如无密码可置空）"
     exit 1
   fi
+
+  if [[ "$REDIS_ADDR" != *:* ]]; then
+    REDIS_ADDR="${REDIS_ADDR}:6379"
+  fi
 fi
 
 docker pull "${BACKEND_IMAGE}:${BACKEND_VERSION}"
