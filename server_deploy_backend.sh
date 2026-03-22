@@ -66,7 +66,7 @@ docker run -d \
   --restart always \
   -p "${HOST_PORT}:8080" \
   -v "${STRATEGIES_DIR}:/app/strategies" \
-  -v /root/work/quanty_trade/conf:/app/conf \
+  -v "/root/work/quanty_trade/conf:/app/conf" \
   -e PORT=8080 \
   -e SERVER_PORT=8080 \
   -e GIN_MODE=release \
