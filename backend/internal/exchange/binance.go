@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +50,12 @@ type BinanceExchange struct {
 
 	leverageMu    sync.Mutex
 	leverageByKey map[string]int
+
+	symbolSelectMu       sync.Mutex
+	symbolSelectCacheKey string
+	symbolSelectCache    SymbolSelectResult
+	symbolSelectCacheExp time.Time
+	symbolSelectBanUntil time.Time
 }
 
 type SymbolSelectCriteria struct {
@@ -349,6 +356,21 @@ func (b *BinanceExchange) SelectSymbols(criteria SymbolSelectCriteria) ([]string
 }
 
 func (b *BinanceExchange) SelectSymbolsDetailed(criteria SymbolSelectCriteria) (SymbolSelectResult, error) {
+	b.symbolSelectMu.Lock()
+	now := time.Now()
+	if now.Before(b.symbolSelectBanUntil) {
+		until := b.symbolSelectBanUntil
+		b.symbolSelectMu.Unlock()
+		return SymbolSelectResult{}, fmt.Errorf("binance api error: {\"code\":-1003,\"msg\":%q}", fmt.Sprintf("Way too many requests; IP banned until %d", until.UnixMilli()))
+	}
+	key := symbolSelectCacheKey(criteria)
+	if key == b.symbolSelectCacheKey && now.Before(b.symbolSelectCacheExp) {
+		cached := b.symbolSelectCache
+		b.symbolSelectMu.Unlock()
+		return cached, nil
+	}
+	b.symbolSelectMu.Unlock()
+
 	quote := strings.ToUpper(strings.TrimSpace(criteria.Quote))
 	if quote == "" {
 		quote = "USDT"
@@ -376,6 +398,13 @@ func (b *BinanceExchange) SelectSymbolsDetailed(criteria SymbolSelectCriteria) (
 	}
 	body, _, err := b.publicRequest(context.Background(), path, nil)
 	if err != nil {
+		if banUntil, ok := parseBinanceIPBanUntil(err.Error()); ok {
+			b.symbolSelectMu.Lock()
+			if banUntil.After(b.symbolSelectBanUntil) {
+				b.symbolSelectBanUntil = banUntil
+			}
+			b.symbolSelectMu.Unlock()
+		}
 		return SymbolSelectResult{}, err
 	}
 
@@ -476,7 +505,43 @@ func (b *BinanceExchange) SelectSymbolsDetailed(criteria SymbolSelectCriteria) (
 	for _, c := range out {
 		symbols = append(symbols, c.Display)
 	}
-	return SymbolSelectResult{Selected: symbols, Rejected: rejected}, nil
+	res := SymbolSelectResult{Selected: symbols, Rejected: rejected}
+	b.symbolSelectMu.Lock()
+	b.symbolSelectCacheKey = key
+	b.symbolSelectCache = res
+	b.symbolSelectCacheExp = time.Now().Add(30 * time.Second)
+	b.symbolSelectMu.Unlock()
+	return res, nil
+}
+
+func symbolSelectCacheKey(c SymbolSelectCriteria) string {
+	parts := make([]string, 0, len(c.OnlySymbols))
+	for _, s := range c.OnlySymbols {
+		parts = append(parts, strings.ToUpper(binanceSymbol(s)))
+	}
+	sort.Strings(parts)
+	return fmt.Sprintf("q=%s|minp=%0.8f|maxp=%0.8f|minprec=%d|minvol=%0.8f|limit=%d|only=%s",
+		strings.ToUpper(strings.TrimSpace(c.Quote)),
+		c.MinPrice, c.MaxPrice, c.MinPrecision, c.MinVolatility, c.Limit,
+		strings.Join(parts, ","),
+	)
+}
+
+var binanceIPBanUntilRe = regexp.MustCompile(`banned until\s+(\d+)`)
+
+func parseBinanceIPBanUntil(errMsg string) (time.Time, bool) {
+	if !strings.Contains(errMsg, "\"code\":-1003") && !strings.Contains(errMsg, "Way too many requests") {
+		return time.Time{}, false
+	}
+	m := binanceIPBanUntilRe.FindStringSubmatch(errMsg)
+	if len(m) != 2 {
+		return time.Time{}, false
+	}
+	ms, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil || ms <= 0 {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(ms), true
 }
 
 func (b *BinanceExchange) displaySymbol(symbol string) string {

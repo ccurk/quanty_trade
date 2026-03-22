@@ -571,8 +571,16 @@ func (m *Manager) StartStrategy(id string) error {
 			res, err := bx.SelectSymbolsDetailed(criteria)
 			if err != nil {
 				emitStrategyLog(inst, "error", fmt.Sprintf("Symbol select failed err=%v", err))
+				if strings.TrimSpace(activeSymbol) == "" && len(feedSymbols) == 0 {
+					inst.mu.Unlock()
+					return fmt.Errorf("symbol select failed and no symbols configured")
+				}
 			} else if len(res.Selected) == 0 {
 				emitStrategyLog(inst, "error", "Symbol select returned empty set")
+				if strings.TrimSpace(activeSymbol) == "" && len(feedSymbols) == 0 {
+					inst.mu.Unlock()
+					return fmt.Errorf("symbol select returned empty set and no symbols configured")
+				}
 			} else {
 				before := append([]string(nil), feedSymbols...)
 				feedSymbols = res.Selected
@@ -596,6 +604,10 @@ func (m *Manager) StartStrategy(id string) error {
 			}
 		} else {
 			emitStrategyLog(inst, "error", "Symbol select requires Binance exchange")
+			if strings.TrimSpace(activeSymbol) == "" && len(feedSymbols) == 0 {
+				inst.mu.Unlock()
+				return fmt.Errorf("symbol select requires binance and no symbols configured")
+			}
 		}
 	}
 	if len(feedSymbols) > 0 {
