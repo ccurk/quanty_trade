@@ -98,7 +98,7 @@ type Exchange interface {
 	FetchPositions(ownerID uint, status string) ([]Position, error) // status: "active" or "closed"
 	// SubscribeCandles pushes real-time candle updates to callback.
 	// Implementations should handle reconnection internally where possible.
-	SubscribeCandles(symbol string, callback func(Candle)) error
+	SubscribeCandles(symbol string, callback func(Candle)) (func(), error)
 	// ClosePosition closes a position for a user. Implementations may use market order.
 	ClosePosition(symbol string, ownerID uint) error
 	// FetchHistoricalCandles returns candles for backtesting within a time range.
@@ -174,11 +174,17 @@ func (m *MockExchange) FetchPositions(ownerID uint, status string) ([]Position, 
 	}
 }
 
-func (m *MockExchange) SubscribeCandles(symbol string, callback func(Candle)) error {
+func (m *MockExchange) SubscribeCandles(symbol string, callback func(Candle)) (func(), error) {
 	// Simulate data every 1 second
+	stop := make(chan struct{})
 	go func() {
 		price := 60000.0
 		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
 			price += float64((time.Now().UnixNano() % 100) - 50)
 			callback(Candle{
 				Timestamp: time.Now(),
@@ -191,7 +197,13 @@ func (m *MockExchange) SubscribeCandles(symbol string, callback func(Candle)) er
 			time.Sleep(1 * time.Second)
 		}
 	}()
-	return nil
+	return func() {
+		select {
+		case <-stop:
+		default:
+			close(stop)
+		}
+	}, nil
 }
 
 func (m *MockExchange) ClosePosition(symbol string, ownerID uint) error {

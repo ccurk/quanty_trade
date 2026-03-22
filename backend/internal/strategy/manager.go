@@ -226,6 +226,7 @@ type StrategyInstance struct {
 	bootID      string
 	resync      bool
 	feedSymbols []string
+	candleStops map[string]func()
 }
 
 // Manager manages lifecycle of all strategy instances and coordinates exchange access.
@@ -478,7 +479,7 @@ func (m *Manager) StartStrategy(id string) error {
 		for _, sym := range feedSymbols {
 			sym := sym
 			go func() {
-				if err := inst.exchange.SubscribeCandles(sym, func(candle exchange.Candle) {
+				stop, err := inst.exchange.SubscribeCandles(sym, func(candle exchange.Candle) {
 					payload := map[string]interface{}{
 						"symbol":    sym,
 						"timestamp": candle.Timestamp,
@@ -504,7 +505,8 @@ func (m *Manager) StartStrategy(id string) error {
 						"owner_id":    inst.OwnerID,
 						"data":        payload,
 					})
-				}); err != nil {
+				})
+				if err != nil {
 					logger.Errorf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, err)
 					database.DB.Create(&models.StrategyLog{
 						StrategyID: inst.ID,
@@ -518,6 +520,18 @@ func (m *Manager) StartStrategy(id string) error {
 						"owner_id":    inst.OwnerID,
 						"error":       fmt.Sprintf("SubscribeCandles error: %v", err),
 					})
+					return
+				}
+				if stop != nil {
+					inst.mu.Lock()
+					if inst.candleStops == nil {
+						inst.candleStops = map[string]func(){}
+					}
+					if prev, ok := inst.candleStops[sym]; ok && prev != nil {
+						prev()
+					}
+					inst.candleStops[sym] = stop
+					inst.mu.Unlock()
 				}
 			}()
 		}
@@ -698,6 +712,14 @@ func (m *Manager) StopStrategy(id string, force bool) error {
 	if inst.redisCancel != nil {
 		inst.redisCancel()
 		inst.redisCancel = nil
+	}
+	if len(inst.candleStops) > 0 {
+		for _, stop := range inst.candleStops {
+			if stop != nil {
+				stop()
+			}
+		}
+		inst.candleStops = nil
 	}
 
 	if err := inst.cmd.Process.Kill(); err != nil {

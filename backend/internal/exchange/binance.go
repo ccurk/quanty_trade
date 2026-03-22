@@ -1088,15 +1088,21 @@ func (b *BinanceExchange) ClosePositionOrder(symbol string, ownerID uint) (*Orde
 	}, entryPrice, positionAmt, nil
 }
 
-func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle)) error {
+func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle)) (func(), error) {
 	sym := strings.ToLower(binanceSymbol(symbol))
 	stream := sym + "@kline_1m"
 	wsURL := b.wsBaseURL + "/ws/" + stream
 
+	stop := make(chan struct{})
 	go func() {
 		backoff := 1 * time.Second
 		maxBackoff := 30 * time.Second
 		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
 			conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 			if err != nil {
 				log.Printf("[BINANCE WS] kline connect failed symbol=%s url=%s err=%v", symbol, wsURL, err)
@@ -1109,8 +1115,18 @@ func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle))
 			}
 			log.Printf("[BINANCE WS] kline connected symbol=%s stream=%s", symbol, stream)
 			backoff = 1 * time.Second
+			go func(c *websocket.Conn) {
+				<-stop
+				_ = c.Close()
+			}(conn)
 
 			for {
+				select {
+				case <-stop:
+					_ = conn.Close()
+					return
+				default:
+				}
 				_, msg, err := conn.ReadMessage()
 				if err != nil {
 					_ = conn.Close()
@@ -1156,5 +1172,11 @@ func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle))
 		}
 	}()
 
-	return nil
+	return func() {
+		select {
+		case <-stop:
+		default:
+			close(stop)
+		}
+	}, nil
 }
