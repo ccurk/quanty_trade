@@ -8,19 +8,14 @@ FRONTEND_VERSION="${FRONTEND_VERSION}"
 CONTAINER_NAME="quanty-frontend"
 HOST_PORT="80"
 
-BACKEND_BASE_URL="http://REPLACE_BACKEND_DOMAIN_OR_IP:8080"
+BACKEND_BASE_URL="http://137.220.219.172:8080"
 
 CONF_DIR="/root/quanty_trade/nginx"
 CONF_FILE="${CONF_DIR}/default.conf"
 
 docker version >/dev/null
 
-if [ "$FRONTEND_VERSION" = "REPLACE_FRONTEND_TAG" ] || [ -z "$FRONTEND_VERSION" ]; then
-  echo "请先在脚本顶部填写 FRONTEND_VERSION（前端镜像 tag）"
-  exit 1
-fi
-
-if [[ "$BACKEND_BASE_URL" == *"REPLACE_BACKEND_DOMAIN_OR_IP"* ]]; then
+if [[ "$BACKEND_BASE_URL" == *"137.220.219.172"* ]]; then
   echo "请先在脚本顶部填写 BACKEND_BASE_URL（后端访问地址）"
   exit 1
 fi
