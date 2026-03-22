@@ -20,6 +20,8 @@ if [ "$FRONTEND_VERSION" = "REPLACE_FRONTEND_TAG" ] || [ -z "$FRONTEND_VERSION" 
   exit 1
 fi
 
+docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+
 if command -v ss >/dev/null 2>&1; then
   if ss -lntp 2>/dev/null | grep -qE "LISTEN\\s+.*:${HOST_PORT}\\b"; then
     echo "端口 ${HOST_PORT} 已被占用，请先释放端口或修改 HOST_PORT"
