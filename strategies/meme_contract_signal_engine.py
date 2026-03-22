@@ -340,6 +340,86 @@ def score_confidence(
     return max(ls, ss), None
 
 
+def score_confidence_detail(
+    rsi_val: float,
+    macd_val: float,
+    macd_sig: float,
+    price: float,
+    bb_upper: float,
+    bb_lower: float,
+    funding_rate: float,
+    ls_ratio: float,
+    atr_pct: float,
+) -> tuple[float, Optional[str], dict]:
+    ls = 0.0
+    ss = 0.0
+    ls_parts: list[str] = []
+    ss_parts: list[str] = []
+
+    if rsi_val < 35:
+        ls += 0.25
+        ls_parts.append("rsi<35:+0.25")
+    elif rsi_val > 65:
+        ss += 0.25
+        ss_parts.append("rsi>65:+0.25")
+
+    if macd_val > macd_sig:
+        ls += 0.25
+        ls_parts.append("macd>sig:+0.25")
+    else:
+        ss += 0.25
+        ss_parts.append("macd<=sig:+0.25")
+
+    if bb_lower > 0 and price <= bb_lower:
+        ls += 0.15
+        ls_parts.append("bb<=lower:+0.15")
+    elif bb_upper > 0 and price >= bb_upper:
+        ss += 0.15
+        ss_parts.append("bb>=upper:+0.15")
+
+    if funding_rate < -0.0003:
+        ls += 0.20
+        ls_parts.append("funding<-0.0003:+0.20")
+    elif funding_rate > 0.0003:
+        ss += 0.20
+        ss_parts.append("funding>0.0003:+0.20")
+
+    if ls_ratio < 0.8:
+        ls += 0.15
+        ls_parts.append("ls_ratio<0.8:+0.15")
+    elif ls_ratio > 1.5:
+        ss += 0.15
+        ss_parts.append("ls_ratio>1.5:+0.15")
+
+    discounted = False
+    if atr_pct < Config.ATR_DISCOUNT_THR:
+        discounted = True
+        ls *= Config.ATR_DISCOUNT
+        ss *= Config.ATR_DISCOUNT
+
+    direction: Optional[str] = None
+    if ls >= Config.MIN_CONFIDENCE:
+        direction = "long"
+        conf = ls
+    elif ss >= Config.MIN_CONFIDENCE:
+        direction = "short"
+        conf = ss
+    else:
+        conf = max(ls, ss)
+
+    detail = {
+        "ls": float(ls),
+        "ss": float(ss),
+        "ls_parts": ls_parts,
+        "ss_parts": ss_parts,
+        "atr_discounted": discounted,
+        "atr_discount_thr": float(Config.ATR_DISCOUNT_THR),
+        "atr_discount": float(Config.ATR_DISCOUNT),
+        "min_confidence": float(Config.MIN_CONFIDENCE),
+    }
+    return float(conf), direction, detail
+
+
 def _no_signal(snap: MarketSnapshot, reason: str) -> SignalResult:
     return SignalResult(
         symbol=snap.symbol,
@@ -411,6 +491,64 @@ def analyze(snapshot: MarketSnapshot, closes: list[float], highs: list[float], l
         ls_ratio=float(snapshot.ls_ratio),
         passed_filter=True,
         filter_reason="",
+    )
+
+
+def analyze_with_detail(snapshot: MarketSnapshot, closes: list[float], highs: list[float], lows: list[float]) -> tuple[SignalResult, dict]:
+    price = float(snapshot.price)
+
+    rsi_val = calc_rsi_pd(closes)
+    macd_val, macd_sig = calc_macd_pd(closes)
+    _, bb_upper, bb_lower = calc_bollinger_pd(closes)
+    atr_pct = calc_atr_pct_pd(highs, lows, closes)
+
+    if bb_lower > 0 and price <= bb_lower:
+        bb_pos = "下轨"
+    elif bb_upper > 0 and price >= bb_upper:
+        bb_pos = "上轨"
+    else:
+        bb_pos = "中部"
+
+    confidence, direction, detail = score_confidence_detail(
+        rsi_val,
+        macd_val,
+        macd_sig,
+        price,
+        bb_upper,
+        bb_lower,
+        snapshot.funding_rate,
+        snapshot.ls_ratio,
+        atr_pct,
+    )
+
+    if direction == "long":
+        tp = round(price * (1.0 + Config.TP_RATIO), 10)
+        sl = round(price * (1.0 - Config.SL_RATIO), 10)
+    elif direction == "short":
+        tp = round(price * (1.0 - Config.TP_RATIO), 10)
+        sl = round(price * (1.0 + Config.SL_RATIO), 10)
+    else:
+        tp = 0.0
+        sl = 0.0
+
+    return (
+        SignalResult(
+            symbol=snapshot.symbol,
+            direction=direction,
+            entry_price=price,
+            tp_price=tp,
+            sl_price=sl,
+            confidence=float(confidence),
+            rsi=float(rsi_val),
+            macd_diff=float(macd_val - macd_sig),
+            bb_position=bb_pos,
+            atr_pct=float(atr_pct),
+            funding_rate=float(snapshot.funding_rate),
+            ls_ratio=float(snapshot.ls_ratio),
+            passed_filter=True,
+            filter_reason="",
+        ),
+        detail,
     )
 
 
@@ -600,11 +738,14 @@ class Strategy:
             funding_rate=float(fr),
             ls_ratio=float(lr),
         )
-        r = analyze(snap, closes, highs, lows)
+        r, sc = analyze_with_detail(snap, closes, highs, lows)
         tick_log = self.log_decisions and (self.trace or n_recv % self.log_every == 0)
         if tick_log:
             self._log(
                 f"EVAL sym={symbol} price={r.entry_price} passed={r.passed_filter} dir={r.direction} conf={r.confidence:.3f} rsi={r.rsi:.1f} macd_diff={r.macd_diff:+.6f} bb={r.bb_position} atr={r.atr_pct:.2f}% fr={r.funding_rate:+.5f} lr={r.ls_ratio:.2f} ts={_now()}"
+            )
+            self._log(
+                f"SCORE sym={symbol} ls={sc['ls']:.3f} ss={sc['ss']:.3f} min_conf={sc['min_confidence']:.3f} atr_discounted={sc['atr_discounted']} ls_parts={','.join(sc['ls_parts'])} ss_parts={','.join(sc['ss_parts'])} ts={_now()}"
             )
 
         if not r.passed_filter:
