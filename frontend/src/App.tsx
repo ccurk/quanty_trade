@@ -1047,7 +1047,7 @@ const App: React.FC = () => {
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'stats'} onClick={() => { setActiveTab('stats'); setIsSidebarOpen(false); }} icon={<Activity size={20} />} label="数据面板" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'strategies'} onClick={() => { setActiveTab('strategies'); setIsSidebarOpen(false); }} icon={<LayoutDashboard size={20} />} label="我的策略" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'templates'} onClick={() => { setActiveTab('templates'); setIsSidebarOpen(false); }} icon={<List size={20} />} label="模板列表" />
-          <NavItem isDarkMode={isDarkMode} active={activeTab === 'develop'} onClick={() => { setActiveTab('develop'); setIsSidebarOpen(false); }} icon={<Code size={20} />} label="代码开发" />
+          <NavItem isDarkMode={isDarkMode} active={activeTab === 'develop'} onClick={() => { setActiveTab('develop'); setIsSidebarOpen(false); }} icon={<Code size={20} />} label="模版开发" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'square'} onClick={() => { setActiveTab('square'); setIsSidebarOpen(false); }} icon={<ShoppingBag size={20} />} label="策略广场" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'positions'} onClick={() => { setActiveTab('positions'); setIsSidebarOpen(false); }} icon={<List size={20} />} label="仓位管理" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'logs'} onClick={() => { setActiveTab('logs'); setIsSidebarOpen(false); }} icon={<Terminal size={20} />} label="系统日志" />
@@ -1116,7 +1116,7 @@ const App: React.FC = () => {
             <h2 className="text-xl md:text-2xl font-bold min-w-fit">
               {activeTab === 'strategies' && '我的策略'}
               {activeTab === 'templates' && '模板列表'}
-              {activeTab === 'develop' && '策略代码开发'}
+              {activeTab === 'develop' && '策略模版开发'}
               {activeTab === 'square' && '策略广场'}
               {activeTab === 'positions' && '实时持仓'}
               {activeTab === 'stats' && '数据面板'}

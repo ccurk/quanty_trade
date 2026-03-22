@@ -881,6 +881,9 @@ func ClosePosition(c *gin.Context) {
 			return
 		}
 		if order == nil {
+			if hasExisting && existing.StrategyID != "" && existing.StrategyID != "manual" {
+				stratMgr.ReleaseOpenSlot(existing.StrategyID)
+			}
 			c.JSON(http.StatusOK, gin.H{"status": "success"})
 			return
 		}
@@ -973,6 +976,10 @@ func ClosePosition(c *gin.Context) {
 				CloseTime:        order.Timestamp,
 				UpdatedAt:        now,
 			})
+		}
+
+		if strategyID != "" && strategyID != "manual" {
+			stratMgr.ReleaseOpenSlot(strategyID)
 		}
 
 		c.JSON(http.StatusOK, gin.H{"status": "success"})

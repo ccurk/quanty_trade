@@ -247,10 +247,8 @@ type StrategyInstance struct {
 	// mu guards process state and pipes.
 	mu sync.Mutex
 	// orderMu guards inflight open order counters and concurrency checks.
-	orderMu sync.Mutex
-	// inflightOpenBuy tracks buy requests in progress to prevent bursts.
-	inflightOpen    int
-	lastOrderFailAt map[string]time.Time
+	orderMu      sync.Mutex
+	inflightOpen int
 	// hub is the websocket broadcaster for UI updates.
 	hub *ws.Hub
 	// exchange is the exchange implementation (mock/binance/etc.).
@@ -285,6 +283,19 @@ type Manager struct {
 	exchange exchange.Exchange
 
 	redisBus *bus.RedisBus
+}
+
+func (m *Manager) ReleaseOpenSlot(strategyID string) {
+	if m == nil || strings.TrimSpace(strategyID) == "" {
+		return
+	}
+	m.mu.RLock()
+	rb := m.redisBus
+	m.mu.RUnlock()
+	if rb == nil {
+		return
+	}
+	_, _ = rb.ReleaseOpenSlot(context.Background(), strategyID)
 }
 
 func emitStrategyLog(inst *StrategyInstance, level string, msg string) {
@@ -1538,21 +1549,6 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		return
 	}
 
-	throttleKey := exchange.NormalizeSymbol(symbol) + ":" + normalizedSide
-	inst.orderMu.Lock()
-	throttleSec := int(getNumber(inst.Config["order_fail_throttle_sec"]))
-	if throttleSec <= 0 {
-		throttleSec = 2
-	}
-	if throttleSec > 0 && inst.lastOrderFailAt != nil {
-		if t, ok := inst.lastOrderFailAt[throttleKey]; ok && time.Since(t) < time.Duration(throttleSec)*time.Second {
-			inst.orderMu.Unlock()
-			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: 最近下单失败，已节流 symbol=%s side=%s", symbol, normalizedSide))
-			return
-		}
-	}
-	inst.orderMu.Unlock()
-
 	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
 		lev := int(getNumber(inst.Config["leverage"]))
 		if lev <= 0 {
@@ -1599,49 +1595,48 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		maxPos = int(v)
 	}
 
-	decrInflightBuy := func() {}
-	checkMaxPos := normalizedSide == "buy"
-	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
-		checkMaxPos = true
+	var rb *bus.RedisBus
+	if inst.mgr != nil {
+		inst.mgr.mu.RLock()
+		rb = inst.mgr.redisBus
+		inst.mgr.mu.RUnlock()
 	}
-	if checkMaxPos {
-		var exOpenCount int64
-		if ps, err := inst.exchange.FetchPositions(inst.OwnerID, "active"); err == nil {
-			for _, p := range ps {
-				if !isAllowedSymbol(inst, p.Symbol) {
-					continue
-				}
-				if math.Abs(p.Amount) > 0 {
-					exOpenCount++
-				}
-			}
-		}
 
-		inst.orderMu.Lock()
-		var openCount int64
-		database.DB.Model(&models.StrategyPosition{}).
-			Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
-			Count(&openCount)
-		var inflightBuy int64
-		database.DB.Model(&models.StrategyOrder{}).
-			Where("owner_id = ? AND strategy_id = ? AND status IN ?", inst.OwnerID, inst.ID, []string{"requested", "new", "partially_filled"}).
-			Count(&inflightBuy)
-		memInflight := inst.inflightOpen
-		if int(exOpenCount) >= maxPos || int(openCount) >= maxPos || int(openCount+inflightBuy)+memInflight >= maxPos {
-			inst.orderMu.Unlock()
-			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: max_concurrent_positions reached symbol=%s ex_open=%d open=%d inflight_buy=%d mem_inflight_buy=%d max=%d", symbol, exOpenCount, openCount, inflightBuy, memInflight, maxPos))
+	exOpenCount := int64(0)
+	exSymbolOpen := false
+	exSymbolKey := exchange.NormalizeSymbol(symbol)
+	if ps, err := inst.exchange.FetchPositions(inst.OwnerID, "active"); err == nil {
+		for _, p := range ps {
+			if math.Abs(p.Amount) <= 0 {
+				continue
+			}
+			if exchange.NormalizeSymbol(p.Symbol) == exSymbolKey {
+				exSymbolOpen = true
+			}
+			if !isAllowedSymbol(inst, p.Symbol) {
+				continue
+			}
+			exOpenCount++
+		}
+	}
+	if exSymbolOpen {
+		emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: symbol already has position symbol=%s", symbol))
+		return
+	}
+
+	acquiredSlot := false
+	if maxPos > 0 && rb != nil {
+		_ = rb.SetOpenCount(context.Background(), inst.ID, exOpenCount, 6*time.Hour)
+		ok, _, err := rb.AcquireOpenSlot(context.Background(), inst.ID, maxPos, 6*time.Hour)
+		if err != nil {
+			emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: redis acquire failed err=%v", err))
 			return
 		}
-		inst.inflightOpen++
-		decrInflightBuy = func() {
-			inst.orderMu.Lock()
-			if inst.inflightOpen > 0 {
-				inst.inflightOpen--
-			}
-			inst.orderMu.Unlock()
+		if !ok {
+			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: max_concurrent_positions reached strategy=%s symbol=%s open=%d max=%d", inst.ID, symbol, exOpenCount, maxPos))
+			return
 		}
-		inst.orderMu.Unlock()
-		defer decrInflightBuy()
+		acquiredSlot = true
 	}
 
 	clientOrderID := models.GenerateUUID()
@@ -1668,12 +1663,9 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 
 	order, err := inst.exchange.PlaceOrder(inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price)
 	if err != nil {
-		inst.orderMu.Lock()
-		if inst.lastOrderFailAt == nil {
-			inst.lastOrderFailAt = map[string]time.Time{}
+		if acquiredSlot && rb != nil {
+			_, _ = rb.ReleaseOpenSlot(context.Background(), inst.ID)
 		}
-		inst.lastOrderFailAt[throttleKey] = time.Now()
-		inst.orderMu.Unlock()
 
 		database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
 			Updates(map[string]interface{}{"status": "failed", "updated_at": time.Now()})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"quanty_trade/internal/conf"
@@ -15,6 +16,31 @@ type RedisBus struct {
 	client *redis.Client
 	prefix string
 }
+
+var acquireOpenSlotScript = redis.NewScript(`
+local cur = tonumber(redis.call("GET", KEYS[1]) or "0")
+local maxv = tonumber(ARGV[1])
+if cur >= maxv then
+  return -1
+end
+cur = redis.call("INCR", KEYS[1])
+redis.call("EXPIRE", KEYS[1], tonumber(ARGV[2]))
+return cur
+`)
+
+var releaseOpenSlotScript = redis.NewScript(`
+local cur = tonumber(redis.call("GET", KEYS[1]) or "0")
+if cur <= 0 then
+  redis.call("SET", KEYS[1], "0")
+  return 0
+end
+cur = redis.call("DECR", KEYS[1])
+if cur < 0 then
+  redis.call("SET", KEYS[1], "0")
+  return 0
+end
+return cur
+`)
 
 type CandleMessage struct {
 	Type       string                 `json:"type,omitempty"`
@@ -91,6 +117,55 @@ func (b *RedisBus) SignalChannel(strategyID string) string {
 
 func (b *RedisBus) StateChannel(strategyID string) string {
 	return fmt.Sprintf("%s:state:%s", b.prefix, strategyID)
+}
+
+func (b *RedisBus) OpenCountKey(strategyID string) string {
+	return fmt.Sprintf("%s:open_count:%s", b.prefix, strategyID)
+}
+
+func (b *RedisBus) SetOpenCount(ctx context.Context, strategyID string, n int64, ttl time.Duration) error {
+	if b == nil || b.client == nil || strings.TrimSpace(strategyID) == "" {
+		return nil
+	}
+	sec := int64(ttl.Seconds())
+	if sec <= 0 {
+		sec = 6 * 60 * 60
+	}
+	key := b.OpenCountKey(strategyID)
+	pipe := b.client.Pipeline()
+	pipe.Set(ctx, key, n, time.Duration(sec)*time.Second)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (b *RedisBus) AcquireOpenSlot(ctx context.Context, strategyID string, max int, ttl time.Duration) (bool, int64, error) {
+	if b == nil || b.client == nil || strings.TrimSpace(strategyID) == "" {
+		return true, 0, nil
+	}
+	if max <= 0 {
+		return true, 0, nil
+	}
+	sec := int64(ttl.Seconds())
+	if sec <= 0 {
+		sec = 6 * 60 * 60
+	}
+	key := b.OpenCountKey(strategyID)
+	res, err := acquireOpenSlotScript.Run(ctx, b.client, []string{key}, max, sec).Int64()
+	if err != nil {
+		return false, 0, err
+	}
+	if res == -1 {
+		return false, 0, nil
+	}
+	return true, res, nil
+}
+
+func (b *RedisBus) ReleaseOpenSlot(ctx context.Context, strategyID string) (int64, error) {
+	if b == nil || b.client == nil || strings.TrimSpace(strategyID) == "" {
+		return 0, nil
+	}
+	key := b.OpenCountKey(strategyID)
+	return releaseOpenSlotScript.Run(ctx, b.client, []string{key}).Int64()
 }
 
 func (b *RedisBus) PublishCandle(ctx context.Context, msg CandleMessage) error {
