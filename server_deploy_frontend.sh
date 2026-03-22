@@ -15,11 +15,6 @@ CONF_FILE="${CONF_DIR}/default.conf"
 
 docker version >/dev/null
 
-if [[ "$BACKEND_BASE_URL" == *"137.220.219.172"* ]]; then
-  echo "请先在脚本顶部填写 BACKEND_BASE_URL（后端访问地址）"
-  exit 1
-fi
-
 mkdir -p "$CONF_DIR"
 
 cat > "$CONF_FILE" <<EOF
