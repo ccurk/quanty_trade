@@ -7,7 +7,7 @@ HOST_PORT="6379"
 
 DATA_DIR="/root/quanty_trade/redis"
 
-REDIS_PASSWORD="REPLACE_REDIS_PASSWORD"
+REDIS_PASSWORD="work@..."
 
 docker version >/dev/null
 
