@@ -2,6 +2,136 @@
 
 本文档描述当前代码状态下的关键调用链路（后端 Go + Redis + Python 策略 + 前端 WebSocket），用于快速理解“数据从哪里来、怎么流转、在哪里落库/广播”。
 
+## 流程图
+
+### 1) 总览：API / 策略 / 交易所 / Redis / 前端
+
+```mermaid
+flowchart LR
+  FE[前端 React] -->|HTTP API| API[后端 Gin API]
+  FE <-->|/ws 广播| HUB[WebSocket Hub]
+
+  API -->|StartStrategy / StopStrategy| MGR[Strategy Manager]
+  MGR -->|启动 python3 + json config| PY[Python 策略进程]
+
+  EX[Binance/Mock Exchange] -->|WS kline 1m| MGR
+  MGR -->|Publish candle/history| RB[(Redis PubSub)]
+  RB -->|Subscribe candle/history| PY
+
+  PY -->|Publish signal| RB
+  RB -->|Subscribe signal| MGR
+  MGR -->|下单/平仓/监控| EX
+
+  MGR -->|BroadcastJSON: candle/log/error/order| HUB
+  API -->|返回 JSON| FE
+```
+
+### 2) 行情链路：Binance Kline → Go → Redis / 前端
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant B as Binance WS
+  participant EX as Go: BinanceExchange.SubscribeCandles
+  participant M as Go: StrategyManager(StartStrategy callback)
+  participant R as Redis PubSub
+  participant P as Python Strategy
+  participant W as Frontend WS
+
+  B-->>EX: kline_1m payload (持续推送)
+  EX->>EX: 解析 payload.K
+  alt payload.K.X == true（收盘）
+    EX-->>M: callback(Candle)
+    M-->>R: PublishCandle(type=candle)
+    M-->>W: BroadcastJSON(type=candle)
+    P-->>R: Subscribe candle channel
+    R-->>P: candle/history
+  else 未收盘（X == false）
+    EX->>EX: 丢弃（当前实现不推送）
+  end
+```
+
+### 3) 首次全量历史：Python ready → Go 拉取 200 根 → Redis history
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Python Strategy
+  participant R as Redis PubSub
+  participant M as Go: StrategyManager
+  participant EX as Go: Exchange.FetchCandles
+
+  P-->>R: publish state {type:ready, boot_id}
+  R-->>M: SubscribeState handler
+  M->>M: inst.resync = true
+  loop 每 500ms 检查一次
+    M->>M: historySyncLoop
+    M->>EX: FetchCandles(sym, 1m, 200)
+    EX-->>M: candles[]
+    M-->>R: PublishHistory(type=history, candles[])
+  end
+```
+
+### 4) 信号与下单：Python signal → Go 下单 → TP/SL 监控
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Python Strategy
+  participant R as Redis PubSub
+  participant M as Go: StrategyManager
+  participant EX as Go: Exchange.PlaceOrder/ClosePosition
+  participant DB as DB(GORM)
+  participant W as Frontend WS
+
+  P-->>R: publish signal {action:open, side, amount, tp, sl}
+  R-->>M: SubscribeSignals handler
+  M->>M: handleRedisSignal 过滤/裁剪
+  M->>EX: PlaceOrder(...)
+  EX-->>M: Order result
+  M-->>DB: 写 StrategyOrder/Position/Log
+  M-->>W: BroadcastJSON(order/log/error)
+  alt 配置了 tp/sl
+    M->>M: 启动 monitorPositionTPStop goroutine
+    loop 每隔一段时间轮询/检查
+      M->>EX: FetchPositions / ClosePosition（触发时）
+      M-->>DB: 更新仓位/订单
+      M-->>W: BroadcastJSON(position/order)
+    end
+  end
+```
+
+### 5) 健康检查与重启：ready/heartbeat 超时或进程退出
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Python Strategy
+  participant R as Redis PubSub
+  participant M as Go: StrategyManager
+
+  par Python 定时心跳
+    loop interval_sec（默认 5s）
+      P-->>R: publish state {type:heartbeat, boot_id}
+    end
+  and Go 监听 state
+    R-->>M: SubscribeState handler
+    M->>M: 更新 inst.lastHB
+  and Go 健康检查
+    loop 每 5s
+      M->>M: healthMonitorLoop
+      alt 30s 内未收到 ready
+        M->>M: requestRestart(no_ready)
+      else 超过 20s 未心跳
+        M->>M: requestRestart(heartbeat_timeout)
+      end
+    end
+  and Go 进程退出检测
+    M->>M: waitProcessLoop(cmd.Wait)
+    M->>M: requestRestart(process_exited)
+  end
+```
+
 ## 0. 全局组件与入口
 
 **后端进程入口**
@@ -210,4 +340,3 @@ Go 侧：
 Python 侧：
 - 模板默认发送 `ready` + 周期 `heartbeat`
 - 代码位置：[redis_signal_template.py](file:///Users/black/basis/quanty_trade/strategies/redis_signal_template.py#L90-L167)
-
