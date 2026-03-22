@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1242,6 +1243,10 @@ func (b *BinanceExchange) ClosePositionOrder(symbol string, ownerID uint) (*Orde
 }
 
 func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle)) (func(), error) {
+	return b.SubscribeCandlesWithEvents(symbol, callback, nil)
+}
+
+func (b *BinanceExchange) SubscribeCandlesWithEvents(symbol string, callback func(Candle), onStatus func(event string, detail string, err error)) (func(), error) {
 	sym := strings.ToLower(binanceSymbol(symbol))
 	stream := sym + "@kline_1m"
 	wsURL := b.wsBaseURL + "/ws/" + stream
@@ -1250,15 +1255,31 @@ func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle))
 	go func() {
 		backoff := 1 * time.Second
 		maxBackoff := 30 * time.Second
+		dialer := websocket.Dialer{
+			Proxy:            http.ProxyFromEnvironment,
+			HandshakeTimeout: 10 * time.Second,
+			NetDialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+		}
 		for {
 			select {
 			case <-stop:
 				return
 			default:
 			}
-			conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+			if onStatus != nil {
+				onStatus("dialing", wsURL, nil)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			conn, _, err := dialer.DialContext(ctx, wsURL, nil)
+			cancel()
 			if err != nil {
 				log.Printf("[BINANCE WS] kline connect failed symbol=%s url=%s err=%v", symbol, wsURL, err)
+				if onStatus != nil {
+					onStatus("connect_failed", wsURL, err)
+				}
 				time.Sleep(backoff)
 				backoff *= 2
 				if backoff > maxBackoff {
@@ -1267,12 +1288,17 @@ func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle))
 				continue
 			}
 			log.Printf("[BINANCE WS] kline connected symbol=%s stream=%s", symbol, stream)
+			if onStatus != nil {
+				onStatus("connected", wsURL, nil)
+			}
 			backoff = 1 * time.Second
 			go func(c *websocket.Conn) {
 				<-stop
 				_ = c.Close()
 			}(conn)
 
+			gotFirst := false
+			gotFirstClosed := false
 			for {
 				select {
 				case <-stop:
@@ -1284,6 +1310,9 @@ func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle))
 				if err != nil {
 					_ = conn.Close()
 					log.Printf("[BINANCE WS] kline disconnected symbol=%s err=%v (reconnect in %s)", symbol, err, backoff)
+					if onStatus != nil {
+						onStatus("disconnected", wsURL, err)
+					}
 					time.Sleep(backoff)
 					backoff *= 2
 					if backoff > maxBackoff {
@@ -1304,6 +1333,14 @@ func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle))
 				}
 				if err := json.Unmarshal(msg, &payload); err != nil {
 					continue
+				}
+				if onStatus != nil && !gotFirst {
+					gotFirst = true
+					onStatus("rx_first", fmt.Sprintf("x=%v t=%d c=%s", payload.K.X, payload.K.T, payload.K.C), nil)
+				}
+				if onStatus != nil && payload.K.X && !gotFirstClosed {
+					gotFirstClosed = true
+					onStatus("rx_first_closed", fmt.Sprintf("t=%d c=%s", payload.K.T, payload.K.C), nil)
 				}
 				if !payload.K.X {
 					continue

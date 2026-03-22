@@ -567,6 +567,9 @@ func (m *Manager) StartStrategy(id string) error {
 		if strings.TrimSpace(st.BootID) == "" {
 			return
 		}
+		if logTrace {
+			emitStrategyLog(inst, "info", fmt.Sprintf("State recv type=%s boot_id=%s", strings.ToLower(strings.TrimSpace(st.Type)), st.BootID))
+		}
 		now := time.Now()
 		inst.mu.Lock()
 		changed := inst.bootID != st.BootID
@@ -632,73 +635,174 @@ func (m *Manager) StartStrategy(id string) error {
 			runCfg["symbol"] = feedSymbols[0]
 		}
 
+		go func(syms []string) {
+			time.Sleep(20 * time.Second)
+			inst.mu.Lock()
+			rx := inst.candleRxCount
+			inst.mu.Unlock()
+			for _, s := range syms {
+				n := 0
+				if rx != nil {
+					n = rx[s]
+				}
+				if n == 0 {
+					emitStrategyLog(inst, "info", fmt.Sprintf("Waiting first closed kline symbol=%s (Binance kline only triggers on close)", s))
+				}
+			}
+		}(append([]string(nil), feedSymbols...))
+
 		for _, sym := range feedSymbols {
 			sym := sym
 			go func() {
 				emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles start symbol=%s", sym))
-				stop, err := inst.exchange.SubscribeCandles(sym, func(candle exchange.Candle) {
-					inst.mu.Lock()
-					if inst.candleRxCount == nil {
-						inst.candleRxCount = map[string]int{}
-					}
-					inst.candleRxCount[sym]++
-					rxN := inst.candleRxCount[sym]
-					inst.mu.Unlock()
-					if rxN == 1 {
-						emitStrategyLog(inst, "info", fmt.Sprintf("Exchange candle first symbol=%s ts=%s close=%v", sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
-					}
-
-					payload := map[string]interface{}{
-						"symbol":    sym,
-						"timestamp": candle.Timestamp,
-						"open":      candle.Open,
-						"high":      candle.High,
-						"low":       candle.Low,
-						"close":     candle.Close,
-						"volume":    candle.Volume,
-					}
-					pubErr := redisBus.PublishCandle(context.Background(), bus.CandleMessage{
-						StrategyID: inst.ID,
-						Symbol:     sym,
-						Timestamp:  candle.Timestamp,
-						Open:       candle.Open,
-						High:       candle.High,
-						Low:        candle.Low,
-						Close:      candle.Close,
-						Volume:     candle.Volume,
-					})
-					if pubErr != nil {
-						logger.Errorf("[REDIS PUBLISH ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, pubErr)
-						emitStrategyLog(inst, "error", fmt.Sprintf("Redis publish candle failed symbol=%s err=%v", sym, pubErr))
-					} else {
+				var (
+					stop func()
+					err  error
+				)
+				if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok {
+					stop, err = bx.SubscribeCandlesWithEvents(sym, func(candle exchange.Candle) {
 						inst.mu.Lock()
-						if inst.candlePubCount == nil {
-							inst.candlePubCount = map[string]int{}
+						if inst.candleRxCount == nil {
+							inst.candleRxCount = map[string]int{}
 						}
-						inst.candlePubCount[sym]++
-						pubN := inst.candlePubCount[sym]
+						inst.candleRxCount[sym]++
+						rxN := inst.candleRxCount[sym]
 						inst.mu.Unlock()
-						if pubN == 1 {
-							emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle first ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
+						if rxN == 1 {
+							emitStrategyLog(inst, "info", fmt.Sprintf("Exchange candle first symbol=%s ts=%s close=%v", sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
 						}
-						logRedis := getBool(inst.Config["log_redis"])
-						logEvery := int(getNumber(inst.Config["log_candle_every"]))
-						if logEvery <= 0 {
-							logEvery = 60
+
+						payload := map[string]interface{}{
+							"symbol":    sym,
+							"timestamp": candle.Timestamp,
+							"open":      candle.Open,
+							"high":      candle.High,
+							"low":       candle.Low,
+							"close":     candle.Close,
+							"volume":    candle.Volume,
 						}
-						if logRedis {
-							if pubN%logEvery == 0 {
-								emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle ok ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
+						pubErr := redisBus.PublishCandle(context.Background(), bus.CandleMessage{
+							StrategyID: inst.ID,
+							Symbol:     sym,
+							Timestamp:  candle.Timestamp,
+							Open:       candle.Open,
+							High:       candle.High,
+							Low:        candle.Low,
+							Close:      candle.Close,
+							Volume:     candle.Volume,
+						})
+						if pubErr != nil {
+							logger.Errorf("[REDIS PUBLISH ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, pubErr)
+							emitStrategyLog(inst, "error", fmt.Sprintf("Redis publish candle failed symbol=%s err=%v", sym, pubErr))
+						} else {
+							inst.mu.Lock()
+							if inst.candlePubCount == nil {
+								inst.candlePubCount = map[string]int{}
+							}
+							inst.candlePubCount[sym]++
+							pubN := inst.candlePubCount[sym]
+							inst.mu.Unlock()
+							if pubN == 1 {
+								emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle first ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
+							}
+							logRedis := getBool(inst.Config["log_redis"])
+							logEvery := int(getNumber(inst.Config["log_candle_every"]))
+							if logEvery <= 0 {
+								logEvery = 60
+							}
+							if logRedis {
+								if pubN%logEvery == 0 {
+									emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle ok ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
+								}
 							}
 						}
-					}
-					inst.hub.BroadcastJSON(map[string]interface{}{
-						"type":        "candle",
-						"strategy_id": inst.ID,
-						"owner_id":    inst.OwnerID,
-						"data":        payload,
+						inst.hub.BroadcastJSON(map[string]interface{}{
+							"type":        "candle",
+							"strategy_id": inst.ID,
+							"owner_id":    inst.OwnerID,
+							"data":        payload,
+						})
+					}, func(event string, detail string, err error) {
+						switch event {
+						case "dialing":
+							emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS dialing symbol=%s url=%s", sym, detail))
+						case "connected":
+							emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS connected symbol=%s url=%s", sym, detail))
+						case "connect_failed":
+							emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS connect failed symbol=%s url=%s err=%v", sym, detail, err))
+						case "disconnected":
+							emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS disconnected symbol=%s url=%s err=%v", sym, detail, err))
+						case "rx_first":
+							emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS recv first kline symbol=%s %s", sym, detail))
+						case "rx_first_closed":
+							emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS recv first closed kline symbol=%s %s", sym, detail))
+						}
 					})
-				})
+				} else {
+					stop, err = inst.exchange.SubscribeCandles(sym, func(candle exchange.Candle) {
+						inst.mu.Lock()
+						if inst.candleRxCount == nil {
+							inst.candleRxCount = map[string]int{}
+						}
+						inst.candleRxCount[sym]++
+						rxN := inst.candleRxCount[sym]
+						inst.mu.Unlock()
+						if rxN == 1 {
+							emitStrategyLog(inst, "info", fmt.Sprintf("Exchange candle first symbol=%s ts=%s close=%v", sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
+						}
+
+						payload := map[string]interface{}{
+							"symbol":    sym,
+							"timestamp": candle.Timestamp,
+							"open":      candle.Open,
+							"high":      candle.High,
+							"low":       candle.Low,
+							"close":     candle.Close,
+							"volume":    candle.Volume,
+						}
+						pubErr := redisBus.PublishCandle(context.Background(), bus.CandleMessage{
+							StrategyID: inst.ID,
+							Symbol:     sym,
+							Timestamp:  candle.Timestamp,
+							Open:       candle.Open,
+							High:       candle.High,
+							Low:        candle.Low,
+							Close:      candle.Close,
+							Volume:     candle.Volume,
+						})
+						if pubErr != nil {
+							logger.Errorf("[REDIS PUBLISH ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, pubErr)
+							emitStrategyLog(inst, "error", fmt.Sprintf("Redis publish candle failed symbol=%s err=%v", sym, pubErr))
+						} else {
+							inst.mu.Lock()
+							if inst.candlePubCount == nil {
+								inst.candlePubCount = map[string]int{}
+							}
+							inst.candlePubCount[sym]++
+							pubN := inst.candlePubCount[sym]
+							inst.mu.Unlock()
+							if pubN == 1 {
+								emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle first ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
+							}
+							logRedis := getBool(inst.Config["log_redis"])
+							logEvery := int(getNumber(inst.Config["log_candle_every"]))
+							if logEvery <= 0 {
+								logEvery = 60
+							}
+							if logRedis {
+								if pubN%logEvery == 0 {
+									emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle ok ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
+								}
+							}
+						}
+						inst.hub.BroadcastJSON(map[string]interface{}{
+							"type":        "candle",
+							"strategy_id": inst.ID,
+							"owner_id":    inst.OwnerID,
+							"data":        payload,
+						})
+					})
+				}
 				if err != nil {
 					logger.Errorf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, err)
 					database.DB.Create(&models.StrategyLog{
