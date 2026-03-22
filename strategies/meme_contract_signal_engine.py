@@ -358,38 +358,38 @@ def score_confidence_detail(
 
     if rsi_val < 35:
         ls += 0.25
-        ls_parts.append("rsi<35:+0.25")
+        ls_parts.append("RSI<35:+0.25")
     elif rsi_val > 65:
         ss += 0.25
-        ss_parts.append("rsi>65:+0.25")
+        ss_parts.append("RSI>65:+0.25")
 
     if macd_val > macd_sig:
         ls += 0.25
-        ls_parts.append("macd>sig:+0.25")
+        ls_parts.append("MACD>信号:+0.25")
     else:
         ss += 0.25
-        ss_parts.append("macd<=sig:+0.25")
+        ss_parts.append("MACD<=信号:+0.25")
 
     if bb_lower > 0 and price <= bb_lower:
         ls += 0.15
-        ls_parts.append("bb<=lower:+0.15")
+        ls_parts.append("布林<=下轨:+0.15")
     elif bb_upper > 0 and price >= bb_upper:
         ss += 0.15
-        ss_parts.append("bb>=upper:+0.15")
+        ss_parts.append("布林>=上轨:+0.15")
 
     if funding_rate < -0.0003:
         ls += 0.20
-        ls_parts.append("funding<-0.0003:+0.20")
+        ls_parts.append("资金费率<-0.0003:+0.20")
     elif funding_rate > 0.0003:
         ss += 0.20
-        ss_parts.append("funding>0.0003:+0.20")
+        ss_parts.append("资金费率>0.0003:+0.20")
 
     if ls_ratio < 0.8:
         ls += 0.15
-        ls_parts.append("ls_ratio<0.8:+0.15")
+        ls_parts.append("多空比<0.8:+0.15")
     elif ls_ratio > 1.5:
         ss += 0.15
-        ss_parts.append("ls_ratio>1.5:+0.15")
+        ss_parts.append("多空比>1.5:+0.15")
 
     discounted = False
     if atr_pct < Config.ATR_DISCOUNT_THR:
@@ -678,9 +678,9 @@ class Strategy:
             if self.log_rx:
                 n = len(candles) if isinstance(candles, list) else 0
                 if sym:
-                    self._log(f"RX history sym={sym} bars={n} ch={self._candle_ch()} ts={_now()}")
+                    self._log(f"收到历史K线 sym={sym} 根数={n} 频道={self._candle_ch()} 时间={_now()}")
                 else:
-                    self._log(f"RX history bars={n} ch={self._candle_ch()} ts={_now()}")
+                    self._log(f"收到历史K线 根数={n} 频道={self._candle_ch()} 时间={_now()}")
             if isinstance(candles, list):
                 for it in candles:
                     if isinstance(it, dict):
@@ -709,16 +709,16 @@ class Strategy:
         self.recv_count[symbol] = int(self.recv_count.get(symbol) or 0) + 1
         n_recv = self.recv_count[symbol]
         if self.log_rx and (self.trace or n_recv % self.log_every == 0):
-            self._log(f"RX candle sym={symbol} n={n_recv} close={c} bars={len(self.closes[symbol])} ts={_now()}")
+            self._log(f"收到K线 sym={symbol} 序号={n_recv} 收盘={c} 缓存={len(self.closes[symbol])} 时间={_now()}")
         if self.log_rx and n_recv == 1:
-            self._log(f"RX candle first sym={symbol} close={c} ts={_now()}")
+            self._log(f"收到首根K线 sym={symbol} 收盘={c} 时间={_now()}")
 
         closes = self.closes[symbol]
         highs = self.highs[symbol]
         lows = self.lows[symbol]
         if len(closes) < 35:
             if self.log_decisions and (self.trace or n_recv % self.log_every == 0):
-                self._log(f"SKIP warmup sym={symbol} bars={len(closes)}/35 ts={_now()}")
+                self._log(f"跳过-预热不足 sym={symbol} 当前缓存={len(closes)}/35 时间={_now()}")
             return
 
         extra = msg.get("extra") if isinstance(msg.get("extra"), dict) else {}
@@ -742,20 +742,20 @@ class Strategy:
         tick_log = self.log_decisions and (self.trace or n_recv % self.log_every == 0)
         if tick_log:
             self._log(
-                f"EVAL sym={symbol} price={r.entry_price} passed={r.passed_filter} dir={r.direction} conf={r.confidence:.3f} rsi={r.rsi:.1f} macd_diff={r.macd_diff:+.6f} bb={r.bb_position} atr={r.atr_pct:.2f}% fr={r.funding_rate:+.5f} lr={r.ls_ratio:.2f} ts={_now()}"
+                f"评估 sym={symbol} 价格={r.entry_price} 方向={r.direction} 置信度={r.confidence:.3f} RSI={r.rsi:.1f} MACD差={r.macd_diff:+.6f} 布林位置={r.bb_position} ATR%={r.atr_pct:.2f} 资金费率={r.funding_rate:+.5f} 多空比={r.ls_ratio:.2f} 时间={_now()}"
             )
             self._log(
-                f"SCORE sym={symbol} ls={sc['ls']:.3f} ss={sc['ss']:.3f} min_conf={sc['min_confidence']:.3f} atr_discounted={sc['atr_discounted']} ls_parts={','.join(sc['ls_parts'])} ss_parts={','.join(sc['ss_parts'])} ts={_now()}"
+                f"评分明细 sym={symbol} 多头分={sc['ls']:.3f} 空头分={sc['ss']:.3f} 最低置信度={sc['min_confidence']:.3f} 低波动折扣={sc['atr_discounted']} 多头加分项={','.join(sc['ls_parts'])} 空头加分项={','.join(sc['ss_parts'])} 时间={_now()}"
             )
 
         if not r.passed_filter:
             if tick_log:
-                self._log(f"SKIP filter sym={symbol} reason={r.filter_reason} price={r.entry_price} ts={_now()}")
+                self._log(f"跳过-过滤未通过 sym={symbol} 原因={r.filter_reason} 价格={r.entry_price} 时间={_now()}")
             return
         if r.direction is None:
             if tick_log:
                 self._log(
-                    f"NO SIGNAL sym={symbol} conf={r.confidence:.3f} rsi={r.rsi:.1f} macd_diff={r.macd_diff:+.6f} bb={r.bb_position} atr={r.atr_pct:.2f}% fr={r.funding_rate:+.5f} lr={r.ls_ratio:.2f} ts={_now()}"
+                    f"未触发信号 sym={symbol} 置信度={r.confidence:.3f} 多头分={sc['ls']:.3f} 空头分={sc['ss']:.3f} 最低置信度={sc['min_confidence']:.3f} 时间={_now()}"
                 )
             return
 
@@ -763,13 +763,13 @@ class Strategy:
         last_ts = float(self.last_signal_ts.get(symbol) or 0.0)
         if Config.COOLDOWN_SEC > 0 and now-last_ts < float(Config.COOLDOWN_SEC):
             if tick_log:
-                self._log(f"SKIP cooldown sym={symbol} dir={r.direction} remain={int(Config.COOLDOWN_SEC-(now-last_ts))}s ts={_now()}")
+                self._log(f"跳过-冷却中 sym={symbol} 方向={r.direction} 剩余={int(Config.COOLDOWN_SEC-(now-last_ts))}s 时间={_now()}")
             return
 
         last_dir = _s(self.last_signal_dir.get(symbol)).strip().lower()
         if last_dir and last_dir == _s(r.direction).strip().lower():
             if tick_log:
-                self._log(f"SKIP already-signaled sym={symbol} dir={r.direction} ts={_now()}")
+                self._log(f"跳过-同向已发过 sym={symbol} 方向={r.direction} 时间={_now()}")
             return
 
         self.last_signal_ts[symbol] = now
