@@ -1229,7 +1229,7 @@ type UpdateTemplateRequest struct {
 	TemplateType string `json:"template_type"`
 }
 
-func validateStrategyCode(code string) []string {
+func validateLegacyStrategyCode(code string) []string {
 	c := strings.ToLower(code)
 	missing := make([]string, 0)
 
@@ -1268,6 +1268,56 @@ func validateStrategyCode(code string) []string {
 	}
 
 	return missing
+}
+
+func validateRedisStrategyCode(code string) []string {
+	c := strings.ToLower(code)
+	missing := make([]string, 0)
+
+	hasRedis := strings.Contains(c, "miniredis") || strings.Contains(c, "redis") || strings.Contains(c, "pubsub")
+	if !hasRedis {
+		missing = append(missing, "Redis 模式策略（使用 MiniRedis/Redis PubSub）")
+	}
+
+	hasCandleSub := strings.Contains(c, ":candle:") || strings.Contains(c, "_candle_ch") || strings.Contains(c, ".subscribe(")
+	if !hasCandleSub {
+		missing = append(missing, "订阅 candle channel（:candle: / subscribe）")
+	}
+
+	hasSignalPub := strings.Contains(c, ":signal:") || strings.Contains(c, "_signal_ch") || strings.Contains(c, ".publish(")
+	if !hasSignalPub {
+		missing = append(missing, "发布 signal（:signal: / publish）")
+	}
+
+	hasStateReady := strings.Contains(c, ":state:") || strings.Contains(c, "_state_ch")
+	hasReadyType := strings.Contains(c, "\"type\": \"ready\"") || strings.Contains(c, "'type': 'ready'") || strings.Contains(c, "\"type\":\"ready\"") || strings.Contains(c, "'type':'ready'")
+	if !(hasStateReady && hasReadyType) {
+		missing = append(missing, "启动上报 ready（state channel + type=ready）")
+	}
+
+	hasRun := strings.Contains(c, "def run") && (strings.Contains(c, "if __name__") || strings.Contains(c, "if __name__ ==") || strings.Contains(c, "if __name__=="))
+	if !hasRun {
+		missing = append(missing, "main 中调用 run()（if __name__ == '__main__'）")
+	}
+
+	return missing
+}
+
+func validateStrategyCode(code string) []string {
+	legacyMissing := validateLegacyStrategyCode(code)
+	if len(legacyMissing) == 0 {
+		return nil
+	}
+	redisMissing := validateRedisStrategyCode(code)
+	if len(redisMissing) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(legacyMissing)+len(redisMissing)+2)
+	out = append(out, "未匹配任一策略协议：BaseStrategy 或 RedisSignal")
+	out = append(out, "BaseStrategy 协议缺少："+strings.Join(legacyMissing, "、"))
+	out = append(out, "RedisSignal 协议缺少："+strings.Join(redisMissing, "、"))
+	return out
 }
 
 func SaveTemplate(c *gin.Context) {
