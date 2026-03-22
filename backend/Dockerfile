@@ -21,8 +21,8 @@ FROM python:3.11-alpine
 
 WORKDIR /app
 
-# Install system dependencies for Go and Python strategies
-RUN apk add --no-cache libc6-compat ca-certificates
+# Install system dependencies for Go and Python strategies (pandas included)
+RUN apk add --no-cache ca-certificates py3-pandas
 
 # Copy the binary from builder
 COPY --from=builder /app/main .
