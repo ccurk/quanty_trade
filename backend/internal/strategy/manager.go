@@ -224,6 +224,10 @@ type StrategyInstance struct {
 
 	redisCancel context.CancelFunc
 	bootID      string
+	startedAt   time.Time
+	lastHB      time.Time
+	stopping    bool
+	restarting  bool
 	resync      bool
 	feedSymbols []string
 	candleStops map[string]func()
@@ -347,6 +351,12 @@ func (m *Manager) StartStrategy(id string) error {
 	runCfg["redis_db"] = rc.DB
 	runCfg["redis_prefix"] = rc.Prefix
 	runCfg["use_redis"] = true
+	runCfg["healthcheck"] = map[string]interface{}{
+		"enabled":         true,
+		"interval_sec":    5,
+		"timeout_sec":     20,
+		"ready_grace_sec": 30,
+	}
 
 	fixedSymbol := ""
 	if raw, ok := inst.Config["symbol"].(string); ok {
@@ -395,6 +405,11 @@ func (m *Manager) StartStrategy(id string) error {
 	inst.Status = StatusRunning
 	inst.feedSymbols = feedSymbols
 	inst.resync = true
+	inst.bootID = ""
+	inst.startedAt = time.Now()
+	inst.lastHB = time.Time{}
+	inst.stopping = false
+	inst.restarting = false
 	inst.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -417,15 +432,21 @@ func (m *Manager) StartStrategy(id string) error {
 		if strings.TrimSpace(st.BootID) == "" {
 			return
 		}
+		now := time.Now()
 		inst.mu.Lock()
 		changed := inst.bootID != st.BootID
-		if changed {
+		if changed || strings.ToLower(strings.TrimSpace(st.Type)) == "ready" {
 			inst.bootID = st.BootID
 			inst.resync = true
+		}
+		if strings.ToLower(strings.TrimSpace(st.Type)) == "ready" || strings.ToLower(strings.TrimSpace(st.Type)) == "heartbeat" {
+			inst.lastHB = now
 		}
 		inst.mu.Unlock()
 	})
 	go m.historySyncLoop(ctx, inst, redisBus)
+	go m.healthMonitorLoop(ctx, inst)
+	go m.waitProcessLoop(inst)
 
 	if database.DB != nil {
 		debugOn := false
@@ -708,6 +729,7 @@ func (m *Manager) StopStrategy(id string, force bool) error {
 	if inst.Status != StatusRunning {
 		return nil
 	}
+	inst.stopping = true
 
 	if inst.redisCancel != nil {
 		inst.redisCancel()
@@ -782,6 +804,130 @@ func (m *Manager) historySyncLoop(ctx context.Context, inst *StrategyInstance, r
 			}
 		}
 	}
+}
+
+func (m *Manager) healthMonitorLoop(ctx context.Context, inst *StrategyInstance) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			inst.mu.Lock()
+			if inst.Status != StatusRunning || inst.stopping {
+				inst.mu.Unlock()
+				return
+			}
+			startedAt := inst.startedAt
+			bootID := inst.bootID
+			lastHB := inst.lastHB
+			restarting := inst.restarting
+			inst.mu.Unlock()
+
+			if restarting {
+				continue
+			}
+
+			now := time.Now()
+			readyGrace := 30 * time.Second
+			hbTimeout := 20 * time.Second
+
+			if strings.TrimSpace(bootID) == "" {
+				if !startedAt.IsZero() && now.Sub(startedAt) > readyGrace {
+					m.requestRestart(inst, "no_ready")
+				}
+				continue
+			}
+			if lastHB.IsZero() {
+				continue
+			}
+			if now.Sub(lastHB) > hbTimeout {
+				m.requestRestart(inst, "heartbeat_timeout")
+			}
+		}
+	}
+}
+
+func (m *Manager) waitProcessLoop(inst *StrategyInstance) {
+	inst.mu.Lock()
+	cmd := inst.cmd
+	inst.mu.Unlock()
+	if cmd == nil {
+		return
+	}
+	err := cmd.Wait()
+
+	inst.mu.Lock()
+	stopping := inst.stopping
+	running := inst.Status == StatusRunning
+	if running {
+		inst.Status = StatusError
+	}
+	inst.mu.Unlock()
+
+	if stopping {
+		return
+	}
+	if err != nil {
+		logger.Errorf("[STRATEGY EXIT] id=%s owner=%d err=%v", inst.ID, inst.OwnerID, err)
+	} else {
+		logger.Errorf("[STRATEGY EXIT] id=%s owner=%d", inst.ID, inst.OwnerID)
+	}
+	_ = database.DB.Create(&models.StrategyLog{
+		StrategyID: inst.ID,
+		Level:      "error",
+		Message:    fmt.Sprintf("Strategy process exited: %v", err),
+		CreatedAt:  time.Now(),
+	}).Error
+	inst.hub.BroadcastJSON(map[string]interface{}{
+		"type":        "error",
+		"strategy_id": inst.ID,
+		"owner_id":    inst.OwnerID,
+		"error":       "Strategy process exited",
+	})
+	m.requestRestart(inst, "process_exited")
+}
+
+func (m *Manager) requestRestart(inst *StrategyInstance, reason string) {
+	if inst == nil {
+		return
+	}
+	inst.mu.Lock()
+	if inst.restarting || inst.stopping || inst.Status != StatusRunning {
+		inst.mu.Unlock()
+		return
+	}
+	inst.restarting = true
+	id := inst.ID
+	ownerID := inst.OwnerID
+	inst.mu.Unlock()
+
+	logger.Errorf("[STRATEGY HEALTH] id=%s owner=%d action=restart reason=%s", id, ownerID, reason)
+	_ = database.DB.Create(&models.StrategyLog{
+		StrategyID: id,
+		Level:      "error",
+		Message:    fmt.Sprintf("Healthcheck restart: %s", reason),
+		CreatedAt:  time.Now(),
+	}).Error
+	m.hub.BroadcastJSON(map[string]interface{}{
+		"type":        "error",
+		"strategy_id": id,
+		"owner_id":    ownerID,
+		"error":       fmt.Sprintf("Healthcheck restart: %s", reason),
+	})
+
+	go func() {
+		_ = m.StopStrategy(id, true)
+		time.Sleep(2 * time.Second)
+		if err := m.StartStrategy(id); err != nil {
+			logger.Errorf("[STRATEGY HEALTH] id=%s owner=%d action=restart_failed reason=%s err=%v", id, ownerID, reason, err)
+			inst.mu.Lock()
+			inst.restarting = false
+			inst.mu.Unlock()
+		}
+	}()
 }
 
 func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage) {

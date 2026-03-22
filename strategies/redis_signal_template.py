@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import time
+import threading
 from datetime import datetime, timezone
 
 from mini_redis import MiniRedis
@@ -73,7 +74,9 @@ class RedisSignalStrategy:
 
         host, port = (self.redis_addr.split(":") + ["6379"])[:2]
         self.r = MiniRedis(host=host, port=int(port), password=self.redis_password, db=self.redis_db).connect()
+        self.pub = MiniRedis(host=host, port=int(port), password=self.redis_password, db=self.redis_db).connect()
         self.boot_id = f"{int(time.time() * 1000)}-{os.getpid()}"
+        self.healthcheck = self.cfg.get("healthcheck") or {}
 
     def _candle_ch(self):
         return f"{self.prefix}:candle:{self.strategy_id}"
@@ -83,6 +86,22 @@ class RedisSignalStrategy:
 
     def _state_ch(self):
         return f"{self.prefix}:state:{self.strategy_id}"
+
+    def _heartbeat_loop(self):
+        interval = 5
+        try:
+            if isinstance(self.healthcheck, dict):
+                interval = int(self.healthcheck.get("interval_sec") or 5)
+        except Exception:
+            interval = 5
+        if interval <= 0:
+            interval = 5
+        while True:
+            try:
+                self.pub.publish(self._state_ch(), json.dumps({"type": "heartbeat", "strategy_id": self.strategy_id, "boot_id": self.boot_id, "created_at": _now()}))
+            except Exception:
+                pass
+            time.sleep(interval)
 
     def _emit_signal(self, symbol, side, amount, take_profit, stop_loss):
         msg = {
@@ -142,7 +161,9 @@ class RedisSignalStrategy:
         if not self.strategy_id:
             raise RuntimeError("missing strategy_id")
         self.r.subscribe(self._candle_ch())
-        self.r.publish(self._state_ch(), json.dumps({"type": "ready", "strategy_id": self.strategy_id, "boot_id": self.boot_id, "created_at": _now()}))
+        self.pub.publish(self._state_ch(), json.dumps({"type": "ready", "strategy_id": self.strategy_id, "boot_id": self.boot_id, "created_at": _now()}))
+        t = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        t.start()
         sys.stdout.write(json.dumps({"type": "log", "data": f"REDIS started strategy_id={self.strategy_id} ch={self._candle_ch()} ts={_now()}"}) + "\n")
         sys.stdout.flush()
         while True:
