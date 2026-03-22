@@ -230,6 +230,7 @@ type StrategyInstance struct {
 	Path             string `json:"path"`
 	RuntimePath      string `json:"runtime_path"`
 	RuntimeGenerated bool   `json:"runtime_generated"`
+	RuntimeKeep      bool   `json:"runtime_keep"`
 	// Config is the in-memory decoded config JSON.
 	Config map[string]interface{} `json:"config"`
 	// Status is the process state.
@@ -526,7 +527,11 @@ func (m *Manager) StartStrategy(id string) error {
 		return err
 	}
 	cmd := exec.Command("python3", absPath, string(configJSON))
-	cmd.Dir = filepath.Dir(absPath)
+	runDir := filepath.Dir(absPath)
+	if inst.RuntimeGenerated {
+		runDir = filepath.Dir(runDir)
+	}
+	cmd.Dir = runDir
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		inst.mu.Unlock()
@@ -927,12 +932,15 @@ func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, er
 	}
 
 	absPath := filepath.Join(runtimeDir, inst.ID+".py")
-	if err := os.WriteFile(absPath, []byte(code), 0o644); err != nil {
+	runtimeCode := "import os\nimport sys\nsys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), \"..\")))\n\n" + code + "\n"
+	if err := os.WriteFile(absPath, []byte(runtimeCode), 0o644); err != nil {
 		return "", err
 	}
 
+	keep := getBool(inst.Config["keep_runtime_file"]) || getBool(inst.Config["debug"]) || getBool(inst.Config["log_trace"])
 	inst.RuntimePath = absPath
 	inst.RuntimeGenerated = true
+	inst.RuntimeKeep = keep
 	inst.Path = absPath
 	return absPath, nil
 }
@@ -958,8 +966,22 @@ func (m *Manager) prepareBacktestStrategyFile(inst *StrategyInstance, backtestID
 		return absPath, func() {}, err
 	}
 
-	tmp := filepath.Join(os.TempDir(), fmt.Sprintf("qt_backtest_%d_%s.py", backtestID, inst.ID))
-	if err := os.WriteFile(tmp, []byte(code), 0o644); err != nil {
+	strategiesDir := conf.C().Paths.StrategiesDir
+	if strategiesDir == "" {
+		strategiesDir = conf.Path("strategies")
+	}
+	absDir, err := filepath.Abs(strategiesDir)
+	if err != nil {
+		return "", func() {}, err
+	}
+	runtimeDir := filepath.Join(absDir, "_runtime")
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		return "", func() {}, err
+	}
+
+	tmp := filepath.Join(runtimeDir, fmt.Sprintf("backtest_%d_%s.py", backtestID, inst.ID))
+	runtimeCode := "import os\nimport sys\nsys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), \"..\")))\n\n" + code + "\n"
+	if err := os.WriteFile(tmp, []byte(runtimeCode), 0o644); err != nil {
 		return "", func() {}, err
 	}
 	return tmp, func() { _ = os.Remove(tmp) }, nil
@@ -1065,15 +1087,23 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 
 func (inst *StrategyInstance) readStderr(stderr io.ReadCloser) {
 	scanner := bufio.NewScanner(stderr)
-	for scanner.Scan() {
-		msg := scanner.Text()
+	traceLines := make([]string, 0, 64)
+	inTrace := false
+	flush := func() {
+		if len(traceLines) == 0 {
+			inTrace = false
+			return
+		}
+		msg := strings.Join(traceLines, "\n")
+		traceLines = traceLines[:0]
+		inTrace = false
 		logger.Errorf("[%s ERROR] %s", inst.Name, msg)
-		database.DB.Create(&models.StrategyLog{
+		_ = database.DB.Create(&models.StrategyLog{
 			StrategyID: inst.ID,
 			Level:      "error",
 			Message:    msg,
 			CreatedAt:  time.Now(),
-		})
+		}).Error
 		inst.hub.BroadcastJSON(map[string]interface{}{
 			"type":        "error",
 			"strategy_id": inst.ID,
@@ -1081,6 +1111,34 @@ func (inst *StrategyInstance) readStderr(stderr io.ReadCloser) {
 			"error":       msg,
 		})
 	}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "Traceback (most recent call last):") {
+			flush()
+			inTrace = true
+			traceLines = append(traceLines, line)
+			continue
+		}
+		if inTrace {
+			traceLines = append(traceLines, line)
+			if strings.HasPrefix(line, "During handling of the above exception") {
+				continue
+			}
+			if strings.HasPrefix(line, "The above exception") {
+				continue
+			}
+			if strings.HasPrefix(line, "  File ") || strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") || strings.TrimSpace(line) == "" {
+				continue
+			}
+			if strings.Contains(line, ":") {
+				flush()
+			}
+			continue
+		}
+		traceLines = append(traceLines, line)
+		flush()
+	}
+	flush()
 }
 
 // StopStrategy stops a running python strategy process.
@@ -1284,10 +1342,16 @@ func (m *Manager) waitProcessLoop(inst *StrategyInstance) {
 	inst.mu.Lock()
 	runtimePath := inst.RuntimePath
 	runtimeGenerated := inst.RuntimeGenerated
+	runtimeKeep := inst.RuntimeKeep
 	inst.RuntimePath = ""
 	inst.RuntimeGenerated = false
+	inst.RuntimeKeep = false
 	inst.mu.Unlock()
-	if runtimeGenerated && strings.TrimSpace(runtimePath) != "" {
+	if err != nil && runtimeGenerated && strings.TrimSpace(runtimePath) != "" {
+		runtimeKeep = true
+		emitStrategyLog(inst, "error", fmt.Sprintf("Strategy crashed; runtime script kept path=%s", runtimePath))
+	}
+	if runtimeGenerated && !runtimeKeep && strings.TrimSpace(runtimePath) != "" {
 		_ = os.Remove(runtimePath)
 	}
 
