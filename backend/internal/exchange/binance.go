@@ -500,6 +500,20 @@ func binanceInterval(timeframe string) (string, error) {
 	}
 }
 
+func binanceAPIError(body []byte) (int, string, bool) {
+	var parsed struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return 0, "", false
+	}
+	if parsed.Code == 0 && strings.TrimSpace(parsed.Msg) == "" {
+		return 0, "", false
+	}
+	return parsed.Code, strings.TrimSpace(parsed.Msg), true
+}
+
 func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, method, path string, params url.Values) ([]byte, int, error) {
 	if params == nil {
 		params = url.Values{}
@@ -530,6 +544,15 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
+		if code, msg, ok := binanceAPIError(body); ok {
+			if code == -4411 {
+				return body, resp.StatusCode, fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q} (需要在币安签署 TradFi-Perps 合约后才能使用 USDM fapi 下单)", code, msg)
+			}
+			if code == -4120 {
+				return body, resp.StatusCode, fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q} (币安已将 USDM 条件单迁移到 Algo Order 接口，需要使用 /fapi/v1/algoOrder)", code, msg)
+			}
+			return body, resp.StatusCode, fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q}", code, msg)
+		}
 		return body, resp.StatusCode, fmt.Errorf("binance api error: %s", string(body))
 	}
 	return body, resp.StatusCode, nil
@@ -551,6 +574,9 @@ func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
+		if code, msg, ok := binanceAPIError(body); ok {
+			return body, resp.StatusCode, fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q}", code, msg)
+		}
 		return body, resp.StatusCode, fmt.Errorf("binance api error: %s", string(body))
 	}
 	return body, resp.StatusCode, nil
@@ -1426,6 +1452,10 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 	if positionAmt < 0 {
 		closeSide = "BUY"
 	}
+	closeQty := roundDownToStep(math.Abs(positionAmt), filters.StepSize)
+	if filters.MinQty > 0 && closeQty < filters.MinQty {
+		closeQty = filters.MinQty
+	}
 
 	var firstErr error
 	place := func(kind string, orderType string, stopPrice float64) {
@@ -1433,16 +1463,21 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 			return
 		}
 		params := url.Values{}
+		params.Set("algoType", "CONDITIONAL")
 		params.Set("symbol", sym)
 		params.Set("side", closeSide)
-		params.Set("type", orderType)
-		params.Set("closePosition", "true")
+		params.Set("positionSide", "BOTH")
+		params.Set("timeInForce", "GTC")
 		params.Set("workingType", "MARK_PRICE")
+		params.Set("reduceOnly", "true")
+		params.Set("orderType", orderType)
 		clientID := normalizeNewClientOrderID(kind + "_" + baseClientOrderID)
-		params.Set("newClientOrderId", clientID)
+		params.Set("clientAlgoId", clientID)
+		params.Set("quantity", formatByStep(closeQty, filters.StepSize))
 		adj := roundDownPrice(stopPrice, filters.TickSize)
-		params.Set("stopPrice", formatByStep(adj, filters.TickSize))
-		_, _, e := b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/order", params)
+		params.Set("triggerPrice", formatByStep(adj, filters.TickSize))
+		params.Set("price", formatByStep(adj, filters.TickSize))
+		_, _, e := b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/algoOrder", params)
 		if e != nil && firstErr == nil {
 			firstErr = e
 		}
@@ -1450,20 +1485,20 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 
 	if takeProfit > 0 {
 		if closeSide == "SELL" && takeProfit <= entryPrice {
-			place("tp", "TAKE_PROFIT_MARKET", takeProfit)
+			place("tp", "TAKE_PROFIT", takeProfit)
 		} else if closeSide == "BUY" && takeProfit >= entryPrice {
-			place("tp", "TAKE_PROFIT_MARKET", takeProfit)
+			place("tp", "TAKE_PROFIT", takeProfit)
 		} else {
-			place("tp", "TAKE_PROFIT_MARKET", takeProfit)
+			place("tp", "TAKE_PROFIT", takeProfit)
 		}
 	}
 	if stopLoss > 0 {
 		if closeSide == "SELL" && stopLoss >= entryPrice {
-			place("sl", "STOP_MARKET", stopLoss)
+			place("sl", "STOP", stopLoss)
 		} else if closeSide == "BUY" && stopLoss <= entryPrice {
-			place("sl", "STOP_MARKET", stopLoss)
+			place("sl", "STOP", stopLoss)
 		} else {
-			place("sl", "STOP_MARKET", stopLoss)
+			place("sl", "STOP", stopLoss)
 		}
 	}
 	return firstErr
