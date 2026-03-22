@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"quanty_trade/internal/auth"
-	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/logger"
@@ -271,67 +270,10 @@ func CreateStrategy(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
 		return
 	}
-
-	// Fallback: older templates可能没有持久化 Path，或 Path 指向目录，尝试落盘修复
-	needsWrite := strings.TrimSpace(template.Path) == ""
-	if !needsWrite {
-		if fi, err := os.Stat(template.Path); err != nil || (err == nil && fi.IsDir()) {
-			needsWrite = true
-		}
-	}
-	if needsWrite {
-		filename := fmt.Sprintf("%s_%d.py", template.Name, template.AuthorID)
-		filename = strings.ReplaceAll(filename, " ", "_")
-		filename = filepath.Base(filename)
-		strategiesDir := conf.C().Paths.StrategiesDir
-		if strategiesDir == "" {
-			strategiesDir = conf.Path("strategies")
-		}
-		absDir, err := filepath.Abs(strategiesDir)
-		if err != nil {
-			logger.WithTrace(TraceID(c)).Errorf("CreateStrategy resolve dir failed err=%v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve strategies dir"})
-			return
-		}
-		if err := os.MkdirAll(absDir, 0o755); err != nil {
-			logger.WithTrace(TraceID(c)).Errorf("CreateStrategy mkdir dir failed err=%v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to prepare strategies dir"})
-			return
-		}
-
-		absPath := ""
-		if strings.TrimSpace(template.Code) != "" {
-			absPath = filepath.Join(absDir, filename)
-			if err := os.WriteFile(absPath, []byte(template.Code), 0o644); err != nil {
-				logger.WithTrace(TraceID(c)).Errorf("CreateStrategy write code failed err=%v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist template code"})
-				return
-			}
-		} else {
-			entries, _ := os.ReadDir(absDir)
-			for _, e := range entries {
-				if e.IsDir() {
-					continue
-				}
-				name := strings.ToLower(e.Name())
-				if strings.HasSuffix(name, ".py") && strings.HasPrefix(name, strings.ToLower(strings.ReplaceAll(template.Name, " ", "_"))+"_") {
-					absPath = filepath.Join(absDir, e.Name())
-					break
-				}
-			}
-			if absPath == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "模板缺少代码文件，请在模板列表编辑并保存一次"})
-				return
-			}
-		}
-
-		template.Path = absPath
-		if err := database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", template.ID).
-			Updates(map[string]interface{}{"path": absPath, "updated_at": time.Now()}).Error; err != nil {
-			logger.WithTrace(TraceID(c)).Errorf("CreateStrategy update template path failed err=%v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update template path"})
-			return
-		}
+	if strings.TrimSpace(template.Path) == "" {
+		template.Path = fmt.Sprintf("db://template/%s_%d", strings.ReplaceAll(template.Name, " ", "_"), template.AuthorID)
+		_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", template.ID).
+			Updates(map[string]interface{}{"path": template.Path, "updated_at": time.Now()}).Error
 	}
 
 	stratMgr.AddStrategy(instance.ID, instance.Name, template.Path, userID.(uint), config)
@@ -488,6 +430,7 @@ func ListPositions(c *gin.Context) {
 		}
 		pos := exchange.Position{
 			Symbol:             p.Symbol,
+			Direction:          "long",
 			Amount:             p.Amount,
 			Price:              p.AvgPrice,
 			ClosedQty:          p.ClosedQty,
@@ -1363,28 +1306,9 @@ func SaveTemplate(c *gin.Context) {
 	var template models.StrategyTemplate
 	err := database.DB.Where("name = ? AND author_id = ?", req.Name, userID).First(&template).Error
 
-	// Save code to file
-	filename := fmt.Sprintf("%s_%d.py", req.Name, userID)
-	filename = strings.ReplaceAll(filename, " ", "_")
-	filename = filepath.Base(filename)
-	strategiesDir := conf.C().Paths.StrategiesDir
-	if strategiesDir == "" {
-		strategiesDir = conf.Path("strategies")
-	}
-	absStrategiesDir, err := filepath.Abs(strategiesDir)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to resolve strategies dir. err: %v", err)})
-		return
-	}
-	if err := os.MkdirAll(absStrategiesDir, 0755); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create strategies dir. err: %v", err)})
-		return
-	}
-	absPath := filepath.Join(absStrategiesDir, filename)
-
-	if err := os.WriteFile(absPath, []byte(req.Code), 0644); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save code file. err: %v", err)})
-		return
+	absPath := strings.TrimSpace(template.Path)
+	if absPath == "" {
+		absPath = fmt.Sprintf("db://template/%s_%d", strings.ReplaceAll(req.Name, " ", "_"), userID)
 	}
 
 	if err == nil {
@@ -1470,26 +1394,9 @@ func UpdateTemplate(c *gin.Context) {
 		}
 	}
 
-	filename := fmt.Sprintf("%s_%d.py", req.Name, template.AuthorID)
-	filename = strings.ReplaceAll(filename, " ", "_")
-	filename = filepath.Base(filename)
-	strategiesDir := conf.C().Paths.StrategiesDir
-	if strategiesDir == "" {
-		strategiesDir = conf.Path("strategies")
-	}
-	absStrategiesDir, err := filepath.Abs(strategiesDir)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to resolve strategies dir. err: %v", err)})
-		return
-	}
-	if err := os.MkdirAll(absStrategiesDir, 0755); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create strategies dir. err: %v", err)})
-		return
-	}
-	absPath := filepath.Join(absStrategiesDir, filename)
-	if err := os.WriteFile(absPath, []byte(req.Code), 0644); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save code file. err: %v", err)})
-		return
+	absPath := strings.TrimSpace(template.Path)
+	if absPath == "" {
+		absPath = fmt.Sprintf("db://template/%s_%d", strings.ReplaceAll(req.Name, " ", "_"), template.AuthorID)
 	}
 
 	template.Name = req.Name

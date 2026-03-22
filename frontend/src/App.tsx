@@ -46,6 +46,7 @@ interface MarketSymbol {
 
 interface Position {
   symbol: string;
+  direction?: string;
   amount: number;
   price: number;
   current_price?: number;
@@ -1592,6 +1593,7 @@ const App: React.FC = () => {
                     <th className="px-4 md:px-6 py-4">交易对</th>
                     <th className="px-4 md:px-6 py-4">引用策略</th>
                     <th className="px-4 md:px-6 py-4">交易所</th>
+                    <th className="px-4 md:px-6 py-4">方向</th>
                     <th className="px-4 md:px-6 py-4">数量</th>
                     <th className="px-4 md:px-6 py-4">均价</th>
                     <th className="px-4 md:px-6 py-4">{positionStatus === 'active' ? '最新价' : '平仓均价'}</th>
@@ -1612,6 +1614,9 @@ const App: React.FC = () => {
                       <td className="px-4 md:px-6 py-4 font-bold">{p.symbol}</td>
                       <td className="px-4 md:px-6 py-4 text-sm text-blue-400 font-medium">{p.strategy_name}</td>
                       <td className="px-4 md:px-6 py-4 text-sm text-gray-500">{p.exchange_name}</td>
+                      <td className="px-4 md:px-6 py-4 text-sm font-bold">
+                        {p.direction === 'short' ? <span className="text-red-400">开空</span> : (p.direction === 'long' ? <span className="text-green-400">开多</span> : '--')}
+                      </td>
                       <td className="px-4 md:px-6 py-4 font-mono">{p.amount}</td>
                       <td className="px-4 md:px-6 py-4 font-mono">${p.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                       <td className="px-4 md:px-6 py-4 font-mono">

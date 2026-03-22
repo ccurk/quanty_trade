@@ -761,9 +761,6 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 		params.Set("newOrderRespType", "RESULT")
 	}
 	params.Set("newClientOrderId", normalizeNewClientOrderID(clientOrderID))
-	if b.market == "usdm" && s == "SELL" {
-		params.Set("reduceOnly", "true")
-	}
 	if price > 0 {
 		params.Set("type", "LIMIT")
 		params.Set("timeInForce", "GTC")
@@ -1036,6 +1033,10 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 			if amt == 0 {
 				continue
 			}
+			dir := "long"
+			if amt < 0 {
+				dir = "short"
+			}
 			entry, _ := strconv.ParseFloat(p.EntryPrice, 64)
 			mark, _ := strconv.ParseFloat(p.MarkPrice, 64)
 			unpnl, _ := strconv.ParseFloat(p.UnrealizedProfit, 64)
@@ -1050,6 +1051,7 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 			}
 			out = append(out, Position{
 				Symbol:        b.displaySymbol(p.Symbol),
+				Direction:     dir,
 				Amount:        math.Abs(amt),
 				Price:         entry,
 				CurrentPrice:  mark,
@@ -1099,6 +1101,7 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 		}
 		out = append(out, Position{
 			Symbol:       symbol,
+			Direction:    "long",
 			Amount:       amt,
 			Price:        0,
 			StrategyName: "",
@@ -1296,6 +1299,109 @@ func (b *BinanceExchange) ClosePositionOrder(symbol string, ownerID uint) (*Orde
 		Status:        strings.ToLower(final.Status),
 		Timestamp:     ts,
 	}, entryPrice, positionAmt, nil
+}
+
+func (b *BinanceExchange) USDMPositionAmt(ownerID uint, symbol string) (float64, float64, error) {
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return 0, 0, err
+	}
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v2/positionRisk", nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	var raw []struct {
+		Symbol      string `json:"symbol"`
+		PositionAmt string `json:"positionAmt"`
+		EntryPrice  string `json:"entryPrice"`
+		UpdateTime  int64  `json:"updateTime"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, 0, err
+	}
+
+	target := binanceSymbol(symbol)
+	var positionAmt float64
+	var entryPrice float64
+	for _, p := range raw {
+		if strings.EqualFold(p.Symbol, target) {
+			positionAmt, _ = strconv.ParseFloat(p.PositionAmt, 64)
+			entryPrice, _ = strconv.ParseFloat(p.EntryPrice, 64)
+			break
+		}
+	}
+	return positionAmt, entryPrice, nil
+}
+
+func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID string, symbol string, takeProfit float64, stopLoss float64) error {
+	if b.market != "usdm" {
+		return fmt.Errorf("tp/sl supported only for usdm")
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return err
+	}
+
+	filters, err := b.getFilters(symbol)
+	if err != nil {
+		return err
+	}
+
+	positionAmt, entryPrice, err := b.USDMPositionAmt(ownerID, symbol)
+	if err != nil {
+		return err
+	}
+	if positionAmt == 0 {
+		return fmt.Errorf("no open position for symbol")
+	}
+
+	sym := binanceSymbol(symbol)
+	closeSide := "SELL"
+	if positionAmt < 0 {
+		closeSide = "BUY"
+	}
+
+	var firstErr error
+	place := func(kind string, orderType string, stopPrice float64) {
+		if stopPrice <= 0 {
+			return
+		}
+		params := url.Values{}
+		params.Set("symbol", sym)
+		params.Set("side", closeSide)
+		params.Set("type", orderType)
+		params.Set("closePosition", "true")
+		params.Set("reduceOnly", "true")
+		params.Set("workingType", "MARK_PRICE")
+		clientID := normalizeNewClientOrderID(kind + "_" + baseClientOrderID)
+		params.Set("newClientOrderId", clientID)
+		adj := roundDownPrice(stopPrice, filters.TickSize)
+		params.Set("stopPrice", formatByStep(adj, filters.TickSize))
+		_, _, e := b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/order", params)
+		if e != nil && firstErr == nil {
+			firstErr = e
+		}
+	}
+
+	if takeProfit > 0 {
+		if closeSide == "SELL" && takeProfit <= entryPrice {
+			place("tp", "TAKE_PROFIT_MARKET", takeProfit)
+		} else if closeSide == "BUY" && takeProfit >= entryPrice {
+			place("tp", "TAKE_PROFIT_MARKET", takeProfit)
+		} else {
+			place("tp", "TAKE_PROFIT_MARKET", takeProfit)
+		}
+	}
+	if stopLoss > 0 {
+		if closeSide == "SELL" && stopLoss >= entryPrice {
+			place("sl", "STOP_MARKET", stopLoss)
+		} else if closeSide == "BUY" && stopLoss <= entryPrice {
+			place("sl", "STOP_MARKET", stopLoss)
+		} else {
+			place("sl", "STOP_MARKET", stopLoss)
+		}
+	}
+	return firstErr
 }
 
 func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle)) (func(), error) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -226,7 +227,9 @@ type StrategyInstance struct {
 	// Name is the user-visible strategy name.
 	Name string `json:"name"`
 	// Path points to the python file of this strategy.
-	Path string `json:"path"`
+	Path             string `json:"path"`
+	RuntimePath      string `json:"runtime_path"`
+	RuntimeGenerated bool   `json:"runtime_generated"`
 	// Config is the in-memory decoded config JSON.
 	Config map[string]interface{} `json:"config"`
 	// Status is the process state.
@@ -517,7 +520,7 @@ func (m *Manager) StartStrategy(id string) error {
 
 	configJSON, _ := json.Marshal(runCfg)
 
-	absPath, err := resolveStrategyPath(inst.Path)
+	absPath, err := m.prepareRuntimeStrategyFile(inst)
 	if err != nil {
 		inst.mu.Unlock()
 		return err
@@ -892,6 +895,76 @@ func (m *Manager) StartStrategy(id string) error {
 	return nil
 }
 
+func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, error) {
+	if inst == nil {
+		return "", fmt.Errorf("missing instance")
+	}
+	if database.DB == nil {
+		return resolveStrategyPath(inst.Path)
+	}
+
+	var row models.StrategyInstance
+	if err := database.DB.Preload("Template").Where("id = ?", inst.ID).First(&row).Error; err != nil {
+		return resolveStrategyPath(inst.Path)
+	}
+
+	code := strings.TrimSpace(row.Template.Code)
+	if code == "" {
+		return resolveStrategyPath(inst.Path)
+	}
+
+	strategiesDir := conf.C().Paths.StrategiesDir
+	if strategiesDir == "" {
+		strategiesDir = conf.Path("strategies")
+	}
+	absDir, err := filepath.Abs(strategiesDir)
+	if err != nil {
+		return "", err
+	}
+	runtimeDir := filepath.Join(absDir, "_runtime")
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		return "", err
+	}
+
+	absPath := filepath.Join(runtimeDir, inst.ID+".py")
+	if err := os.WriteFile(absPath, []byte(code), 0o644); err != nil {
+		return "", err
+	}
+
+	inst.RuntimePath = absPath
+	inst.RuntimeGenerated = true
+	inst.Path = absPath
+	return absPath, nil
+}
+
+func (m *Manager) prepareBacktestStrategyFile(inst *StrategyInstance, backtestID uint) (string, func(), error) {
+	if inst == nil {
+		return "", func() {}, fmt.Errorf("missing instance")
+	}
+	if database.DB == nil {
+		absPath, err := resolveStrategyPath(inst.Path)
+		return absPath, func() {}, err
+	}
+
+	var row models.StrategyInstance
+	if err := database.DB.Preload("Template").Where("id = ?", inst.ID).First(&row).Error; err != nil {
+		absPath, err2 := resolveStrategyPath(inst.Path)
+		return absPath, func() {}, err2
+	}
+
+	code := strings.TrimSpace(row.Template.Code)
+	if code == "" {
+		absPath, err := resolveStrategyPath(inst.Path)
+		return absPath, func() {}, err
+	}
+
+	tmp := filepath.Join(os.TempDir(), fmt.Sprintf("qt_backtest_%d_%s.py", backtestID, inst.ID))
+	if err := os.WriteFile(tmp, []byte(code), 0o644); err != nil {
+		return "", func() {}, err
+	}
+	return tmp, func() { _ = os.Remove(tmp) }, nil
+}
+
 func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, executedQty float64, avgPrice float64, eventTime time.Time) {
 	if database.DB == nil || executedQty <= 0 || strategyID == "" {
 		return
@@ -1209,6 +1282,16 @@ func (m *Manager) waitProcessLoop(inst *StrategyInstance) {
 	err := cmd.Wait()
 
 	inst.mu.Lock()
+	runtimePath := inst.RuntimePath
+	runtimeGenerated := inst.RuntimeGenerated
+	inst.RuntimePath = ""
+	inst.RuntimeGenerated = false
+	inst.mu.Unlock()
+	if runtimeGenerated && strings.TrimSpace(runtimePath) != "" {
+		_ = os.Remove(runtimePath)
+	}
+
+	inst.mu.Lock()
 	stopping := inst.stopping
 	running := inst.Status == StatusRunning
 	if running {
@@ -1353,6 +1436,18 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 
 	decrInflightBuy := func() {}
 	if normalizedSide == "buy" {
+		var exOpenCount int64
+		if ps, err := inst.exchange.FetchPositions(inst.OwnerID, "active"); err == nil {
+			for _, p := range ps {
+				if !isAllowedSymbol(inst, p.Symbol) {
+					continue
+				}
+				if math.Abs(p.Amount) > 0 {
+					exOpenCount++
+				}
+			}
+		}
+
 		inst.orderMu.Lock()
 		var openCount int64
 		database.DB.Model(&models.StrategyPosition{}).
@@ -1363,9 +1458,9 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			Where("owner_id = ? AND strategy_id = ? AND side = ? AND status IN ?", inst.OwnerID, inst.ID, "buy", []string{"requested", "new", "partially_filled"}).
 			Count(&inflightBuy)
 		memInflight := inst.inflightOpenBuy
-		if int(openCount) >= maxPos || int(openCount+inflightBuy)+memInflight >= maxPos {
+		if int(exOpenCount) >= maxPos || int(openCount) >= maxPos || int(openCount+inflightBuy)+memInflight >= maxPos {
 			inst.orderMu.Unlock()
-			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: max_concurrent_positions reached symbol=%s open=%d inflight_buy=%d mem_inflight_buy=%d max=%d", symbol, openCount, inflightBuy, memInflight, maxPos))
+			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: max_concurrent_positions reached symbol=%s ex_open=%d open=%d inflight_buy=%d mem_inflight_buy=%d max=%d", symbol, exOpenCount, openCount, inflightBuy, memInflight, maxPos))
 			return
 		}
 		inst.inflightOpenBuy++
@@ -1435,9 +1530,41 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, order.Timestamp)
 	}
 
-	if normalizedSide == "buy" && (takeProfit > 0 || stopLoss > 0) {
-		go m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
+	if takeProfit > 0 || stopLoss > 0 {
+		go m.tryPlaceExchangeTPStop(inst, symbol, takeProfit, stopLoss, clientOrderID, signalID)
 	}
+}
+
+func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, takeProfit float64, stopLoss float64, baseClientOrderID string, signalID string) {
+	if inst == nil {
+		return
+	}
+	useExchange := true
+	if v, ok := inst.Config["use_exchange_tpsl"]; ok {
+		useExchange = getBool(v)
+	}
+	if useExchange {
+		if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+			var lastErr error
+			for i := 0; i < 30; i++ {
+				amt, _, err := bx.USDMPositionAmt(inst.OwnerID, symbol)
+				if err == nil && amt != 0 {
+					lastErr = bx.PlaceUSDMTPStopOrders(inst.OwnerID, baseClientOrderID, symbol, takeProfit, stopLoss)
+					if lastErr == nil {
+						emitStrategyLog(inst, "info", fmt.Sprintf("已设置止盈止损 symbol=%s tp=%v sl=%v", symbol, takeProfit, stopLoss))
+						return
+					}
+					break
+				}
+				lastErr = err
+				time.Sleep(500 * time.Millisecond)
+			}
+			emitStrategyLog(inst, "error", fmt.Sprintf("设置止盈止损失败，回退为本地监控 symbol=%s tp=%v sl=%v err=%v", symbol, takeProfit, stopLoss, lastErr))
+			m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
+			return
+		}
+	}
+	m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
 }
 
 func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, takeProfit float64, stopLoss float64, signalID string) {
@@ -1944,10 +2071,11 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 
 	// 2. Setup Backtest Environment
 	configJSON, _ := json.Marshal(inst.Config)
-	absPath, err := resolveStrategyPath(inst.Path)
+	absPath, cleanup, err := m.prepareBacktestStrategyFile(inst, backtestID)
 	if err != nil {
 		return nil, err
 	}
+	defer cleanup()
 	cmd := exec.Command("python3", absPath, string(configJSON))
 	cmd.Dir = filepath.Dir(absPath)
 

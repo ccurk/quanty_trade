@@ -42,6 +42,8 @@ type Order struct {
 type Position struct {
 	// Symbol is the display symbol (e.g. BTC/USDT).
 	Symbol string `json:"symbol"`
+	// Direction is long/short for futures or long for spot.
+	Direction string `json:"direction"`
 	// Amount is the position size in base asset.
 	Amount float64 `json:"amount"`
 	// Price is the average entry price (platform-derived).
