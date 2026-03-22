@@ -159,6 +159,33 @@ func getNumber(v interface{}) float64 {
 	}
 }
 
+func getString(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
+func getBool(v interface{}) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	case int64:
+		return t != 0
+	case string:
+		s := strings.ToLower(strings.TrimSpace(t))
+		return s == "true" || s == "1" || s == "yes" || s == "y" || s == "on"
+	default:
+		return false
+	}
+}
+
 func clampOrderAmount(inst *StrategyInstance, requested float64) float64 {
 	if inst == nil {
 		return 0
@@ -222,15 +249,18 @@ type StrategyInstance struct {
 
 	mgr *Manager
 
-	redisCancel context.CancelFunc
-	bootID      string
-	startedAt   time.Time
-	lastHB      time.Time
-	stopping    bool
-	restarting  bool
-	resync      bool
-	feedSymbols []string
-	candleStops map[string]func()
+	redisCancel     context.CancelFunc
+	bootID          string
+	startedAt       time.Time
+	lastHB          time.Time
+	stopping        bool
+	restarting      bool
+	resync          bool
+	resyncLogBootID string
+	feedSymbols     []string
+	candleStops     map[string]func()
+	candlePubCount  map[string]int
+	candleRxCount   map[string]int
 }
 
 // Manager manages lifecycle of all strategy instances and coordinates exchange access.
@@ -244,6 +274,27 @@ type Manager struct {
 	exchange exchange.Exchange
 
 	redisBus *bus.RedisBus
+}
+
+func emitStrategyLog(inst *StrategyInstance, level string, msg string) {
+	if inst == nil || strings.TrimSpace(msg) == "" {
+		return
+	}
+	if database.DB != nil {
+		_ = database.DB.Create(&models.StrategyLog{
+			StrategyID: inst.ID,
+			Level:      level,
+			Message:    msg,
+			CreatedAt:  time.Now(),
+		}).Error
+	}
+	if inst.hub != nil {
+		inst.hub.BroadcastJSON(map[string]interface{}{
+			"type": "log",
+			"data": msg,
+			"id":   inst.ID,
+		})
+	}
 }
 
 // BacktestResult is returned by synchronous backtests and stored in Backtest.Result.
@@ -355,6 +406,23 @@ func (m *Manager) StartStrategy(id string) error {
 	for k, v := range inst.Config {
 		runCfg[k] = v
 	}
+	debugOn := getBool(inst.Config["debug"])
+	logTrace := getBool(inst.Config["log_trace"]) || debugOn
+	if logTrace {
+		runCfg["log_trace"] = true
+		if _, ok := runCfg["log_every"]; !ok {
+			runCfg["log_every"] = 1
+		}
+		if _, ok := runCfg["log_idle_sec"]; !ok {
+			runCfg["log_idle_sec"] = 5
+		}
+		if _, ok := runCfg["log_rx"]; !ok {
+			runCfg["log_rx"] = true
+		}
+		if _, ok := runCfg["log_decisions"]; !ok {
+			runCfg["log_decisions"] = true
+		}
+	}
 	runCfg["strategy_id"] = inst.ID
 	runCfg["owner_id"] = inst.OwnerID
 	rc := conf.C().Redis
@@ -379,6 +447,46 @@ func (m *Manager) StartStrategy(id string) error {
 	feedSymbols := parseSymbolsValue(inst.Config["symbols"])
 	if len(feedSymbols) == 0 && strings.TrimSpace(activeSymbol) != "" {
 		feedSymbols = []string{strings.TrimSpace(activeSymbol)}
+	}
+
+	selectMode := strings.ToLower(strings.TrimSpace(getString(inst.Config["symbol_select_mode"])))
+	autoSymbols := getBool(inst.Config["auto_symbols"])
+	if (selectMode == "filter" || autoSymbols) && strings.TrimSpace(activeSymbol) == "" {
+		minPrice := getNumber(inst.Config["min_price"])
+		maxPrice := getNumber(inst.Config["max_price"])
+		minPrecision := int(getNumber(inst.Config["min_precision"]))
+		minVolatility := getNumber(inst.Config["min_volatility"])
+		limit := int(getNumber(inst.Config["select_limit"]))
+		if limit <= 0 {
+			limit = 20
+		}
+		emitStrategyLog(inst, "info", fmt.Sprintf("Symbol select start mode=%s min_price=%v max_price=%v min_precision=%d min_volatility=%v limit=%d", selectMode, minPrice, maxPrice, minPrecision, minVolatility, limit))
+		criteria := exchange.SymbolSelectCriteria{
+			MinPrice:      minPrice,
+			MaxPrice:      maxPrice,
+			MinPrecision:  minPrecision,
+			MinVolatility: minVolatility,
+			Quote:         "USDT",
+			Limit:         limit,
+			OnlySymbols:   feedSymbols,
+		}
+		if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok {
+			selected, err := bx.SelectSymbols(criteria)
+			if err != nil {
+				emitStrategyLog(inst, "error", fmt.Sprintf("Symbol select failed err=%v", err))
+			} else if len(selected) == 0 {
+				emitStrategyLog(inst, "error", "Symbol select returned empty set")
+			} else {
+				feedSymbols = selected
+				preview := strings.Join(feedSymbols, ",")
+				if len(feedSymbols) > 10 {
+					preview = strings.Join(feedSymbols[:10], ",") + ",..."
+				}
+				emitStrategyLog(inst, "info", fmt.Sprintf("Symbol select ok count=%d mode=%s symbols=%s", len(feedSymbols), selectMode, preview))
+			}
+		} else {
+			emitStrategyLog(inst, "error", "Symbol select requires Binance exchange")
+		}
 	}
 	if len(feedSymbols) > 0 {
 		runCfg["symbols"] = feedSymbols
@@ -423,6 +531,21 @@ func (m *Manager) StartStrategy(id string) error {
 	inst.stopping = false
 	inst.restarting = false
 	inst.mu.Unlock()
+
+	pid := 0
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
+	candleCh := ""
+	signalCh := ""
+	stateCh := ""
+	if redisBus != nil {
+		candleCh = redisBus.CandleChannel(inst.ID)
+		signalCh = redisBus.SignalChannel(inst.ID)
+		stateCh = redisBus.StateChannel(inst.ID)
+	}
+	logger.Infof("[STRATEGY PROCESS] id=%s owner=%d pid=%d symbols=%d candle_ch=%s signal_ch=%s state_ch=%s", inst.ID, inst.OwnerID, pid, len(feedSymbols), candleCh, signalCh, stateCh)
+	emitStrategyLog(inst, "info", fmt.Sprintf("Process started pid=%d symbols=%d candle_ch=%s signal_ch=%s state_ch=%s", pid, len(feedSymbols), candleCh, signalCh, stateCh))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	inst.mu.Lock()
@@ -512,7 +635,19 @@ func (m *Manager) StartStrategy(id string) error {
 		for _, sym := range feedSymbols {
 			sym := sym
 			go func() {
+				emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles start symbol=%s", sym))
 				stop, err := inst.exchange.SubscribeCandles(sym, func(candle exchange.Candle) {
+					inst.mu.Lock()
+					if inst.candleRxCount == nil {
+						inst.candleRxCount = map[string]int{}
+					}
+					inst.candleRxCount[sym]++
+					rxN := inst.candleRxCount[sym]
+					inst.mu.Unlock()
+					if rxN == 1 {
+						emitStrategyLog(inst, "info", fmt.Sprintf("Exchange candle first symbol=%s ts=%s close=%v", sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
+					}
+
 					payload := map[string]interface{}{
 						"symbol":    sym,
 						"timestamp": candle.Timestamp,
@@ -522,7 +657,7 @@ func (m *Manager) StartStrategy(id string) error {
 						"close":     candle.Close,
 						"volume":    candle.Volume,
 					}
-					_ = redisBus.PublishCandle(context.Background(), bus.CandleMessage{
+					pubErr := redisBus.PublishCandle(context.Background(), bus.CandleMessage{
 						StrategyID: inst.ID,
 						Symbol:     sym,
 						Timestamp:  candle.Timestamp,
@@ -532,6 +667,31 @@ func (m *Manager) StartStrategy(id string) error {
 						Close:      candle.Close,
 						Volume:     candle.Volume,
 					})
+					if pubErr != nil {
+						logger.Errorf("[REDIS PUBLISH ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, pubErr)
+						emitStrategyLog(inst, "error", fmt.Sprintf("Redis publish candle failed symbol=%s err=%v", sym, pubErr))
+					} else {
+						inst.mu.Lock()
+						if inst.candlePubCount == nil {
+							inst.candlePubCount = map[string]int{}
+						}
+						inst.candlePubCount[sym]++
+						pubN := inst.candlePubCount[sym]
+						inst.mu.Unlock()
+						if pubN == 1 {
+							emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle first ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
+						}
+						logRedis := getBool(inst.Config["log_redis"])
+						logEvery := int(getNumber(inst.Config["log_candle_every"]))
+						if logEvery <= 0 {
+							logEvery = 60
+						}
+						if logRedis {
+							if pubN%logEvery == 0 {
+								emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle ok ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
+							}
+						}
+					}
 					inst.hub.BroadcastJSON(map[string]interface{}{
 						"type":        "candle",
 						"strategy_id": inst.ID,
@@ -555,6 +715,7 @@ func (m *Manager) StartStrategy(id string) error {
 					})
 					return
 				}
+				emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles ok symbol=%s", sym))
 				if stop != nil {
 					inst.mu.Lock()
 					if inst.candleStops == nil {
@@ -783,12 +944,24 @@ func (m *Manager) historySyncLoop(ctx context.Context, inst *StrategyInstance, r
 				continue
 			}
 
+			if getBool(inst.Config["log_redis"]) {
+				inst.mu.Lock()
+				if inst.resyncLogBootID != bootID {
+					inst.resyncLogBootID = bootID
+					inst.mu.Unlock()
+					emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish history start ch=%s boot_id=%s symbols=%d", redisBus.CandleChannel(inst.ID), bootID, len(symbols)))
+				} else {
+					inst.mu.Unlock()
+				}
+			}
+
 			ok := true
 			historyBars := 200
 			for _, sym := range symbols {
 				candles, err := inst.exchange.FetchCandles(sym, "1m", historyBars)
 				if err != nil || len(candles) == 0 {
 					ok = false
+					emitStrategyLog(inst, "error", fmt.Sprintf("FetchCandles failed for history symbol=%s err=%v", sym, err))
 					continue
 				}
 				out := make([]bus.CandleMessage, 0, len(candles))
@@ -807,12 +980,20 @@ func (m *Manager) historySyncLoop(ctx context.Context, inst *StrategyInstance, r
 				}
 				if err := redisBus.PublishHistory(context.Background(), inst.ID, sym, out); err != nil {
 					ok = false
+					logger.Errorf("[REDIS PUBLISH ERROR] id=%s owner=%d symbol=%s type=history err=%v", inst.ID, inst.OwnerID, sym, err)
+					emitStrategyLog(inst, "error", fmt.Sprintf("Redis publish history failed symbol=%s err=%v", sym, err))
+				} else if getBool(inst.Config["log_redis"]) {
+					emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish history ok symbol=%s bars=%d", sym, len(out)))
 				}
 			}
 			if ok {
 				inst.mu.Lock()
 				inst.resync = false
+				inst.resyncLogBootID = ""
 				inst.mu.Unlock()
+				if getBool(inst.Config["log_redis"]) {
+					emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish history done boot_id=%s", bootID))
+				}
 			}
 		}
 	}
@@ -946,11 +1127,18 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 	if inst == nil {
 		return
 	}
+	logSignal := getBool(inst.Config["log_signal"]) || getBool(inst.Config["log_redis"])
 	symbol := strings.TrimSpace(s.Symbol)
 	if symbol == "" {
+		if logSignal {
+			emitStrategyLog(inst, "info", "Skip signal: empty symbol")
+		}
 		return
 	}
 	if !isAllowedSymbol(inst, symbol) {
+		if logSignal {
+			emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: symbol not allowed symbol=%s", symbol))
+		}
 		return
 	}
 	action := strings.ToLower(strings.TrimSpace(s.Action))
@@ -958,6 +1146,9 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 		action = "open"
 	}
 	if action != "open" {
+		if logSignal {
+			emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: unsupported action=%s", action))
+		}
 		return
 	}
 	side := strings.ToLower(strings.TrimSpace(s.Side))
@@ -965,11 +1156,20 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 		side = "buy"
 	}
 	if side != "buy" && side != "sell" {
+		if logSignal {
+			emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: invalid side=%s", side))
+		}
 		return
 	}
 	amount := clampOrderAmount(inst, s.Amount)
 	if amount <= 0 {
+		if logSignal {
+			emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: amount invalid raw=%v", s.Amount))
+		}
 		return
+	}
+	if logSignal {
+		emitStrategyLog(inst, "info", fmt.Sprintf("Recv signal: symbol=%s side=%s amount=%v tp=%v sl=%v signal_id=%s", symbol, side, amount, s.TakeProfit, s.StopLoss, strings.TrimSpace(s.SignalID)))
 	}
 	m.placeOrderForInstance(inst, symbol, side, amount, 0, s.TakeProfit, s.StopLoss, strings.TrimSpace(s.SignalID))
 }
@@ -1005,6 +1205,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			Where("owner_id = ? AND strategy_id = ? AND side = ? AND status IN ?", inst.OwnerID, inst.ID, "buy", []string{"requested", "new", "partially_filled"}).
 			Count(&inflightBuy)
 		if int(openCount) >= maxPos || int(openCount+inflightBuy) >= maxPos {
+			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: max_concurrent_positions reached symbol=%s open=%d inflight_buy=%d max=%d", symbol, openCount, inflightBuy, maxPos))
 			return
 		}
 	}

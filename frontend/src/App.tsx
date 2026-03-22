@@ -330,6 +330,13 @@ const App: React.FC = () => {
     selector_exclude_stable: true,
     selector_base_assets: '',
     selector_fixed_symbols: '',
+    auto_symbols: false,
+    symbol_select_mode: 'manual',
+    min_price: 0,
+    max_price: 0,
+    min_precision: 0,
+    min_volatility: 0,
+    select_limit: 20,
   });
   const [selectedTemplate, setSelectedTemplate] = useState<number>(0);
   const [marketSymbols, setMarketSymbols] = useState<MarketSymbol[]>([]);
@@ -917,6 +924,13 @@ const App: React.FC = () => {
         selector_exclude_stable: true,
         selector_base_assets: '',
         selector_fixed_symbols: '',
+        auto_symbols: false,
+        symbol_select_mode: 'manual',
+        min_price: 0,
+        max_price: 0,
+        min_precision: 0,
+        min_volatility: 0,
+        select_limit: 20,
       });
       setSelectedTemplate(0);
       setActiveTab('strategies');
@@ -1269,6 +1283,13 @@ const App: React.FC = () => {
                   selector_exclude_stable: true,
                   selector_base_assets: '',
                   selector_fixed_symbols: '',
+                  auto_symbols: false,
+                  symbol_select_mode: 'manual',
+                  min_price: 0,
+                  max_price: 0,
+                  min_precision: 0,
+                  min_volatility: 0,
+                  select_limit: 20,
                 });
                 setShowCreateModal(true);
               }}
@@ -1379,6 +1400,13 @@ const App: React.FC = () => {
                             selector_exclude_stable: getCfgBool(s.config, 'selector_exclude_stable', true),
                             selector_base_assets: getCfgString(s.config, 'selector_base_assets', ''),
                             selector_fixed_symbols: getCfgString(s.config, 'selector_fixed_symbols', ''),
+                            auto_symbols: getCfgBool(s.config, 'auto_symbols', false),
+                            symbol_select_mode: getCfgString(s.config, 'symbol_select_mode', 'manual'),
+                            min_price: getCfgNumber(s.config, 'min_price', 0),
+                            max_price: getCfgNumber(s.config, 'max_price', 0),
+                            min_precision: getCfgNumber(s.config, 'min_precision', 0),
+                            min_volatility: getCfgNumber(s.config, 'min_volatility', 0),
+                            select_limit: getCfgNumber(s.config, 'select_limit', 20),
                           });
                           setShowEditConfigModal(true); 
                         }}
@@ -1971,7 +1999,9 @@ const App: React.FC = () => {
                                 <input
                                   type="checkbox"
                                   checked={checked}
+                                  disabled={Boolean((newStratConfig as any).auto_symbols)}
                                   onChange={() => {
+                                    if ((newStratConfig as any).auto_symbols) return;
                                     const next = checked ? selected.filter(s => s !== ms.symbol) : [...selected, ms.symbol];
                                     setNewStratConfig({ ...newStratConfig, symbols: next.join(','), symbol: next[0] || '' });
                                   }}
@@ -1993,6 +2023,78 @@ const App: React.FC = () => {
                   </div>
                 </div>
               )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-500 mb-2">选币筛选（可选）</label>
+                <div className={`rounded-2xl border p-4 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+                  <div className="flex items-center justify-between gap-4 mb-3">
+                    <div className="text-xs text-gray-500">开启后由后端按条件筛选交易对，并把筛选结果下发给策略</div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const enabled = !Boolean((newStratConfig as any).auto_symbols);
+                        setNewStratConfig({
+                          ...newStratConfig,
+                          auto_symbols: enabled,
+                          symbol_select_mode: enabled ? 'filter' : 'manual',
+                          ...(enabled ? { symbol: '', symbols: '' } : {}),
+                        });
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+                    >
+                      {Boolean((newStratConfig as any).auto_symbols) ? '已开启' : '未开启'}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">最小价格</label>
+                      <input
+                        type="number"
+                        value={(newStratConfig as any).min_price ?? 0}
+                        onChange={(e) => setNewStratConfig({ ...newStratConfig, min_price: Number(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">最大价格</label>
+                      <input
+                        type="number"
+                        value={(newStratConfig as any).max_price ?? 0}
+                        onChange={(e) => setNewStratConfig({ ...newStratConfig, max_price: Number(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">最小精度</label>
+                      <input
+                        type="number"
+                        value={(newStratConfig as any).min_precision ?? 0}
+                        onChange={(e) => setNewStratConfig({ ...newStratConfig, min_precision: Number(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">最小波动%</label>
+                      <input
+                        type="number"
+                        value={(newStratConfig as any).min_volatility ?? 0}
+                        onChange={(e) => setNewStratConfig({ ...newStratConfig, min_volatility: Number(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">最多数量</label>
+                      <input
+                        type="number"
+                        value={(newStratConfig as any).select_limit ?? 20}
+                        onChange={(e) => setNewStratConfig({ ...newStratConfig, select_limit: Number(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
@@ -2266,9 +2368,11 @@ const App: React.FC = () => {
                                   type="checkbox"
                                   checked={checked}
                                   onChange={() => {
+                                    if (newStratConfig.auto_symbols) return;
                                     const next = checked ? selected.filter(s => s !== ms.symbol) : [...selected, ms.symbol];
                                     setNewStratConfig({ ...newStratConfig, symbols: next.join(','), symbol: next[0] || '' });
                                   }}
+                                  disabled={newStratConfig.auto_symbols}
                                 />
                                 <div className="min-w-0">
                                   <div className="font-mono truncate">{ms.symbol}</div>
@@ -2287,6 +2391,78 @@ const App: React.FC = () => {
                   </div>
                 </div>
               )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-500 mb-2">选币筛选（可选）</label>
+                <div className={`rounded-2xl border p-4 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+                  <div className="flex items-center justify-between gap-4 mb-3">
+                    <div className="text-xs text-gray-500">开启后由后端按条件筛选交易对，并把筛选结果下发给策略</div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const enabled = !newStratConfig.auto_symbols;
+                        setNewStratConfig({
+                          ...newStratConfig,
+                          auto_symbols: enabled,
+                          symbol_select_mode: enabled ? 'filter' : 'manual',
+                          ...(enabled ? { symbol: '', symbols: '' } : {}),
+                        });
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+                    >
+                      {newStratConfig.auto_symbols ? '已开启' : '未开启'}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">最小价格</label>
+                      <input
+                        type="number"
+                        value={newStratConfig.min_price}
+                        onChange={(e) => setNewStratConfig({ ...newStratConfig, min_price: Number(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">最大价格</label>
+                      <input
+                        type="number"
+                        value={newStratConfig.max_price}
+                        onChange={(e) => setNewStratConfig({ ...newStratConfig, max_price: Number(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">最小精度</label>
+                      <input
+                        type="number"
+                        value={newStratConfig.min_precision}
+                        onChange={(e) => setNewStratConfig({ ...newStratConfig, min_precision: Number(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">最小波动%</label>
+                      <input
+                        type="number"
+                        value={newStratConfig.min_volatility}
+                        onChange={(e) => setNewStratConfig({ ...newStratConfig, min_volatility: Number(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">最多数量</label>
+                      <input
+                        type="number"
+                        value={newStratConfig.select_limit}
+                        onChange={(e) => setNewStratConfig({ ...newStratConfig, select_limit: Number(e.target.value) })}
+                        className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>

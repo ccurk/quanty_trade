@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +48,16 @@ type BinanceExchange struct {
 
 	leverageMu    sync.Mutex
 	leverageByKey map[string]int
+}
+
+type SymbolSelectCriteria struct {
+	MinPrice      float64
+	MaxPrice      float64
+	MinPrecision  int
+	MinVolatility float64
+	Quote         string
+	Limit         int
+	OnlySymbols   []string
 }
 
 type binanceCred struct {
@@ -217,6 +228,148 @@ func (b *BinanceExchange) wsAPIURL(cred binanceCred) string {
 
 func binanceSymbol(symbol string) string {
 	return NormalizeSymbol(symbol)
+}
+
+func decimalPrecisionFromPriceStr(s string) int {
+	x := strings.TrimSpace(s)
+	if x == "" {
+		return 0
+	}
+	if strings.Contains(x, "e") || strings.Contains(x, "E") {
+		if f, err := strconv.ParseFloat(x, 64); err == nil {
+			y := strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.10f", f), "0"), ".")
+			if i := strings.IndexByte(y, '.'); i >= 0 {
+				return len(y) - i - 1
+			}
+			return 0
+		}
+		return 0
+	}
+	x = strings.TrimRight(x, "0")
+	x = strings.TrimRight(x, ".")
+	if i := strings.IndexByte(x, '.'); i >= 0 {
+		return len(x) - i - 1
+	}
+	return 0
+}
+
+func displayFromBinanceSymbol(raw string, quote string) string {
+	q := strings.ToUpper(strings.TrimSpace(quote))
+	s := strings.ToUpper(strings.TrimSpace(raw))
+	if q == "" {
+		q = "USDT"
+	}
+	if !strings.HasSuffix(s, q) {
+		return s
+	}
+	base := strings.TrimSuffix(s, q)
+	if base == "" {
+		return s
+	}
+	return base + "/" + q
+}
+
+func (b *BinanceExchange) SelectSymbols(criteria SymbolSelectCriteria) ([]string, error) {
+	quote := strings.ToUpper(strings.TrimSpace(criteria.Quote))
+	if quote == "" {
+		quote = "USDT"
+	}
+	limit := criteria.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	only := map[string]struct{}{}
+	if len(criteria.OnlySymbols) > 0 {
+		for _, s := range criteria.OnlySymbols {
+			n := strings.ToUpper(binanceSymbol(s))
+			if n != "" {
+				only[n] = struct{}{}
+			}
+		}
+	}
+
+	path := "/api/v3/ticker/24hr"
+	if b.market == "usdm" {
+		path = "/fapi/v1/ticker/24hr"
+	}
+	body, _, err := b.publicRequest(context.Background(), path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var rows []struct {
+		Symbol             string `json:"symbol"`
+		LastPrice          string `json:"lastPrice"`
+		HighPrice          string `json:"highPrice"`
+		LowPrice           string `json:"lowPrice"`
+		PriceChangePercent string `json:"priceChangePercent"`
+	}
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, err
+	}
+
+	type cand struct {
+		Display string
+		Score   float64
+	}
+	out := make([]cand, 0, limit)
+	for _, r := range rows {
+		sym := strings.ToUpper(strings.TrimSpace(r.Symbol))
+		if sym == "" {
+			continue
+		}
+		if !strings.HasSuffix(sym, quote) {
+			continue
+		}
+		if len(only) > 0 {
+			if _, ok := only[sym]; !ok {
+				continue
+			}
+		}
+
+		price, _ := strconv.ParseFloat(strings.TrimSpace(r.LastPrice), 64)
+		if price <= 0 {
+			continue
+		}
+		if criteria.MinPrice > 0 && price < criteria.MinPrice {
+			continue
+		}
+		if criteria.MaxPrice > 0 && price > criteria.MaxPrice {
+			continue
+		}
+
+		prec := decimalPrecisionFromPriceStr(r.LastPrice)
+		if criteria.MinPrecision > 0 && prec < criteria.MinPrecision {
+			continue
+		}
+
+		changePct, _ := strconv.ParseFloat(strings.TrimSpace(r.PriceChangePercent), 64)
+		high, _ := strconv.ParseFloat(strings.TrimSpace(r.HighPrice), 64)
+		low, _ := strconv.ParseFloat(strings.TrimSpace(r.LowPrice), 64)
+		volPct := 0.0
+		if low > 0 && high > 0 && high >= low {
+			volPct = (high - low) / low * 100.0
+		}
+		score := math.Abs(changePct)
+		if volPct > score {
+			score = volPct
+		}
+		if criteria.MinVolatility > 0 && score < criteria.MinVolatility {
+			continue
+		}
+
+		out = append(out, cand{Display: displayFromBinanceSymbol(sym, quote), Score: score})
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	symbols := make([]string, 0, len(out))
+	for _, c := range out {
+		symbols = append(symbols, c.Display)
+	}
+	return symbols, nil
 }
 
 func (b *BinanceExchange) displaySymbol(symbol string) string {
