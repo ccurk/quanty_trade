@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log"
 	"net/http"
@@ -115,6 +116,7 @@ func main() {
 		}
 	}
 	mgr.SyncFromDB(database.DB)
+	go mgr.SyncRedisOpenCountsFromExchange(context.Background())
 	api.SetManager(mgr)
 
 	// Auth Routes
