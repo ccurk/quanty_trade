@@ -535,7 +535,14 @@ class Strategy:
     def on_market_message(self, msg: dict):
         t = _s(msg.get("type")).strip().lower()
         if t == "history":
+            sym = _s(msg.get("symbol")).strip()
             candles = msg.get("candles") or []
+            if self.log_rx:
+                n = len(candles) if isinstance(candles, list) else 0
+                if sym:
+                    self._log(f"RX history sym={sym} bars={n} ch={self._candle_ch()} ts={_now()}")
+                else:
+                    self._log(f"RX history bars={n} ch={self._candle_ch()} ts={_now()}")
             if isinstance(candles, list):
                 for it in candles:
                     if isinstance(it, dict):
@@ -602,18 +609,20 @@ class Strategy:
 
         if not r.passed_filter:
             if tick_log:
-                self._log(f"SKIP filter sym={symbol} reason={r.filter_reason} ts={_now()}")
+                self._log(f"SKIP filter sym={symbol} reason={r.filter_reason} price={r.entry_price} ts={_now()}")
             return
         if r.direction is None:
             if tick_log:
-                self._log(f"NO SIGNAL sym={symbol} conf={r.confidence:.3f} ts={_now()}")
+                self._log(
+                    f"NO SIGNAL sym={symbol} conf={r.confidence:.3f} rsi={r.rsi:.1f} macd_diff={r.macd_diff:+.6f} bb={r.bb_position} atr={r.atr_pct:.2f}% fr={r.funding_rate:+.5f} lr={r.ls_ratio:.2f} ts={_now()}"
+                )
             return
 
         now = time.time()
         last_ts = float(self.last_signal_ts.get(symbol) or 0.0)
         if Config.COOLDOWN_SEC > 0 and now-last_ts < float(Config.COOLDOWN_SEC):
             if tick_log:
-                self._log(f"SKIP cooldown sym={symbol} remain={int(Config.COOLDOWN_SEC-(now-last_ts))}s ts={_now()}")
+                self._log(f"SKIP cooldown sym={symbol} dir={r.direction} remain={int(Config.COOLDOWN_SEC-(now-last_ts))}s ts={_now()}")
             return
 
         last_dir = _s(self.last_signal_dir.get(symbol)).strip().lower()
@@ -630,12 +639,12 @@ class Strategy:
         if not self.strategy_id:
             raise RuntimeError("missing strategy_id")
         self.sub.subscribe(self._candle_ch())
-        self._log(f"SUBSCRIBE candle_ch={self._candle_ch()} ts={_now()}")
         self.pub.publish(self._state_ch(), json.dumps({"type": "ready", "strategy_id": self.strategy_id, "boot_id": self.boot_id, "created_at": _now()}))
-        self._log(f"READY state_ch={self._state_ch()} boot_id={self.boot_id} ts={_now()}")
         t = threading.Thread(target=self._heartbeat_loop, daemon=True)
         t.start()
-        self._log(f"START strategy_id={self.strategy_id} symbols={','.join(self.symbols)} trace={self.trace} log_every={self.log_every} ts={_now()}")
+        self._log(
+            f"START strategy_id={self.strategy_id} symbols={','.join(self.symbols)} candle_ch={self._candle_ch()} signal_ch={self._signal_ch()} state_ch={self._state_ch()} log_every={self.log_every} ts={_now()}"
+        )
         last_idle = time.time()
         while True:
             item = self.sub.read_pubsub_message()
