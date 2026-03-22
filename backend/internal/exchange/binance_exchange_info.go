@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 type binanceSymbolFilters struct {
@@ -39,6 +40,32 @@ func (b *BinanceExchange) getFilters(symbol string) (binanceSymbolFilters, error
 			b.info.mu.RUnlock()
 			return f, nil
 		}
+		if b.market == "usdm" {
+			if f, ok := b.info.bySymbol["1000"+sym]; ok {
+				b.info.mu.RUnlock()
+				return f, nil
+			}
+			if strings.HasPrefix(sym, "1000") {
+				if f, ok := b.info.bySymbol[strings.TrimPrefix(sym, "1000")]; ok {
+					b.info.mu.RUnlock()
+					return f, nil
+				}
+			}
+			base, quote := splitBaseQuote(sym)
+			if base != "" && quote != "" {
+				trimmedBase := strings.TrimRightFunc(base, func(r rune) bool { return unicode.IsDigit(r) })
+				if trimmedBase != "" && trimmedBase != base {
+					if f, ok := b.info.bySymbol[trimmedBase+quote]; ok {
+						b.info.mu.RUnlock()
+						return f, nil
+					}
+					if f, ok := b.info.bySymbol["1000"+trimmedBase+quote]; ok {
+						b.info.mu.RUnlock()
+						return f, nil
+					}
+				}
+			}
+		}
 	}
 	b.info.mu.RUnlock()
 
@@ -50,9 +77,79 @@ func (b *BinanceExchange) getFilters(symbol string) (binanceSymbolFilters, error
 	defer b.info.mu.RUnlock()
 	f, ok := b.info.bySymbol[sym]
 	if !ok {
-		return binanceSymbolFilters{}, fmt.Errorf("symbol not found: %s", sym)
+		candidates := []string{sym}
+		if b.market == "usdm" {
+			candidates = append(candidates, "1000"+sym)
+			if strings.HasPrefix(sym, "1000") {
+				candidates = append(candidates, strings.TrimPrefix(sym, "1000"))
+			}
+			base, quote := splitBaseQuote(sym)
+			if base != "" && quote != "" {
+				trimmedBase := strings.TrimRightFunc(base, func(r rune) bool { return unicode.IsDigit(r) })
+				if trimmedBase != "" && trimmedBase != base {
+					candidates = append(candidates, trimmedBase+quote, "1000"+trimmedBase+quote)
+				}
+			}
+		}
+		for _, c := range candidates {
+			if f2, ok2 := b.info.bySymbol[c]; ok2 {
+				return f2, nil
+			}
+		}
+
+		sug := suggestSymbols(sym, b.info.bySymbol, 6)
+		if len(sug) > 0 {
+			return binanceSymbolFilters{}, fmt.Errorf("symbol not found: %s (market=%s). did you mean: %s", sym, b.market, strings.Join(sug, ", "))
+		}
+		return binanceSymbolFilters{}, fmt.Errorf("symbol not found: %s (market=%s)", sym, b.market)
 	}
 	return f, nil
+}
+
+func splitBaseQuote(sym string) (string, string) {
+	s := strings.ToUpper(strings.TrimSpace(sym))
+	if strings.Contains(s, "/") {
+		parts := strings.SplitN(s, "/", 2)
+		return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	}
+	for _, q := range []string{"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "BTC", "ETH"} {
+		if strings.HasSuffix(s, q) && len(s) > len(q) {
+			return s[:len(s)-len(q)], q
+		}
+	}
+	return "", ""
+}
+
+func suggestSymbols(sym string, bySymbol map[string]binanceSymbolFilters, limit int) []string {
+	if limit <= 0 {
+		limit = 5
+	}
+	base, quote := splitBaseQuote(sym)
+	needle := base
+	if needle == "" {
+		needle = sym
+	}
+	needle = strings.ToUpper(needle)
+	quote = strings.ToUpper(quote)
+	out := make([]string, 0, limit)
+	seen := map[string]struct{}{}
+	for k := range bySymbol {
+		if len(out) >= limit {
+			break
+		}
+		kk := strings.ToUpper(k)
+		if quote != "" && !strings.HasSuffix(kk, quote) {
+			continue
+		}
+		if strings.Contains(kk, needle) {
+			if _, ok := seen[kk]; ok {
+				continue
+			}
+			seen[kk] = struct{}{}
+			out = append(out, kk)
+		}
+	}
+	return out
 }
 
 func (b *BinanceExchange) ensureInfoCache() {
