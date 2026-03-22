@@ -9,10 +9,10 @@ CONTAINER_NAME="quanty-backend"
 HOST_PORT="8080"
 
 DB_TYPE="mysql"
-DB_HOST="REPLACE_DB_HOST"
+DB_HOST="137.220.219.172"
 DB_PORT="3306"
-DB_USER="REPLACE_DB_USER"
-DB_PASS="REPLACE_DB_PASS"
+DB_USER="root"
+DB_PASS="work@..."
 DB_NAME="quanty_trade"
 
 STRATEGIES_DIR="/root/quanty_trade/strategies"
