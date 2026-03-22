@@ -19,6 +19,7 @@ type Config struct {
 	Admin    AdminConfig    `yaml:"admin"`
 	Security SecurityConfig `yaml:"security"`
 	Exchange ExchangeConfig `yaml:"exchange"`
+	Redis    RedisConfig    `yaml:"redis"`
 }
 
 type ServerConfig struct {
@@ -61,6 +62,14 @@ type SecurityConfig struct {
 type ExchangeConfig struct {
 	Name    string        `yaml:"name"`
 	Binance BinanceConfig `yaml:"binance"`
+}
+
+type RedisConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Addr     string `yaml:"addr"`
+	Password string `yaml:"password"`
+	DB       int    `yaml:"db"`
+	Prefix   string `yaml:"prefix"`
 }
 
 type BinanceConfig struct {
@@ -123,6 +132,13 @@ func defaultConfig() Config {
 				WsBaseURL: "",
 				WsAPIURL:  "",
 			},
+		},
+		Redis: RedisConfig{
+			Enabled:  false,
+			Addr:     "127.0.0.1:6379",
+			Password: "",
+			DB:       0,
+			Prefix:   "qt",
 		},
 	}
 }
@@ -384,6 +400,24 @@ func applyEnvOverrides(c *Config) {
 	}
 	if v := strings.TrimSpace(os.Getenv("BINANCE_WSAPI_URL")); v != "" {
 		c.Exchange.Binance.WsAPIURL = v
+	}
+
+	if v := strings.TrimSpace(os.Getenv("REDIS_ENABLED")); v != "" {
+		c.Redis.Enabled = strings.ToLower(v) == "true"
+	}
+	if v := strings.TrimSpace(os.Getenv("REDIS_ADDR")); v != "" {
+		c.Redis.Addr = v
+	}
+	if v := os.Getenv("REDIS_PASSWORD"); v != "" {
+		c.Redis.Password = v
+	}
+	if v := strings.TrimSpace(os.Getenv("REDIS_DB")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			c.Redis.DB = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("REDIS_PREFIX")); v != "" {
+		c.Redis.Prefix = v
 	}
 }
 

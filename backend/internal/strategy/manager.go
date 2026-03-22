@@ -2,12 +2,14 @@ package strategy
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"quanty_trade/internal/bus"
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
@@ -15,6 +17,7 @@ import (
 	"quanty_trade/internal/models"
 	"quanty_trade/internal/ws"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +76,114 @@ func resolveStrategyPath(p string) (string, error) {
 	return "", fmt.Errorf("invalid strategy path: %s", p)
 }
 
+func parseSymbolsValue(v interface{}) []string {
+	out := make([]string, 0)
+	switch t := v.(type) {
+	case []string:
+		for _, s := range t {
+			if x := strings.TrimSpace(s); x != "" {
+				out = append(out, x)
+			}
+		}
+	case []interface{}:
+		for _, it := range t {
+			if s, ok := it.(string); ok {
+				if x := strings.TrimSpace(s); x != "" {
+					out = append(out, x)
+				}
+			}
+		}
+	case string:
+		for _, p := range strings.Split(t, ",") {
+			if x := strings.TrimSpace(p); x != "" {
+				out = append(out, x)
+			}
+		}
+	}
+	seen := map[string]struct{}{}
+	dedup := make([]string, 0, len(out))
+	for _, s := range out {
+		k := strings.ToUpper(strings.TrimSpace(s))
+		if k == "" {
+			continue
+		}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		dedup = append(dedup, s)
+	}
+	if len(dedup) > 20 {
+		dedup = dedup[:20]
+	}
+	return dedup
+}
+
+func isAllowedSymbol(inst *StrategyInstance, symbol string) bool {
+	if inst == nil {
+		return false
+	}
+	sym := exchange.NormalizeSymbol(symbol)
+	if sym == "" {
+		return false
+	}
+	if xs := parseSymbolsValue(inst.Config["symbols"]); len(xs) > 0 {
+		for _, s := range xs {
+			if exchange.NormalizeSymbol(s) == sym {
+				return true
+			}
+		}
+		return false
+	}
+	if raw, ok := inst.Config["symbol"].(string); ok && strings.TrimSpace(raw) != "" {
+		return exchange.NormalizeSymbol(raw) == sym
+	}
+	return true
+}
+
+func getNumber(v interface{}) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
+			return f
+		}
+		return 0
+	default:
+		return 0
+	}
+}
+
+func clampOrderAmount(inst *StrategyInstance, requested float64) float64 {
+	if inst == nil {
+		return 0
+	}
+	amt := requested
+	if amt <= 0 {
+		amt = getNumber(inst.Config["trade_amount"])
+	}
+	if amt <= 0 {
+		return 0
+	}
+	maxAmt := getNumber(inst.Config["max_order_amount"])
+	if maxAmt <= 0 {
+		maxAmt = getNumber(inst.Config["max_trade_amount"])
+	}
+	if maxAmt > 0 && amt > maxAmt {
+		amt = maxAmt
+	}
+	minAmt := getNumber(inst.Config["min_order_amount"])
+	if minAmt > 0 && amt < minAmt {
+		return 0
+	}
+	return amt
+}
+
 // StrategyStatus is the runtime state of a strategy process managed by Manager.
 type StrategyStatus string
 
@@ -98,9 +209,8 @@ type StrategyInstance struct {
 	// CreatedAt is when this in-memory instance was created.
 	CreatedAt time.Time `json:"created_at"`
 
-	// cmd/stdin/stdout are the managed python process and pipes.
+	// cmd/stdout are the managed python process and pipes.
 	cmd    *exec.Cmd
-	stdin  io.WriteCloser
 	stdout io.ReadCloser
 
 	// mu guards process state and pipes.
@@ -112,8 +222,10 @@ type StrategyInstance struct {
 
 	mgr *Manager
 
-	selectorActiveSymbol string
-	selectorLastSymbol   string
+	redisCancel context.CancelFunc
+	bootID      string
+	resync      bool
+	feedSymbols []string
 }
 
 // Manager manages lifecycle of all strategy instances and coordinates exchange access.
@@ -125,6 +237,8 @@ type Manager struct {
 	hub *ws.Hub
 	// exchange is the global exchange connector used by all strategies.
 	exchange exchange.Exchange
+
+	redisBus *bus.RedisBus
 }
 
 // BacktestResult is returned by synchronous backtests and stored in Backtest.Result.
@@ -156,94 +270,10 @@ func NewManager(hub *ws.Hub, ex exchange.Exchange) *Manager {
 	}
 }
 
-func pickBestSymbolForInstance(inst *StrategyInstance) (string, []string, error) {
-	if inst == nil {
-		return "", nil, fmt.Errorf("nil instance")
-	}
-	bx, ok := inst.exchange.(*exchange.BinanceExchange)
-	if !ok {
-		return "", nil, fmt.Errorf("exchange does not support selector")
-	}
-
-	cfg := inst.Config
-	if raw, ok := inst.Config["selector_id"].(string); ok && strings.TrimSpace(raw) != "" {
-		var sel models.StrategySelector
-		if err := database.DB.Where("id = ? AND owner_id = ?", strings.TrimSpace(raw), inst.OwnerID).First(&sel).Error; err == nil {
-			var selCfg map[string]interface{}
-			if err := json.Unmarshal([]byte(sel.Config), &selCfg); err == nil {
-				merged := make(map[string]interface{}, len(inst.Config)+len(selCfg))
-				for k, v := range inst.Config {
-					merged[k] = v
-				}
-				for k, v := range selCfg {
-					if strings.HasPrefix(k, "selector_") {
-						merged[k] = v
-					}
-				}
-				cfg = merged
-			}
-		}
-	}
-	quote, _ := cfg["selector_quote"].(string)
-	minPrice, _ := cfg["selector_min_price"].(float64)
-	maxPrice, _ := cfg["selector_max_price"].(float64)
-	minVol, _ := cfg["selector_min_quote_volume_24h"].(float64)
-	maxSymbols := 5
-	if v, ok := cfg["selector_max_symbols"].(float64); ok && int(v) > 0 {
-		maxSymbols = int(v)
-	}
-	excludeStable := true
-	if raw, ok := cfg["selector_exclude_stable"]; ok {
-		if v, ok := raw.(bool); ok {
-			excludeStable = v
-		} else if v, ok := raw.(float64); ok {
-			excludeStable = v != 0
-		}
-	}
-	var baseAssets []string
-	if raw, ok := cfg["selector_base_assets"]; ok {
-		if xs, ok := raw.([]interface{}); ok {
-			for _, it := range xs {
-				if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
-					baseAssets = append(baseAssets, s)
-				}
-			}
-		} else if s, ok := raw.(string); ok && strings.TrimSpace(s) != "" {
-			for _, p := range strings.Split(s, ",") {
-				if v := strings.TrimSpace(p); v != "" {
-					baseAssets = append(baseAssets, v)
-				}
-			}
-		}
-	}
-
-	cands, err := bx.FetchMarketSymbols(quote, minPrice, maxPrice, minVol, maxSymbols, excludeStable, baseAssets)
-	if err != nil {
-		return "", nil, err
-	}
-	symbols := make([]string, 0, len(cands))
-	for _, c := range cands {
-		symbols = append(symbols, c.Symbol)
-	}
-	if len(symbols) == 0 {
-		return "", nil, fmt.Errorf("no symbols matched selector filters")
-	}
-
-	chosen := symbols[0]
-	excludeLast := true
-	if raw, ok := cfg["selector_exclude_last"]; ok {
-		if v, ok := raw.(bool); ok {
-			excludeLast = v
-		} else if v, ok := raw.(float64); ok {
-			excludeLast = v != 0
-		}
-	}
-	if excludeLast && inst.selectorLastSymbol != "" && exchange.NormalizeSymbol(chosen) == exchange.NormalizeSymbol(inst.selectorLastSymbol) {
-		if len(symbols) > 1 {
-			chosen = symbols[1]
-		}
-	}
-	return chosen, symbols, nil
+func (m *Manager) SetRedisBus(b *bus.RedisBus) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.redisBus = b
 }
 
 // AddStrategy registers an in-memory strategy instance. It does not start the process.
@@ -284,6 +314,7 @@ func (m *Manager) AddStrategy(id, name, path string, ownerID uint, config map[st
 func (m *Manager) StartStrategy(id string) error {
 	m.mu.RLock()
 	inst, ok := m.instances[id]
+	redisBus := m.redisBus
 	m.mu.RUnlock()
 
 	if !ok {
@@ -298,34 +329,39 @@ func (m *Manager) StartStrategy(id string) error {
 
 	logger.Infof("[STRATEGY START] id=%s owner=%d name=%s path=%s", inst.ID, inst.OwnerID, inst.Name, inst.Path)
 
+	if redisBus == nil {
+		inst.mu.Unlock()
+		return fmt.Errorf("redis bus not available")
+	}
+
 	runCfg := make(map[string]interface{}, len(inst.Config)+4)
 	for k, v := range inst.Config {
 		runCfg[k] = v
 	}
+	runCfg["strategy_id"] = inst.ID
+	runCfg["owner_id"] = inst.OwnerID
+	rc := conf.C().Redis
+	runCfg["redis_addr"] = rc.Addr
+	runCfg["redis_password"] = rc.Password
+	runCfg["redis_db"] = rc.DB
+	runCfg["redis_prefix"] = rc.Prefix
+	runCfg["use_redis"] = true
 
-	mode := ""
-	if raw, ok := inst.Config["symbol_mode"].(string); ok {
-		mode = strings.ToLower(strings.TrimSpace(raw))
-	}
 	fixedSymbol := ""
 	if raw, ok := inst.Config["symbol"].(string); ok {
 		fixedSymbol = strings.TrimSpace(raw)
 	}
 	activeSymbol := fixedSymbol
-	if mode == "selector" && fixedSymbol == "" {
-		if chosen, symbols, err := pickBestSymbolForInstance(inst); err == nil && strings.TrimSpace(chosen) != "" {
-			activeSymbol = chosen
-			inst.selectorActiveSymbol = activeSymbol
-			runCfg["symbol"] = activeSymbol
-			inst.Config["active_symbol"] = activeSymbol
-			inst.Config["symbols"] = symbols
-			logger.Infof("[STRATEGY SELECT] id=%s owner=%d symbol=%s candidates=%d", inst.ID, inst.OwnerID, activeSymbol, len(symbols))
-		} else if err != nil {
-			logger.Errorf("[STRATEGY SELECT ERROR] id=%s owner=%d err=%v", inst.ID, inst.OwnerID, err)
+
+	feedSymbols := parseSymbolsValue(inst.Config["symbols"])
+	if len(feedSymbols) == 0 && strings.TrimSpace(activeSymbol) != "" {
+		feedSymbols = []string{strings.TrimSpace(activeSymbol)}
+	}
+	if len(feedSymbols) > 0 {
+		runCfg["symbols"] = feedSymbols
+		if _, ok := runCfg["symbol"].(string); !ok || strings.TrimSpace(fmt.Sprintf("%v", runCfg["symbol"])) == "" {
+			runCfg["symbol"] = feedSymbols[0]
 		}
-	} else if fixedSymbol != "" {
-		inst.selectorActiveSymbol = ""
-		inst.Config["active_symbol"] = ""
 	}
 
 	configJSON, _ := json.Marshal(runCfg)
@@ -337,12 +373,6 @@ func (m *Manager) StartStrategy(id string) error {
 	}
 	cmd := exec.Command("python3", absPath, string(configJSON))
 	cmd.Dir = filepath.Dir(absPath)
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		inst.mu.Unlock()
-		return err
-	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		inst.mu.Unlock()
@@ -360,10 +390,41 @@ func (m *Manager) StartStrategy(id string) error {
 	}
 
 	inst.cmd = cmd
-	inst.stdin = stdin
 	inst.stdout = stdout
 	inst.Status = StatusRunning
+	inst.feedSymbols = feedSymbols
+	inst.resync = true
 	inst.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	inst.mu.Lock()
+	inst.redisCancel = cancel
+	inst.mu.Unlock()
+	_ = redisBus.SubscribeSignals(ctx, inst.ID, func(s bus.SignalMessage) {
+		if strings.TrimSpace(s.StrategyID) == "" {
+			s.StrategyID = inst.ID
+		}
+		if s.StrategyID != inst.ID {
+			return
+		}
+		m.handleRedisSignal(inst, s)
+	})
+	_ = redisBus.SubscribeState(ctx, inst.ID, func(st bus.StateMessage) {
+		if st.StrategyID != inst.ID {
+			return
+		}
+		if strings.TrimSpace(st.BootID) == "" {
+			return
+		}
+		inst.mu.Lock()
+		changed := inst.bootID != st.BootID
+		if changed {
+			inst.bootID = st.BootID
+			inst.resync = true
+		}
+		inst.mu.Unlock()
+	})
+	go m.historySyncLoop(ctx, inst, redisBus)
 
 	if database.DB != nil {
 		debugOn := false
@@ -394,9 +455,7 @@ func (m *Manager) StartStrategy(id string) error {
 		_ = ex.EnsureUserDataStream(inst.OwnerID, inst.hub)
 	}
 
-	// Start data feed (single active symbol)
-	symbol := activeSymbol
-	if symbol == "" {
+	if len(feedSymbols) == 0 {
 		logger.Warnf("[STRATEGY START WARN] id=%s owner=%d reason=no symbol in config", inst.ID, inst.OwnerID)
 		database.DB.Create(&models.StrategyLog{
 			StrategyID: inst.ID,
@@ -411,40 +470,17 @@ func (m *Manager) StartStrategy(id string) error {
 			"error":       "No symbol in config; strategy will not receive market data",
 		})
 	} else {
-		warmup := 50
-		minWarmup := 50
-		if v, ok := inst.Config["slow_window"].(float64); ok && int(v) > 0 {
-			if int(v)+2 > minWarmup {
-				minWarmup = int(v) + 2
-			}
-		}
-		if v, ok := inst.Config["window"].(float64); ok && int(v) > 0 {
-			if int(v)+2 > minWarmup {
-				minWarmup = int(v) + 2
-			}
-		}
-		if raw, ok := inst.Config["warmup_bars"]; ok {
-			if v, ok := raw.(float64); ok {
-				warmup = int(v)
-			}
-		} else {
-			if v, ok := inst.Config["slow_window"].(float64); ok && int(v) > warmup {
-				warmup = int(v)
-			}
-			if v, ok := inst.Config["window"].(float64); ok && int(v) > warmup {
-				warmup = int(v)
-			}
-		}
-		if warmup < minWarmup {
-			warmup = minWarmup
+		runCfg["symbols"] = feedSymbols
+		if _, ok := runCfg["symbol"].(string); !ok || strings.TrimSpace(fmt.Sprintf("%v", runCfg["symbol"])) == "" {
+			runCfg["symbol"] = feedSymbols[0]
 		}
 
-		if warmup > 0 {
-			if candles, err := inst.exchange.FetchCandles(symbol, "1m", warmup); err == nil && len(candles) > 0 {
-				logger.Infof("[STRATEGY WARMUP] id=%s owner=%d symbol=%s bars=%d", inst.ID, inst.OwnerID, symbol, len(candles))
-				for _, candle := range candles {
+		for _, sym := range feedSymbols {
+			sym := sym
+			go func() {
+				if err := inst.exchange.SubscribeCandles(sym, func(candle exchange.Candle) {
 					payload := map[string]interface{}{
-						"symbol":    symbol,
+						"symbol":    sym,
 						"timestamp": candle.Timestamp,
 						"open":      candle.Open,
 						"high":      candle.High,
@@ -452,47 +488,39 @@ func (m *Manager) StartStrategy(id string) error {
 						"close":     candle.Close,
 						"volume":    candle.Volume,
 					}
-					_ = inst.SendData("candle", payload)
+					_ = redisBus.PublishCandle(context.Background(), bus.CandleMessage{
+						StrategyID: inst.ID,
+						Symbol:     sym,
+						Timestamp:  candle.Timestamp,
+						Open:       candle.Open,
+						High:       candle.High,
+						Low:        candle.Low,
+						Close:      candle.Close,
+						Volume:     candle.Volume,
+					})
+					inst.hub.BroadcastJSON(map[string]interface{}{
+						"type":        "candle",
+						"strategy_id": inst.ID,
+						"owner_id":    inst.OwnerID,
+						"data":        payload,
+					})
+				}); err != nil {
+					logger.Errorf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, err)
+					database.DB.Create(&models.StrategyLog{
+						StrategyID: inst.ID,
+						Level:      "error",
+						Message:    fmt.Sprintf("SubscribeCandles error: %v", err),
+						CreatedAt:  time.Now(),
+					})
+					inst.hub.BroadcastJSON(map[string]interface{}{
+						"type":        "error",
+						"strategy_id": inst.ID,
+						"owner_id":    inst.OwnerID,
+						"error":       fmt.Sprintf("SubscribeCandles error: %v", err),
+					})
 				}
-			} else if err != nil {
-				logger.Errorf("[STRATEGY WARMUP ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, symbol, err)
-			}
+			}()
 		}
-
-		go func() {
-			if err := inst.exchange.SubscribeCandles(symbol, func(candle exchange.Candle) {
-				payload := map[string]interface{}{
-					"symbol":    symbol,
-					"timestamp": candle.Timestamp,
-					"open":      candle.Open,
-					"high":      candle.High,
-					"low":       candle.Low,
-					"close":     candle.Close,
-					"volume":    candle.Volume,
-				}
-				inst.SendData("candle", payload)
-				inst.hub.BroadcastJSON(map[string]interface{}{
-					"type":        "candle",
-					"strategy_id": inst.ID,
-					"owner_id":    inst.OwnerID,
-					"data":        payload,
-				})
-			}); err != nil {
-				logger.Errorf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, symbol, err)
-				database.DB.Create(&models.StrategyLog{
-					StrategyID: inst.ID,
-					Level:      "error",
-					Message:    fmt.Sprintf("SubscribeCandles error: %v", err),
-					CreatedAt:  time.Now(),
-				})
-				inst.hub.BroadcastJSON(map[string]interface{}{
-					"type":        "error",
-					"strategy_id": inst.ID,
-					"owner_id":    inst.OwnerID,
-					"error":       fmt.Sprintf("SubscribeCandles error: %v", err),
-				})
-			}
-		}()
 	}
 
 	go inst.readStdout()
@@ -637,12 +665,21 @@ func (m *Manager) StopStrategy(id string, force bool) error {
 			return fmt.Errorf("strategy has open positions; close positions before stopping")
 		}
 		if bx, ok := m.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
-			if sym, ok := inst.Config["symbol"].(string); ok && sym != "" {
+			syms := parseSymbolsValue(inst.Config["symbols"])
+			if len(syms) == 0 {
+				if sym, ok := inst.Config["symbol"].(string); ok && strings.TrimSpace(sym) != "" {
+					syms = []string{strings.TrimSpace(sym)}
+				}
+			}
+			if len(syms) > 0 {
 				exPos, err := bx.FetchPositions(inst.OwnerID, "active")
 				if err == nil {
-					want := exchange.NormalizeSymbol(sym)
+					want := map[string]struct{}{}
+					for _, s := range syms {
+						want[exchange.NormalizeSymbol(s)] = struct{}{}
+					}
 					for _, p := range exPos {
-						if exchange.NormalizeSymbol(p.Symbol) == want && p.Amount > 0 {
+						if _, ok := want[exchange.NormalizeSymbol(p.Symbol)]; ok && p.Amount > 0 {
 							return fmt.Errorf("strategy has open positions on exchange; close positions before stopping")
 						}
 					}
@@ -658,15 +695,321 @@ func (m *Manager) StopStrategy(id string, force bool) error {
 		return nil
 	}
 
-	// Send stop command
-	stopMsg := map[string]interface{}{"type": "stop"}
-	json.NewEncoder(inst.stdin).Encode(stopMsg)
+	if inst.redisCancel != nil {
+		inst.redisCancel()
+		inst.redisCancel = nil
+	}
 
 	if err := inst.cmd.Process.Kill(); err != nil {
 		return err
 	}
 
 	inst.Status = StatusStopped
+	return nil
+}
+
+func (m *Manager) historySyncLoop(ctx context.Context, inst *StrategyInstance, redisBus *bus.RedisBus) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			inst.mu.Lock()
+			need := inst.resync
+			bootID := inst.bootID
+			symbols := append([]string(nil), inst.feedSymbols...)
+			inst.mu.Unlock()
+
+			if !need || strings.TrimSpace(bootID) == "" || len(symbols) == 0 {
+				continue
+			}
+
+			ok := true
+			historyBars := 200
+			for _, sym := range symbols {
+				candles, err := inst.exchange.FetchCandles(sym, "1m", historyBars)
+				if err != nil || len(candles) == 0 {
+					ok = false
+					continue
+				}
+				out := make([]bus.CandleMessage, 0, len(candles))
+				for _, c := range candles {
+					out = append(out, bus.CandleMessage{
+						Type:       "candle",
+						StrategyID: inst.ID,
+						Symbol:     sym,
+						Timestamp:  c.Timestamp,
+						Open:       c.Open,
+						High:       c.High,
+						Low:        c.Low,
+						Close:      c.Close,
+						Volume:     c.Volume,
+					})
+				}
+				if err := redisBus.PublishHistory(context.Background(), inst.ID, sym, out); err != nil {
+					ok = false
+				}
+			}
+			if ok {
+				inst.mu.Lock()
+				inst.resync = false
+				inst.mu.Unlock()
+			}
+		}
+	}
+}
+
+func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage) {
+	if inst == nil {
+		return
+	}
+	symbol := strings.TrimSpace(s.Symbol)
+	if symbol == "" {
+		return
+	}
+	if !isAllowedSymbol(inst, symbol) {
+		return
+	}
+	action := strings.ToLower(strings.TrimSpace(s.Action))
+	if action == "" {
+		action = "open"
+	}
+	if action != "open" {
+		return
+	}
+	side := strings.ToLower(strings.TrimSpace(s.Side))
+	if side == "" {
+		side = "buy"
+	}
+	if side != "buy" && side != "sell" {
+		return
+	}
+	amount := clampOrderAmount(inst, s.Amount)
+	if amount <= 0 {
+		return
+	}
+	m.placeOrderForInstance(inst, symbol, side, amount, 0, s.TakeProfit, s.StopLoss, strings.TrimSpace(s.SignalID))
+}
+
+func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, side string, amount float64, price float64, takeProfit float64, stopLoss float64, signalID string) {
+	if inst == nil {
+		return
+	}
+	if !isAllowedSymbol(inst, symbol) {
+		return
+	}
+	normalizedSide := strings.ToLower(strings.TrimSpace(side))
+	if normalizedSide != "buy" && normalizedSide != "sell" {
+		return
+	}
+	amount = clampOrderAmount(inst, amount)
+	if amount <= 0 {
+		return
+	}
+
+	maxPos := 1
+	if v, ok := inst.Config["max_concurrent_positions"].(float64); ok && int(v) > 0 {
+		maxPos = int(v)
+	}
+
+	if normalizedSide == "buy" {
+		var openCount int64
+		database.DB.Model(&models.StrategyPosition{}).
+			Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
+			Count(&openCount)
+		var inflightBuy int64
+		database.DB.Model(&models.StrategyOrder{}).
+			Where("owner_id = ? AND strategy_id = ? AND side = ? AND status IN ?", inst.OwnerID, inst.ID, "buy", []string{"requested", "new", "partially_filled"}).
+			Count(&inflightBuy)
+		if int(openCount) >= maxPos || int(openCount+inflightBuy) >= maxPos {
+			return
+		}
+	}
+
+	clientOrderID := models.GenerateUUID()
+	database.DB.Create(&models.StrategyOrder{
+		StrategyID:   inst.ID,
+		StrategyName: inst.Name,
+		OwnerID:      inst.OwnerID,
+		Exchange:     inst.exchange.GetName(),
+		Symbol:       symbol,
+		Side:         normalizedSide,
+		OrderType: func() string {
+			if price > 0 {
+				return "limit"
+			}
+			return "market"
+		}(),
+		ClientOrderID: clientOrderID,
+		Status:        "requested",
+		RequestedQty:  amount,
+		Price:         price,
+		RequestedAt:   time.Now(),
+		UpdatedAt:     time.Now(),
+	})
+
+	order, err := inst.exchange.PlaceOrder(inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price)
+	if err != nil {
+		database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
+			Updates(map[string]interface{}{"status": "failed", "updated_at": time.Now()})
+		database.DB.Create(&models.StrategyLog{
+			StrategyID: inst.ID,
+			Level:      "error",
+			Message:    fmt.Sprintf("Failed to place order: %v", err),
+			CreatedAt:  time.Now(),
+		})
+		inst.hub.BroadcastJSON(map[string]interface{}{
+			"type":        "error",
+			"strategy_id": inst.ID,
+			"owner_id":    inst.OwnerID,
+			"error":       fmt.Sprintf("Failed to place order: %v", err),
+		})
+		return
+	}
+
+	database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
+		Updates(map[string]interface{}{
+			"exchange_order_id": order.ID,
+			"status":            order.Status,
+			"executed_qty":      order.Amount,
+			"avg_price":         order.Price,
+			"updated_at":        time.Now(),
+		})
+	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
+
+	if strings.ToLower(order.Status) == "filled" {
+		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, order.Timestamp)
+	}
+
+	if normalizedSide == "buy" && (takeProfit > 0 || stopLoss > 0) {
+		go m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
+	}
+}
+
+func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, takeProfit float64, stopLoss float64, signalID string) {
+	if inst == nil {
+		return
+	}
+	sym := strings.TrimSpace(symbol)
+	if sym == "" {
+		return
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		candles, err := inst.exchange.FetchCandles(sym, "1m", 1)
+		if err != nil || len(candles) == 0 {
+			continue
+		}
+		last := candles[len(candles)-1]
+		px := last.Close
+		if px <= 0 {
+			continue
+		}
+		hitTP := takeProfit > 0 && px >= takeProfit
+		hitSL := stopLoss > 0 && px <= stopLoss
+		if !hitTP && !hitSL {
+			continue
+		}
+		reason := "tp"
+		if hitSL {
+			reason = "sl"
+		}
+		_ = m.closePositionForInstance(inst, sym, reason, signalID)
+		return
+	}
+}
+
+func (m *Manager) closePositionForInstance(inst *StrategyInstance, symbol string, reason string, signalID string) error {
+	if inst == nil {
+		return fmt.Errorf("nil instance")
+	}
+	sym := strings.TrimSpace(symbol)
+	if sym == "" {
+		return fmt.Errorf("empty symbol")
+	}
+
+	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		order, _, _, err := bx.ClosePositionOrder(sym, inst.OwnerID)
+		if err != nil {
+			return err
+		}
+		if order == nil {
+			return nil
+		}
+		database.DB.Create(&models.StrategyOrder{
+			StrategyID:      inst.ID,
+			StrategyName:    inst.Name,
+			OwnerID:         inst.OwnerID,
+			Exchange:        bx.GetName(),
+			Symbol:          sym,
+			Side:            strings.ToLower(order.Side),
+			OrderType:       "market",
+			ClientOrderID:   order.ClientOrderID,
+			ExchangeOrderID: order.ID,
+			Status:          strings.ToLower(order.Status),
+			RequestedQty:    order.Amount,
+			Price:           0,
+			ExecutedQty:     order.Amount,
+			AvgPrice:        order.Price,
+			RequestedAt:     time.Now(),
+			UpdatedAt:       time.Now(),
+		})
+		inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
+		if strings.ToLower(order.Status) == "filled" {
+			applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, order.Timestamp)
+		}
+		return nil
+	}
+
+	var pos models.StrategyPosition
+	if err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, sym, "open").
+		Order("open_time desc").
+		First(&pos).Error; err != nil {
+		return nil
+	}
+	if pos.Amount <= 0 {
+		return nil
+	}
+	clientOrderID := models.GenerateUUID()
+	database.DB.Create(&models.StrategyOrder{
+		StrategyID:    inst.ID,
+		StrategyName:  inst.Name,
+		OwnerID:       inst.OwnerID,
+		Exchange:      inst.exchange.GetName(),
+		Symbol:        sym,
+		Side:          "sell",
+		OrderType:     "market",
+		ClientOrderID: clientOrderID,
+		Status:        "requested",
+		RequestedQty:  pos.Amount,
+		Price:         0,
+		RequestedAt:   time.Now(),
+		UpdatedAt:     time.Now(),
+	})
+	order, err := inst.exchange.PlaceOrder(inst.OwnerID, clientOrderID, sym, "sell", pos.Amount, 0)
+	if err != nil {
+		database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
+			Updates(map[string]interface{}{"status": "failed", "updated_at": time.Now()})
+		return err
+	}
+	database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
+		Updates(map[string]interface{}{
+			"exchange_order_id": order.ID,
+			"status":            order.Status,
+			"executed_qty":      order.Amount,
+			"avg_price":         order.Price,
+			"updated_at":        time.Now(),
+		})
+	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
+	if strings.ToLower(order.Status) == "filled" {
+		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, "sell", order.Amount, order.Price, order.Timestamp)
+	}
+	_ = reason
+	_ = signalID
 	return nil
 }
 
@@ -708,253 +1051,39 @@ func (m *Manager) UpdateStrategyConfig(id string, config map[string]interface{})
 	return nil
 }
 
-// SendData sends a message to the python process stdin.
-// This is used for real-time feeds (candles) and backend-originated updates (orders).
-func (inst *StrategyInstance) SendData(dataType string, data interface{}) error {
-
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-
-	if inst.Status != StatusRunning {
-		return fmt.Errorf("strategy not running")
-	}
-
-	msg := map[string]interface{}{
-		"type": dataType,
-		"data": data,
-	}
-	return json.NewEncoder(inst.stdin).Encode(msg)
-}
-
 func (inst *StrategyInstance) readStdout() {
-	// Strategy stdout protocol:
-	// - type=log: persisted to StrategyLog table + broadcast to frontend
-	// - type=order: triggers PlaceOrder on exchange with correlation id
-	//
-	// Order risk controls enforced here:
-	// - max_concurrent_positions (default 1) limits open positions per strategy
-	// - inflight buy orders are counted to prevent order spamming
 	scanner := bufio.NewScanner(inst.stdout)
 	for scanner.Scan() {
+		line := scanner.Bytes()
 		var msg map[string]interface{}
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			logger.Errorf("Error decoding strategy output: %v", err)
-			continue
-		}
-
-		msgType, _ := msg["type"].(string)
-		data := msg["data"]
-
-		switch msgType {
-		case "order":
-			orderReq, _ := data.(map[string]interface{})
-			symbol, _ := orderReq["symbol"].(string)
-			side, _ := orderReq["side"].(string)
-			amount, _ := orderReq["amount"].(float64)
-			price, _ := orderReq["price"].(float64)
-
-			maxPos := 1
-			// Strategy-level guardrail: maximum number of concurrent open positions.
-			// If not provided by config, default is 1.
-			if v, ok := inst.Config["max_concurrent_positions"].(float64); ok && int(v) > 0 {
-				maxPos = int(v)
+		if err := json.Unmarshal(line, &msg); err != nil {
+			txt := strings.TrimSpace(string(line))
+			if txt == "" {
+				continue
 			}
-
-			normalizedSide := strings.ToLower(side)
-			if normalizedSide == "buy" {
-				// Count current open positions and inflight buy orders to prevent churn/abuse.
-				var openCount int64
-				database.DB.Model(&models.StrategyPosition{}).
-					Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
-					Count(&openCount)
-				var inflightBuy int64
-				database.DB.Model(&models.StrategyOrder{}).
-					Where("owner_id = ? AND strategy_id = ? AND side = ? AND status IN ?", inst.OwnerID, inst.ID, "buy", []string{"requested", "new", "partially_filled"}).
-					Count(&inflightBuy)
-				if int(openCount) >= maxPos {
-					reason := fmt.Sprintf("Max concurrent positions reached (open=%d max=%d)", openCount, maxPos)
-					logger.Warnf("[ORDER BLOCK] strategy=%s owner=%d symbol=%s side=%s amount=%v price=%v reason=%s", inst.ID, inst.OwnerID, symbol, normalizedSide, amount, price, reason)
-					database.DB.Create(&models.StrategyLog{
-						StrategyID: inst.ID,
-						Level:      "error",
-						Message:    reason,
-						CreatedAt:  time.Now(),
-					})
-					inst.hub.BroadcastJSON(map[string]interface{}{
-						"type":        "error",
-						"strategy_id": inst.ID,
-						"owner_id":    inst.OwnerID,
-						"error":       reason,
-					})
-					continue
-				}
-				if int(openCount+inflightBuy) >= maxPos {
-					reason := fmt.Sprintf("Max concurrent positions reached (open=%d inflight_buy=%d max=%d)", openCount, inflightBuy, maxPos)
-					logger.Warnf("[ORDER BLOCK] strategy=%s owner=%d symbol=%s side=%s amount=%v price=%v reason=%s", inst.ID, inst.OwnerID, symbol, normalizedSide, amount, price, reason)
-					database.DB.Create(&models.StrategyLog{
-						StrategyID: inst.ID,
-						Level:      "error",
-						Message:    reason,
-						CreatedAt:  time.Now(),
-					})
-					inst.hub.BroadcastJSON(map[string]interface{}{
-						"type":        "error",
-						"strategy_id": inst.ID,
-						"owner_id":    inst.OwnerID,
-						"error":       reason,
-					})
-					continue
-				}
-			}
-
-			clientOrderID := models.GenerateUUID()
-			logger.Infof("[ORDER REQUEST] strategy=%s owner=%d client_order_id=%s symbol=%s side=%s amount=%v price=%v", inst.ID, inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price)
-			database.DB.Create(&models.StrategyOrder{
-				StrategyID:   inst.ID,
-				StrategyName: inst.Name,
-				OwnerID:      inst.OwnerID,
-				Exchange:     inst.exchange.GetName(),
-				Symbol:       symbol,
-				Side:         normalizedSide,
-				OrderType: func() string {
-					if price > 0 {
-						return "limit"
-					}
-					return "market"
-				}(),
-				ClientOrderID: clientOrderID,
-				Status:        "requested",
-				RequestedQty:  amount,
-				Price:         price,
-				RequestedAt:   time.Now(),
-				UpdatedAt:     time.Now(),
-			})
-
-			leverage := 0
-			if orderReq != nil {
-				if raw, ok := orderReq["leverage"]; ok {
-					if v, ok := raw.(float64); ok && int(v) > 0 {
-						leverage = int(v)
-					}
-				}
-			}
-			if leverage == 0 {
-				if raw, ok := inst.Config["leverage"]; ok {
-					if v, ok := raw.(float64); ok && int(v) > 0 {
-						leverage = int(v)
-					}
-				}
-			}
-			if leverage > 0 {
-				if ex, ok := inst.exchange.(interface {
-					SetLeverage(ownerID uint, symbol string, leverage int) error
-				}); ok {
-					if err := ex.SetLeverage(inst.OwnerID, symbol, leverage); err != nil {
-						logger.Errorf("[LEVERAGE ERROR] strategy=%s owner=%d symbol=%s leverage=%d err=%v", inst.ID, inst.OwnerID, symbol, leverage, err)
-						database.DB.Create(&models.StrategyLog{
-							StrategyID: inst.ID,
-							Level:      "error",
-							Message:    fmt.Sprintf("SetLeverage error: %v", err),
-							CreatedAt:  time.Now(),
-						})
-						inst.hub.BroadcastJSON(map[string]interface{}{
-							"type":        "error",
-							"strategy_id": inst.ID,
-							"owner_id":    inst.OwnerID,
-							"error":       fmt.Sprintf("SetLeverage error: %v", err),
-						})
-					}
-				}
-			}
-
-			order, err := inst.exchange.PlaceOrder(inst.OwnerID, clientOrderID, symbol, side, amount, price)
-			if err != nil {
-				database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
-					Updates(map[string]interface{}{"status": "failed", "updated_at": time.Now()})
-				logger.Errorf("[ORDER ERROR] strategy=%s owner=%d client_order_id=%s symbol=%s side=%s amount=%v price=%v err=%v", inst.ID, inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price, err)
-				database.DB.Create(&models.StrategyLog{
-					StrategyID: inst.ID,
-					Level:      "error",
-					Message:    fmt.Sprintf("Failed to place order: %v", err),
-					CreatedAt:  time.Now(),
-				})
-				inst.hub.BroadcastJSON(map[string]interface{}{
-					"type":        "error",
-					"strategy_id": inst.ID,
-					"owner_id":    inst.OwnerID,
-					"error":       fmt.Sprintf("Failed to place order: %v", err),
-				})
-				_ = inst.SendData("order", map[string]interface{}{
-					"id":              clientOrderID,
-					"client_order_id": clientOrderID,
-					"symbol":          symbol,
-					"side":            normalizedSide,
-					"amount":          amount,
-					"price":           price,
-					"status":          "failed",
-					"timestamp":       time.Now(),
-				})
-			} else {
-				database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
-					Updates(map[string]interface{}{
-						"exchange_order_id": order.ID,
-						"status":            order.Status,
-						"executed_qty":      order.Amount,
-						"avg_price":         order.Price,
-						"updated_at":        time.Now(),
-					})
-				logger.Infof("[ORDER OK] strategy=%s owner=%d client_order_id=%s exchange_order_id=%s status=%s filled_qty=%v avg_price=%v", inst.ID, inst.OwnerID, clientOrderID, order.ID, order.Status, order.Amount, order.Price)
-				inst.hub.BroadcastJSON(map[string]interface{}{
-					"type": "order",
-					"data": order,
-				})
-				inst.SendData("order", order)
-
-				if strings.ToLower(order.Status) == "filled" {
-					applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, order.Timestamp)
-					if normalizedSide == "sell" {
-						mode := ""
-						if raw, ok := inst.Config["symbol_mode"].(string); ok {
-							mode = strings.ToLower(strings.TrimSpace(raw))
-						}
-						if mode == "selector" && inst.mgr != nil && inst.selectorActiveSymbol != "" && exchange.NormalizeSymbol(inst.selectorActiveSymbol) == exchange.NormalizeSymbol(symbol) {
-							var openCount int64
-							database.DB.Model(&models.StrategyPosition{}).
-								Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
-								Count(&openCount)
-							if openCount == 0 {
-								inst.selectorLastSymbol = inst.selectorActiveSymbol
-								inst.selectorActiveSymbol = ""
-								inst.Config["active_symbol"] = ""
-								go func() {
-									time.Sleep(200 * time.Millisecond)
-									_ = inst.mgr.StopStrategy(inst.ID, false)
-									_ = inst.mgr.StartStrategy(inst.ID)
-								}()
-							}
-						}
-					}
-				}
-			}
-		case "log":
-			logger.Infof("[%s LOG] %v", inst.Name, data)
-
-			// Save to DB
-			logMsg, _ := data.(string)
 			database.DB.Create(&models.StrategyLog{
 				StrategyID: inst.ID,
 				Level:      "info",
-				Message:    logMsg,
+				Message:    txt,
 				CreatedAt:  time.Now(),
 			})
-
-			inst.hub.BroadcastJSON(map[string]interface{}{
-				"type": "log",
-				"data": data,
-				"id":   inst.ID,
-			})
-
+			inst.hub.BroadcastJSON(map[string]interface{}{"type": "log", "data": txt, "id": inst.ID})
+			continue
 		}
+		if t, _ := msg["type"].(string); t != "log" {
+			continue
+		}
+		logMsg, _ := msg["data"].(string)
+		if strings.TrimSpace(logMsg) == "" {
+			continue
+		}
+		database.DB.Create(&models.StrategyLog{
+			StrategyID: inst.ID,
+			Level:      "info",
+			Message:    logMsg,
+			CreatedAt:  time.Now(),
+		})
+		inst.hub.BroadcastJSON(map[string]interface{}{"type": "log", "data": logMsg, "id": inst.ID})
 	}
 
 	inst.mu.Lock()
@@ -1073,16 +1202,6 @@ func (m *Manager) ListStrategies(ownerID uint, isAdmin bool) []*StrategyInstance
 // GetExchange exposes the exchange connector for API handlers.
 func (m *Manager) GetExchange() exchange.Exchange {
 	return m.exchange
-}
-
-func (m *Manager) SendToStrategy(id string, dataType string, data interface{}) error {
-	m.mu.RLock()
-	inst, ok := m.instances[id]
-	m.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("strategy %s not found", id)
-	}
-	return inst.SendData(dataType, data)
 }
 
 // Clear stops all running strategies and clears the in-memory registry.

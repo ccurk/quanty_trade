@@ -93,8 +93,6 @@ func InitDB() {
 	err = DB.AutoMigrate(
 		&models.StrategyTemplate{},
 		&models.StrategyInstance{},
-		&models.StrategySelector{},
-		&models.StrategySelectorChild{},
 		&models.StrategyLog{},
 		&models.APILog{},
 		&models.Backtest{},

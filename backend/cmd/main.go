@@ -7,11 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"quanty_trade/internal/api"
+	"quanty_trade/internal/bus"
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/logger"
-	"quanty_trade/internal/selector"
 	"quanty_trade/internal/strategy"
 	"quanty_trade/internal/ws"
 	"strconv"
@@ -107,11 +107,15 @@ func main() {
 		ex = &exchange.MockExchange{Name: "Mock"}
 	}
 	mgr := strategy.NewManager(hub, ex)
+	if conf.C().Redis.Enabled {
+		if rb, err := bus.NewRedisBusFromConfig(); err == nil {
+			mgr.SetRedisBus(rb)
+		} else {
+			logger.Errorf("Redis bus init failed err=%v", err)
+		}
+	}
 	mgr.SyncFromDB(database.DB)
 	api.SetManager(mgr)
-	selMgr := selector.NewManager(mgr)
-	selMgr.Start()
-	api.SetSelectorManager(selMgr)
 
 	// Auth Routes
 	r.POST("/api/login", api.Login)
@@ -140,15 +144,6 @@ func main() {
 
 		// Markets
 		protected.GET("/markets/symbols", api.ListMarketSymbols)
-
-		// Selectors
-		protected.GET("/selectors", api.ListSelectors)
-		protected.POST("/selectors", api.CreateSelector)
-		protected.PUT("/selectors/:id", api.UpdateSelector)
-		protected.POST("/selectors/:id/start", api.StartSelector)
-		protected.POST("/selectors/:id/stop", api.StopSelector)
-		protected.POST("/selectors/:id/reconcile", api.ReconcileSelector)
-		protected.GET("/selectors/:id/children", api.ListSelectorChildren)
 
 		// Stats
 		protected.GET("/stats/pnl", api.GetPnLSummary)

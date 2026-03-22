@@ -1032,30 +1032,6 @@ func ClosePosition(c *gin.Context) {
 			})
 		}
 
-		if strategyID != "" && strategyID != "manual" {
-			notify := *order
-			notify.Symbol = symbol
-			notify.Side = strings.ToLower(notify.Side)
-			if notify.Amount <= 0 {
-				notify.Amount = qty
-			}
-			if notify.Price <= 0 {
-				notify.Price = exitPrice
-			}
-			notify.Status = strings.ToLower(strings.TrimSpace(notify.Status))
-			if notify.Status == "" || notify.Status == "new" || notify.Status == "open" || notify.Status == "partially_filled" || notify.Status == "requested" {
-				notify.Status = "filled"
-			}
-			_ = stratMgr.SendToStrategy(strategyID, "order", &notify)
-			_ = stratMgr.SendToStrategy(strategyID, "position", map[string]interface{}{
-				"symbol":          symbol,
-				"status":          "closed",
-				"qty":             0.0,
-				"avg_price":       entryPrice,
-				"avg_close_price": exitPrice,
-			})
-		}
-
 		c.JSON(http.StatusOK, gin.H{"status": "success"})
 		return
 	}
@@ -1098,26 +1074,6 @@ func ClosePosition(c *gin.Context) {
 			"status":            order.Status,
 			"updated_at":        time.Now(),
 		})
-
-	if pos.StrategyID != "" && pos.StrategyID != "manual" {
-		notify := *order
-		notify.Side = strings.ToLower(notify.Side)
-		if notify.Amount <= 0 {
-			notify.Amount = pos.Amount
-		}
-		notify.Status = strings.ToLower(strings.TrimSpace(notify.Status))
-		if notify.Status == "" || notify.Status == "new" || notify.Status == "open" || notify.Status == "partially_filled" || notify.Status == "requested" {
-			notify.Status = "filled"
-		}
-		_ = stratMgr.SendToStrategy(pos.StrategyID, "order", &notify)
-		_ = stratMgr.SendToStrategy(pos.StrategyID, "position", map[string]interface{}{
-			"symbol":          pos.Symbol,
-			"status":          "closed",
-			"qty":             0.0,
-			"avg_price":       pos.AvgPrice,
-			"avg_close_price": order.Price,
-		})
-	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
@@ -1329,14 +1285,7 @@ func SaveTemplate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "模板名称不能为空"})
 		return
 	}
-	templateType := strings.ToLower(strings.TrimSpace(req.TemplateType))
-	if templateType == "" {
-		templateType = "strategy"
-	}
-	if templateType != "strategy" && templateType != "selector" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "模板类型必须是 strategy 或 selector"})
-		return
-	}
+	templateType := "strategy"
 
 	userIDValue, ok := c.Get("user_id")
 	if !ok {
@@ -1436,14 +1385,7 @@ func UpdateTemplate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "模板名称不能为空"})
 		return
 	}
-	templateType := strings.ToLower(strings.TrimSpace(req.TemplateType))
-	if templateType == "" {
-		templateType = "strategy"
-	}
-	if templateType != "strategy" && templateType != "selector" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "模板类型必须是 strategy 或 selector"})
-		return
-	}
+	templateType := "strategy"
 
 	userIDValue, ok := c.Get("user_id")
 	if !ok {
