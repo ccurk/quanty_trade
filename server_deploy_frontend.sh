@@ -67,7 +67,7 @@ docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 docker run -d \
   --name "${CONTAINER_NAME}" \
   --restart always \
-  -p "${HOST_PORT}:81" \
+  -p "${HOST_PORT}:80" \
   -v "${CONF_FILE}:/etc/nginx/conf.d/default.conf:ro" \
   "${FRONTEND_IMAGE}:${FRONTEND_VERSION}" >/dev/null
 
