@@ -110,6 +110,56 @@ func (b *BinanceExchange) GetName() string { return b.name }
 
 func (b *BinanceExchange) Market() string { return b.market }
 
+func (b *BinanceExchange) LastPrice(symbol string) (float64, error) {
+	sym := binanceSymbol(symbol)
+	params := url.Values{}
+	params.Set("symbol", sym)
+	path := "/api/v3/ticker/price"
+	if b.market == "usdm" {
+		path = "/fapi/v1/ticker/price"
+	}
+	body, _, err := b.publicRequest(context.Background(), path, params)
+	if err != nil {
+		return 0, err
+	}
+	var resp struct {
+		Price string `json:"price"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return 0, err
+	}
+	px, _ := strconv.ParseFloat(strings.TrimSpace(resp.Price), 64)
+	return px, nil
+}
+
+func (b *BinanceExchange) USDMAvailableUSDT(ownerID uint) (float64, error) {
+	if b.market != "usdm" {
+		return 0, fmt.Errorf("not usdm")
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return 0, err
+	}
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v2/balance", nil)
+	if err != nil {
+		return 0, err
+	}
+	var raw []struct {
+		Asset            string `json:"asset"`
+		AvailableBalance string `json:"availableBalance"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, err
+	}
+	for _, r := range raw {
+		if strings.EqualFold(r.Asset, "USDT") {
+			v, _ := strconv.ParseFloat(strings.TrimSpace(r.AvailableBalance), 64)
+			return v, nil
+		}
+	}
+	return 0, nil
+}
+
 func (b *BinanceExchange) SetUserCredentials(ownerID uint, apiKey, apiSecret string, testnet bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -779,6 +829,22 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 		adjQty := roundDownToStep(qty, filters.StepSize)
 		if filters.MinQty > 0 && adjQty < filters.MinQty {
 			return nil, fmt.Errorf("quantity too small")
+		}
+		if filters.MinNotional > 0 {
+			px, err := b.LastPrice(symbol)
+			if err == nil && px > 0 {
+				minNotional := filters.MinNotional
+				if minNotional < 5 {
+					minNotional = 5
+				}
+				if adjQty*px < minNotional {
+					needQty := roundUpToStep(minNotional/px, filters.StepSize)
+					if filters.MinQty > 0 && needQty < filters.MinQty {
+						needQty = filters.MinQty
+					}
+					adjQty = needQty
+				}
+			}
 		}
 		params.Set("quantity", formatByStep(adjQty, filters.StepSize))
 	}

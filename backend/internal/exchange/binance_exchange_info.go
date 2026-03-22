@@ -141,6 +141,13 @@ func roundDownToStep(v float64, step float64) float64 {
 	return math.Floor(v/step) * step
 }
 
+func roundUpToStep(v float64, step float64) float64 {
+	if step <= 0 {
+		return v
+	}
+	return math.Ceil(v/step) * step
+}
+
 func roundDownPrice(v float64, tick float64) float64 {
 	if tick <= 0 {
 		return v

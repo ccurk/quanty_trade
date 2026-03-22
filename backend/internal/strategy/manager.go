@@ -249,7 +249,8 @@ type StrategyInstance struct {
 	// orderMu guards inflight open order counters and concurrency checks.
 	orderMu sync.Mutex
 	// inflightOpenBuy tracks buy requests in progress to prevent bursts.
-	inflightOpenBuy int
+	inflightOpen    int
+	lastOrderFailAt map[string]time.Time
 	// hub is the websocket broadcaster for UI updates.
 	hub *ws.Hub
 	// exchange is the exchange implementation (mock/binance/etc.).
@@ -917,6 +918,18 @@ func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, er
 	if code == "" {
 		return resolveStrategyPath(inst.Path)
 	}
+	if p := strings.TrimSpace(row.Template.Path); p != "" && !strings.HasPrefix(strings.ToLower(p), "db://") {
+		if abs, err := resolveStrategyPath(p); err == nil {
+			if b, err := os.ReadFile(abs); err == nil {
+				disk := strings.TrimSpace(string(b))
+				if disk != "" && disk != code {
+					code = disk
+					_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
+						Updates(map[string]interface{}{"code": code, "updated_at": time.Now()}).Error
+				}
+			}
+		}
+	}
 
 	strategiesDir := conf.C().Paths.StrategiesDir
 	if strategiesDir == "" {
@@ -964,6 +977,18 @@ func (m *Manager) prepareBacktestStrategyFile(inst *StrategyInstance, backtestID
 	if code == "" {
 		absPath, err := resolveStrategyPath(inst.Path)
 		return absPath, func() {}, err
+	}
+	if p := strings.TrimSpace(row.Template.Path); p != "" && !strings.HasPrefix(strings.ToLower(p), "db://") {
+		if abs, err := resolveStrategyPath(p); err == nil {
+			if b, err := os.ReadFile(abs); err == nil {
+				disk := strings.TrimSpace(string(b))
+				if disk != "" && disk != code {
+					code = disk
+					_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
+						Updates(map[string]interface{}{"code": code, "updated_at": time.Now()}).Error
+				}
+			}
+		}
 	}
 
 	strategiesDir := conf.C().Paths.StrategiesDir
@@ -1455,8 +1480,23 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 		return
 	}
 	side := strings.ToLower(strings.TrimSpace(s.Side))
-	if side == "" {
+	if side == "long" {
 		side = "buy"
+	} else if side == "short" {
+		side = "sell"
+	} else if side == "auto" || side == "both" {
+		side = ""
+	}
+	if side == "" {
+		side = strings.ToLower(strings.TrimSpace(getString(inst.Config["default_open_side"])))
+		if side == "" {
+			side = "buy"
+		}
+		if side == "long" {
+			side = "buy"
+		} else if side == "short" {
+			side = "sell"
+		}
 	}
 	if side != "buy" && side != "sell" {
 		if logSignal {
@@ -1485,6 +1525,11 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		return
 	}
 	normalizedSide := strings.ToLower(strings.TrimSpace(side))
+	if normalizedSide == "long" {
+		normalizedSide = "buy"
+	} else if normalizedSide == "short" {
+		normalizedSide = "sell"
+	}
 	if normalizedSide != "buy" && normalizedSide != "sell" {
 		return
 	}
@@ -1493,13 +1538,73 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		return
 	}
 
+	throttleKey := exchange.NormalizeSymbol(symbol) + ":" + normalizedSide
+	inst.orderMu.Lock()
+	throttleSec := int(getNumber(inst.Config["order_fail_throttle_sec"]))
+	if throttleSec <= 0 {
+		throttleSec = 2
+	}
+	if throttleSec > 0 && inst.lastOrderFailAt != nil {
+		if t, ok := inst.lastOrderFailAt[throttleKey]; ok && time.Since(t) < time.Duration(throttleSec)*time.Second {
+			inst.orderMu.Unlock()
+			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: 最近下单失败，已节流 symbol=%s side=%s", symbol, normalizedSide))
+			return
+		}
+	}
+	inst.orderMu.Unlock()
+
+	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		lev := int(getNumber(inst.Config["leverage"]))
+		if lev <= 0 {
+			lev = 1
+		}
+		_ = bx.SetLeverage(inst.OwnerID, symbol, lev)
+
+		mode := strings.ToLower(strings.TrimSpace(getString(inst.Config["order_amount_mode"])))
+		if mode == "" {
+			mode = "notional"
+		}
+		if mode == "notional" && price <= 0 {
+			px, err := bx.LastPrice(symbol)
+			if err != nil || px <= 0 {
+				emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: 获取价格失败 symbol=%s err=%v", symbol, err))
+				return
+			}
+			notional := amount
+			minNotional := getNumber(inst.Config["min_order_notional"])
+			if minNotional <= 0 {
+				minNotional = 5
+			}
+			if notional < minNotional {
+				notional = minNotional
+			}
+
+			if avail, err := bx.USDMAvailableUSDT(inst.OwnerID); err == nil && avail > 0 {
+				maxNotional := avail * float64(lev) * 0.95
+				if maxNotional < minNotional {
+					emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: 保证金不足(最低下单额) symbol=%s avail=%0.4f lev=%d min_notional=%0.2f", symbol, avail, lev, minNotional))
+					return
+				}
+				if notional > maxNotional {
+					notional = maxNotional
+				}
+			}
+
+			amount = notional / px
+		}
+	}
+
 	maxPos := 1
 	if v, ok := inst.Config["max_concurrent_positions"].(float64); ok && int(v) > 0 {
 		maxPos = int(v)
 	}
 
 	decrInflightBuy := func() {}
-	if normalizedSide == "buy" {
+	checkMaxPos := normalizedSide == "buy"
+	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		checkMaxPos = true
+	}
+	if checkMaxPos {
 		var exOpenCount int64
 		if ps, err := inst.exchange.FetchPositions(inst.OwnerID, "active"); err == nil {
 			for _, p := range ps {
@@ -1519,19 +1624,19 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			Count(&openCount)
 		var inflightBuy int64
 		database.DB.Model(&models.StrategyOrder{}).
-			Where("owner_id = ? AND strategy_id = ? AND side = ? AND status IN ?", inst.OwnerID, inst.ID, "buy", []string{"requested", "new", "partially_filled"}).
+			Where("owner_id = ? AND strategy_id = ? AND status IN ?", inst.OwnerID, inst.ID, []string{"requested", "new", "partially_filled"}).
 			Count(&inflightBuy)
-		memInflight := inst.inflightOpenBuy
+		memInflight := inst.inflightOpen
 		if int(exOpenCount) >= maxPos || int(openCount) >= maxPos || int(openCount+inflightBuy)+memInflight >= maxPos {
 			inst.orderMu.Unlock()
 			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: max_concurrent_positions reached symbol=%s ex_open=%d open=%d inflight_buy=%d mem_inflight_buy=%d max=%d", symbol, exOpenCount, openCount, inflightBuy, memInflight, maxPos))
 			return
 		}
-		inst.inflightOpenBuy++
+		inst.inflightOpen++
 		decrInflightBuy = func() {
 			inst.orderMu.Lock()
-			if inst.inflightOpenBuy > 0 {
-				inst.inflightOpenBuy--
+			if inst.inflightOpen > 0 {
+				inst.inflightOpen--
 			}
 			inst.orderMu.Unlock()
 		}
@@ -1563,6 +1668,13 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 
 	order, err := inst.exchange.PlaceOrder(inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price)
 	if err != nil {
+		inst.orderMu.Lock()
+		if inst.lastOrderFailAt == nil {
+			inst.lastOrderFailAt = map[string]time.Time{}
+		}
+		inst.lastOrderFailAt[throttleKey] = time.Now()
+		inst.orderMu.Unlock()
+
 		database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
 			Updates(map[string]interface{}{"status": "failed", "updated_at": time.Now()})
 		database.DB.Create(&models.StrategyLog{
