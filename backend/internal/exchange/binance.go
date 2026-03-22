@@ -1470,7 +1470,7 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		params.Set("timeInForce", "GTC")
 		params.Set("workingType", "MARK_PRICE")
 		params.Set("reduceOnly", "true")
-		params.Set("orderType", orderType)
+		params.Set("type", orderType)
 		clientID := normalizeNewClientOrderID(kind + "_" + baseClientOrderID)
 		params.Set("clientAlgoId", clientID)
 		params.Set("quantity", formatByStep(closeQty, filters.StepSize))

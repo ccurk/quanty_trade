@@ -263,7 +263,7 @@ class Config:
     ATR_DISCOUNT = 0.7
     CHANGE_LOOKBACK_BARS = 200
     VOL_LOOKBACK_BARS = 200
-    COOLDOWN_SEC = 300
+    COOLDOWN_SEC = 0
     MAX_BARS = 300
 
 
@@ -602,7 +602,7 @@ class Strategy:
         Config.ATR_DISCOUNT = _f(self.cfg.get("atr_discount"), Config.ATR_DISCOUNT)
         Config.CHANGE_LOOKBACK_BARS = max(2, _i(self.cfg.get("change_lookback_bars"), Config.CHANGE_LOOKBACK_BARS))
         Config.VOL_LOOKBACK_BARS = max(2, _i(self.cfg.get("vol_lookback_bars"), Config.VOL_LOOKBACK_BARS))
-        Config.COOLDOWN_SEC = max(0, _i(self.cfg.get("cooldown_sec"), Config.COOLDOWN_SEC))
+        Config.COOLDOWN_SEC = max(0, _i(self.cfg.get("cooldown_sec"), 0))
         Config.MAX_BARS = max(50, _i(self.cfg.get("max_bars"), Config.MAX_BARS))
         self.trace = bool(self.cfg.get("log_trace") or self.cfg.get("debug"))
         self.log_rx = bool(self.cfg.get("log_rx", True))
@@ -764,18 +764,6 @@ class Strategy:
             return
 
         now = time.time()
-        last_ts = float(self.last_signal_ts.get(symbol) or 0.0)
-        if Config.COOLDOWN_SEC > 0 and now-last_ts < float(Config.COOLDOWN_SEC):
-            if tick_log:
-                self._log(f"跳过-冷却中 sym={symbol} 方向={r.direction} 剩余={int(Config.COOLDOWN_SEC-(now-last_ts))}s 时间={_now()}")
-            return
-
-        last_dir = _s(self.last_signal_dir.get(symbol)).strip().lower()
-        if last_dir and last_dir == _s(r.direction).strip().lower():
-            if tick_log:
-                self._log(f"跳过-同向已发过 sym={symbol} 方向={r.direction} 时间={_now()}")
-            return
-
         self.last_signal_ts[symbol] = now
         self.last_signal_dir[symbol] = _s(r.direction).strip().lower()
         self._emit_signal(symbol, _s(r.direction).strip().lower(), r.entry_price, r.tp_price, r.sl_price, r.confidence)

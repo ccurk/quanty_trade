@@ -247,8 +247,9 @@ type StrategyInstance struct {
 	// mu guards process state and pipes.
 	mu sync.Mutex
 	// orderMu guards inflight open order counters and concurrency checks.
-	orderMu      sync.Mutex
-	inflightOpen int
+	orderMu       sync.Mutex
+	inflightOpen  int
+	lastSkipLogAt map[string]time.Time
 	// hub is the websocket broadcaster for UI updates.
 	hub *ws.Hub
 	// exchange is the exchange implementation (mock/binance/etc.).
@@ -1693,6 +1694,17 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		}
 	}
 	if exSymbolOpen {
+		inst.orderMu.Lock()
+		if inst.lastSkipLogAt == nil {
+			inst.lastSkipLogAt = map[string]time.Time{}
+		}
+		k := "has_pos:" + exSymbolKey
+		if t, ok := inst.lastSkipLogAt[k]; ok && time.Since(t) < 10*time.Second {
+			inst.orderMu.Unlock()
+			return
+		}
+		inst.lastSkipLogAt[k] = time.Now()
+		inst.orderMu.Unlock()
 		emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: symbol already has position symbol=%s", symbol))
 		return
 	}
@@ -1706,6 +1718,17 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			return
 		}
 		if !ok {
+			inst.orderMu.Lock()
+			if inst.lastSkipLogAt == nil {
+				inst.lastSkipLogAt = map[string]time.Time{}
+			}
+			k := "max_pos"
+			if t, ok := inst.lastSkipLogAt[k]; ok && time.Since(t) < 10*time.Second {
+				inst.orderMu.Unlock()
+				return
+			}
+			inst.lastSkipLogAt[k] = time.Now()
+			inst.orderMu.Unlock()
 			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: max_concurrent_positions reached strategy=%s symbol=%s open=%d max=%d", inst.ID, symbol, exOpenCount, maxPos))
 			return
 		}
