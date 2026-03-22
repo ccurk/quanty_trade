@@ -1,6 +1,12 @@
 version: '3.8'
 
 services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    restart: always
+
   backend:
     build:
       context: .
@@ -11,8 +17,13 @@ services:
       - backend_data:/app/backend/data
     environment:
       - PORT=8080
+      - REDIS_ENABLED=true
+      - REDIS_ADDR=redis:6379
+      - REDIS_PREFIX=qt
       # - DB_DRIVER=mysql # Uncomment if using MySQL
       # - DB_DSN=user:pass@tcp(db:3306)/quanty?charset=utf8mb4&parseTime=True&loc=Local
+    depends_on:
+      - redis
     restart: always
 
   frontend:

@@ -39,3 +39,10 @@ exchange:
     base_url: "https://api.binance.com"
     ws_base_url: "wss://stream.binance.com:9443"
     wsapi_url: "wss://ws-api.binance.com:443/ws-api/v3"
+
+redis:
+  enabled: true
+  addr: "127.0.0.1:6379"
+  password: ""
+  db: 0
+  prefix: "qt"

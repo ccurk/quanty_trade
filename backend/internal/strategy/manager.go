@@ -336,7 +336,19 @@ func (m *Manager) StartStrategy(id string) error {
 
 	if redisBus == nil {
 		inst.mu.Unlock()
-		return fmt.Errorf("redis bus not available")
+		rb, err := bus.NewRedisBusFromConfig()
+		if err != nil {
+			return fmt.Errorf("redis bus not available: %v (请确保已启动 Redis，并配置 REDIS_ENABLED=true / REDIS_ADDR)", err)
+		}
+		m.SetRedisBus(rb)
+		m.mu.RLock()
+		redisBus = m.redisBus
+		m.mu.RUnlock()
+		inst.mu.Lock()
+		if inst.Status == StatusRunning {
+			inst.mu.Unlock()
+			return nil
+		}
 	}
 
 	runCfg := make(map[string]interface{}, len(inst.Config)+4)

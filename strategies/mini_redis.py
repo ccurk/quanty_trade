@@ -2,7 +2,7 @@ import socket
 
 
 class MiniRedis:
-    def __init__(self, host="127.0.0.1", port=6379, password="", db=0, timeout=5):
+    def __init__(self, host="127.0.0.1", port=6379, password="", db=0, timeout=30):
         self.host = host
         self.port = int(port)
         self.password = password or ""
@@ -12,8 +12,9 @@ class MiniRedis:
         self.buf = b""
 
     def connect(self):
-        self.sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
-        self.sock.settimeout(self.timeout)
+        self.sock = socket.create_connection((self.host, self.port), timeout=self.timeout if self.timeout else None)
+        if self.timeout:
+            self.sock.settimeout(self.timeout)
         if self.password:
             self.execute("AUTH", self.password)
         if self.db:
@@ -94,10 +95,12 @@ class MiniRedis:
         return self.execute("SUBSCRIBE", channel)
 
     def read_pubsub_message(self):
-        msg = self._read_resp()
+        try:
+            msg = self._read_resp()
+        except (TimeoutError, socket.timeout):
+            return None
         if not isinstance(msg, list) or len(msg) < 3:
             return None
         if msg[0] != "message":
             return None
         return {"channel": msg[1], "data": msg[2]}
-

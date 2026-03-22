@@ -1,6 +1,10 @@
 version: '3.8'
 
 services:
+  redis:
+    image: redis:7
+    restart: always
+
   backend:
     image: ${DOCKER_HUB_ID:-your-id}/quanty_trade-backend:${BACKEND_VERSION:-dev}
     ports:
@@ -10,6 +14,11 @@ services:
     environment:
       - PORT=8080
       - DB_DRIVER=sqlite
+      - REDIS_ENABLED=true
+      - REDIS_ADDR=redis:6379
+      - REDIS_PREFIX=qt
+    depends_on:
+      - redis
     restart: always
 
   frontend:
