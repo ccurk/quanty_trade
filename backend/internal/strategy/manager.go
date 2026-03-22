@@ -242,6 +242,10 @@ type StrategyInstance struct {
 
 	// mu guards process state and pipes.
 	mu sync.Mutex
+	// orderMu guards inflight open order counters and concurrency checks.
+	orderMu sync.Mutex
+	// inflightOpenBuy tracks buy requests in progress to prevent bursts.
+	inflightOpenBuy int
 	// hub is the websocket broadcaster for UI updates.
 	hub *ws.Hub
 	// exchange is the exchange implementation (mock/binance/etc.).
@@ -1347,7 +1351,9 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		maxPos = int(v)
 	}
 
+	decrInflightBuy := func() {}
 	if normalizedSide == "buy" {
+		inst.orderMu.Lock()
 		var openCount int64
 		database.DB.Model(&models.StrategyPosition{}).
 			Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
@@ -1356,10 +1362,22 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		database.DB.Model(&models.StrategyOrder{}).
 			Where("owner_id = ? AND strategy_id = ? AND side = ? AND status IN ?", inst.OwnerID, inst.ID, "buy", []string{"requested", "new", "partially_filled"}).
 			Count(&inflightBuy)
-		if int(openCount) >= maxPos || int(openCount+inflightBuy) >= maxPos {
-			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: max_concurrent_positions reached symbol=%s open=%d inflight_buy=%d max=%d", symbol, openCount, inflightBuy, maxPos))
+		memInflight := inst.inflightOpenBuy
+		if int(openCount) >= maxPos || int(openCount+inflightBuy)+memInflight >= maxPos {
+			inst.orderMu.Unlock()
+			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: max_concurrent_positions reached symbol=%s open=%d inflight_buy=%d mem_inflight_buy=%d max=%d", symbol, openCount, inflightBuy, memInflight, maxPos))
 			return
 		}
+		inst.inflightOpenBuy++
+		decrInflightBuy = func() {
+			inst.orderMu.Lock()
+			if inst.inflightOpenBuy > 0 {
+				inst.inflightOpenBuy--
+			}
+			inst.orderMu.Unlock()
+		}
+		inst.orderMu.Unlock()
+		defer decrInflightBuy()
 	}
 
 	clientOrderID := models.GenerateUUID()
