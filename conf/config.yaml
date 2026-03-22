@@ -4,8 +4,8 @@ server:
   mode: "debug"
 
 network:
-  http_proxy: "http://127.0.0.1:1087"
-  https_proxy: "http://127.0.0.1:1087"
+  # http_proxy: "http://127.0.0.1:1087"
+  # https_proxy: "http://127.0.0.1:1087"
   no_proxy: "127.0.0.1,localhost"
 
 paths:
