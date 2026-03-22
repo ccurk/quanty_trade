@@ -12,11 +12,17 @@ services:
     volumes:
       - ./data:/app/backend/data
     environment:
-      - PORT=8080
-      - DB_DRIVER=sqlite
+      - SERVER_PORT=8080
+      - GIN_MODE=release
+      - LOG_DIR=/app/backend/data/logs
+      - STRATEGIES_DIR=/app/strategies
+      - DB_TYPE=sqlite
+      - DB_SQLITE_PATH=/app/backend/data/quanty.db
       - REDIS_ENABLED=true
       - REDIS_ADDR=redis:6379
       - REDIS_PREFIX=qt
+      - EXCHANGE=binance
+      - BINANCE_MARKET=usdm
     depends_on:
       - redis
     restart: always
