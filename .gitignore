@@ -1,2 +1,3 @@
 logs/
 conf/config.yaml
+.deploy_*
