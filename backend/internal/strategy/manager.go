@@ -1597,7 +1597,7 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 	if inst == nil {
 		return
 	}
-	logSignal := getBool(inst.Config["log_signal"]) || getBool(inst.Config["log_redis"])
+	logSignal := getBool(inst.Config["log_signal"]) || getBool(inst.Config["log_redis"]) || getBool(inst.Config["debug"])
 	symbol := strings.TrimSpace(s.Symbol)
 	if symbol == "" {
 		if logSignal {
@@ -1664,6 +1664,18 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		return
 	}
 	if !isAllowedSymbol(inst, symbol) {
+		inst.orderMu.Lock()
+		if inst.lastSkipLogAt == nil {
+			inst.lastSkipLogAt = map[string]time.Time{}
+		}
+		k := "not_allowed_symbol:" + exchange.NormalizeSymbol(symbol)
+		if t, ok := inst.lastSkipLogAt[k]; ok && time.Since(t) < 60*time.Second {
+			inst.orderMu.Unlock()
+			return
+		}
+		inst.lastSkipLogAt[k] = time.Now()
+		inst.orderMu.Unlock()
+		emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: symbol not allowed symbol=%s", symbol))
 		return
 	}
 	normalizedSide := strings.ToLower(strings.TrimSpace(side))

@@ -273,8 +273,12 @@ const App: React.FC = () => {
   const [positionStatus, setPositionStatus] = useState<'active' | 'closed'>('active');
   const [logs, setLogs] = useState<string[]>([]);
   const [showCandleLogs, setShowCandleLogs] = useState(false);
+  const [showWsErrorToasts, setShowWsErrorToasts] = useState(() => localStorage.getItem('show_ws_error_toasts') === 'true');
   const [users, setUsers] = useState<User[]>([]);
   const [activeTab, setActiveTab] = useState<'strategies' | 'templates' | 'positions' | 'stats' | 'logs' | 'square' | 'admin' | 'develop'>('stats');
+  const showCandleLogsRef = useRef(showCandleLogs);
+  const showWsErrorToastsRef = useRef(showWsErrorToasts);
+  const activeTabRef = useRef(activeTab);
   
   // Search States
   const [stratSearch, setStratSearch] = useState('');
@@ -431,6 +435,19 @@ const App: React.FC = () => {
       document.documentElement.classList.remove('dark');
     }
   }, [isDarkMode]);
+
+  useEffect(() => {
+    showCandleLogsRef.current = showCandleLogs;
+  }, [showCandleLogs]);
+
+  useEffect(() => {
+    showWsErrorToastsRef.current = showWsErrorToasts;
+    localStorage.setItem('show_ws_error_toasts', showWsErrorToasts ? 'true' : 'false');
+  }, [showWsErrorToasts]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
 
   useEffect(() => {
     const savedUser = localStorage.getItem('user');
@@ -793,7 +810,7 @@ const App: React.FC = () => {
           const c = isObject(parsed.data) ? parsed.data : {};
           const ts = c.timestamp ? new Date(String(c.timestamp)).toLocaleString() : '';
           const close = typeof c.close === 'number' ? c.close : '';
-          if (showCandleLogs) {
+          if (showCandleLogsRef.current) {
             setLogs(prev => [`[${new Date().toLocaleTimeString()}] Candle ${ts} close=${close}`, ...prev.slice(0, 99)]);
           }
         }
@@ -808,7 +825,9 @@ const App: React.FC = () => {
       } else if (type === 'error') {
         const msg = typeof parsed.error === 'string' ? parsed.error : '发生错误';
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] ERROR ${msg}`, ...prev.slice(0, 99)]);
-        showToast(msg, 'error');
+        if (showWsErrorToastsRef.current && activeTabRef.current !== 'logs') {
+          showToast(msg, 'error');
+        }
       }
     };
     ws.current.onclose = () => {
@@ -1881,13 +1900,22 @@ const App: React.FC = () => {
           <div>
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="text-xs text-gray-500">提示：建议关闭 K 线日志，避免覆盖策略决策日志</div>
-              <button
-                type="button"
-                onClick={() => setShowCandleLogs(v => !v)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
-              >
-                {showCandleLogs ? '已开启K线日志' : '已关闭K线日志'}
-              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowWsErrorToasts(v => !v)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+                >
+                  {showWsErrorToasts ? '已开启错误弹窗' : '已关闭错误弹窗'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCandleLogs(v => !v)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+                >
+                  {showCandleLogs ? '已开启K线日志' : '已关闭K线日志'}
+                </button>
+              </div>
             </div>
             <div className={`p-4 md:p-6 rounded-2xl font-mono text-xs md:text-sm h-[500px] md:h-[600px] overflow-y-auto border shadow-2xl custom-scrollbar ${isDarkMode ? 'bg-black/80 text-gray-300 border-gray-800' : 'bg-gray-100 text-gray-700 border-gray-200'}`}>
               {logs.map((log, i) => (

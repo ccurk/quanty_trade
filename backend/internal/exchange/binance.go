@@ -940,7 +940,11 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 		if filters.MinQty > 0 && adjQty < filters.MinQty {
 			return nil, fmt.Errorf("quantity too small")
 		}
-		if filters.MinNotional > 0 && adjQty*adjPrice < filters.MinNotional {
+		minNotional := filters.MinNotional
+		if b.market == "usdm" && minNotional < 5 {
+			minNotional = 5
+		}
+		if minNotional > 0 && adjQty*adjPrice < minNotional {
 			return nil, fmt.Errorf("notional too small")
 		}
 		params.Set("quantity", formatByStep(adjQty, filters.StepSize))
@@ -951,11 +955,11 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 		if filters.MinQty > 0 && adjQty < filters.MinQty {
 			return nil, fmt.Errorf("quantity too small")
 		}
-		if filters.MinNotional > 0 {
+		if b.market == "usdm" || filters.MinNotional > 0 {
 			px, err := b.LastPrice(symbol)
 			if err == nil && px > 0 {
 				minNotional := filters.MinNotional
-				if minNotional < 5 {
+				if b.market == "usdm" && minNotional < 5 {
 					minNotional = 5
 				}
 				if adjQty*px < minNotional {
