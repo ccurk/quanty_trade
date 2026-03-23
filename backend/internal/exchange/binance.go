@@ -1507,36 +1507,39 @@ func (b *BinanceExchange) ClosePositionOrder(symbol string, ownerID uint) (*Orde
 	}, entryPrice, positionAmt, nil
 }
 
-func (b *BinanceExchange) USDMPositionAmt(ownerID uint, symbol string) (float64, float64, error) {
+func (b *BinanceExchange) USDMPositionAmt(ownerID uint, symbol string) (float64, float64, float64, error) {
 	cred, err := b.getCred(ownerID)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v2/positionRisk", nil)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	var raw []struct {
 		Symbol      string `json:"symbol"`
 		PositionAmt string `json:"positionAmt"`
 		EntryPrice  string `json:"entryPrice"`
+		MarkPrice   string `json:"markPrice"`
 		UpdateTime  int64  `json:"updateTime"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 
 	target := binanceSymbol(symbol)
 	var positionAmt float64
 	var entryPrice float64
+	var markPrice float64
 	for _, p := range raw {
 		if strings.EqualFold(p.Symbol, target) {
 			positionAmt, _ = strconv.ParseFloat(p.PositionAmt, 64)
 			entryPrice, _ = strconv.ParseFloat(p.EntryPrice, 64)
+			markPrice, _ = strconv.ParseFloat(p.MarkPrice, 64)
 			break
 		}
 	}
-	return positionAmt, entryPrice, nil
+	return positionAmt, entryPrice, markPrice, nil
 }
 
 func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID string, symbol string, takeProfit float64, stopLoss float64) error {
@@ -1553,7 +1556,7 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		return err
 	}
 
-	positionAmt, entryPrice, err := b.USDMPositionAmt(ownerID, symbol)
+	positionAmt, entryPrice, markPrice, err := b.USDMPositionAmt(ownerID, symbol)
 	if err != nil {
 		return err
 	}
@@ -1597,23 +1600,35 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		}
 	}
 
-	if takeProfit > 0 {
-		if closeSide == "SELL" && takeProfit <= entryPrice {
-			place("tp", "TAKE_PROFIT", takeProfit)
-		} else if closeSide == "BUY" && takeProfit >= entryPrice {
-			place("tp", "TAKE_PROFIT", takeProfit)
-		} else {
-			place("tp", "TAKE_PROFIT", takeProfit)
+	ref := markPrice
+	if ref <= 0 {
+		ref = entryPrice
+	}
+	if ref > 0 && filters.TickSize > 0 {
+		if takeProfit > 0 {
+			adj := roundDownPrice(takeProfit, filters.TickSize)
+			if closeSide == "SELL" && adj <= ref {
+				return fmt.Errorf("tp would immediately trigger")
+			}
+			if closeSide == "BUY" && adj >= ref {
+				return fmt.Errorf("tp would immediately trigger")
+			}
+		}
+		if stopLoss > 0 {
+			adj := roundDownPrice(stopLoss, filters.TickSize)
+			if closeSide == "SELL" && adj >= ref {
+				return fmt.Errorf("sl would immediately trigger")
+			}
+			if closeSide == "BUY" && adj <= ref {
+				return fmt.Errorf("sl would immediately trigger")
+			}
 		}
 	}
+	if takeProfit > 0 {
+		place("tp", "TAKE_PROFIT", takeProfit)
+	}
 	if stopLoss > 0 {
-		if closeSide == "SELL" && stopLoss >= entryPrice {
-			place("sl", "STOP", stopLoss)
-		} else if closeSide == "BUY" && stopLoss <= entryPrice {
-			place("sl", "STOP", stopLoss)
-		} else {
-			place("sl", "STOP", stopLoss)
-		}
+		place("sl", "STOP", stopLoss)
 	}
 	return firstErr
 }

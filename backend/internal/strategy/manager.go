@@ -250,6 +250,7 @@ type StrategyInstance struct {
 	orderMu       sync.Mutex
 	inflightOpen  int
 	lastSkipLogAt map[string]time.Time
+	invalidSymbol map[string]time.Time
 	// hub is the websocket broadcaster for UI updates.
 	hub *ws.Hub
 	// exchange is the exchange implementation (mock/binance/etc.).
@@ -1076,7 +1077,7 @@ func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, er
 }
 
 func miniRedisRuntimeShim() string {
-	return "import socket\nimport types\n\nclass MiniRedis:\n    def __init__(self, host=\"127.0.0.1\", port=6379, password=\"\", db=0, timeout=30):\n        self.host = host\n        self.port = int(port)\n        self.password = password or \"\"\n        self.db = int(db or 0)\n        self.timeout = timeout\n        self.sock = None\n        self.buf = b\"\"\n\n    def connect(self):\n        self.sock = socket.create_connection((self.host, self.port), timeout=self.timeout if self.timeout else None)\n        if self.timeout:\n            self.sock.settimeout(self.timeout)\n        if self.password:\n            self.execute(\"AUTH\", self.password)\n        if self.db:\n            self.execute(\"SELECT\", str(self.db))\n        return self\n\n    def close(self):\n        try:\n            if self.sock:\n                self.sock.close()\n        finally:\n            self.sock = None\n            self.buf = b\"\"\n\n    def _encode(self, *parts):\n        out = [f\"*{len(parts)}\\r\\n\".encode(\"utf-8\")]\n        for p in parts:\n            if p is None:\n                p = \"\"\n            if not isinstance(p, (bytes, bytearray)):\n                p = str(p).encode(\"utf-8\")\n            out.append(f\"${len(p)}\\r\\n\".encode(\"utf-8\"))\n            out.append(p)\n            out.append(b\"\\r\\n\")\n        return b\"\".join(out)\n\n    def _read_exact(self, n):\n        while len(self.buf) < n:\n            chunk = self.sock.recv(4096)\n            if not chunk:\n                raise ConnectionError(\"redis connection closed\")\n            self.buf += chunk\n        out, self.buf = self.buf[:n], self.buf[n:]\n        return out\n\n    def _read_line(self):\n        while b\"\\r\\n\" not in self.buf:\n            chunk = self.sock.recv(4096)\n            if not chunk:\n                raise ConnectionError(\"redis connection closed\")\n            self.buf += chunk\n        i = self.buf.index(b\"\\r\\n\")\n        line, self.buf = self.buf[:i], self.buf[i + 2 :]\n        return line\n\n    def _read_resp(self):\n        prefix = self._read_exact(1)\n        if prefix == b\"+\":\n            return self._read_line().decode(\"utf-8\", errors=\"replace\")\n        if prefix == b\"-\":\n            raise RuntimeError(self._read_line().decode(\"utf-8\", errors=\"replace\"))\n        if prefix == b\":\":\n            return int(self._read_line())\n        if prefix == b\"$\":\n            n = int(self._read_line())\n            if n == -1:\n                return None\n            data = self._read_exact(n)\n            _ = self._read_exact(2)\n            return data.decode(\"utf-8\", errors=\"replace\")\n        if prefix == b\"*\":\n            n = int(self._read_line())\n            if n == -1:\n                return None\n            return [self._read_resp() for _ in range(n)]\n        raise RuntimeError(f\"unknown RESP prefix: {prefix!r}\")\n\n    def execute(self, *args):\n        if not self.sock:\n            self.connect()\n        self.sock.sendall(self._encode(*args))\n        return self._read_resp()\n\n    def publish(self, channel, payload):\n        return self.execute(\"PUBLISH\", channel, payload)\n\n    def subscribe(self, channel):\n        return self.execute(\"SUBSCRIBE\", channel)\n\n    def read_pubsub_message(self):\n        try:\n            msg = self._read_resp()\n        except (TimeoutError, socket.timeout):\n            return None\n        if not isinstance(msg, list) or len(msg) < 3:\n            return None\n        if msg[0] != \"message\":\n            return None\n        return {\"channel\": msg[1], \"data\": msg[2]}\n\n_mod = types.ModuleType(\"mini_redis\")\n_mod.MiniRedis = MiniRedis\nsys.modules.setdefault(\"mini_redis\", _mod)\n"
+	return "import socket\nimport types\n\nclass MiniRedis:\n    def __init__(self, host=\"127.0.0.1\", port=6379, password=\"\", db=0, timeout=30):\n        self.host = host\n        self.port = int(port)\n        self.password = password or \"\"\n        self.db = int(db or 0)\n        self.timeout = timeout\n        self.sock = None\n        self.buf = b\"\"\n\n    def connect(self):\n        self.sock = socket.create_connection((self.host, self.port), timeout=self.timeout if self.timeout else None)\n        if self.timeout:\n            self.sock.settimeout(self.timeout)\n        if self.password:\n            try:\n                self.execute(\"AUTH\", self.password)\n            except RuntimeError as e:\n                msg = str(e)\n                if \"called without any password configured\" not in msg:\n                    raise\n        if self.db:\n            self.execute(\"SELECT\", str(self.db))\n        return self\n\n    def close(self):\n        try:\n            if self.sock:\n                self.sock.close()\n        finally:\n            self.sock = None\n            self.buf = b\"\"\n\n    def _encode(self, *parts):\n        out = [f\"*{len(parts)}\\r\\n\".encode(\"utf-8\")]\n        for p in parts:\n            if p is None:\n                p = \"\"\n            if not isinstance(p, (bytes, bytearray)):\n                p = str(p).encode(\"utf-8\")\n            out.append(f\"${len(p)}\\r\\n\".encode(\"utf-8\"))\n            out.append(p)\n            out.append(b\"\\r\\n\")\n        return b\"\".join(out)\n\n    def _read_exact(self, n):\n        while len(self.buf) < n:\n            chunk = self.sock.recv(4096)\n            if not chunk:\n                raise ConnectionError(\"redis connection closed\")\n            self.buf += chunk\n        out, self.buf = self.buf[:n], self.buf[n:]\n        return out\n\n    def _read_line(self):\n        while b\"\\r\\n\" not in self.buf:\n            chunk = self.sock.recv(4096)\n            if not chunk:\n                raise ConnectionError(\"redis connection closed\")\n            self.buf += chunk\n        i = self.buf.index(b\"\\r\\n\")\n        line, self.buf = self.buf[:i], self.buf[i + 2 :]\n        return line\n\n    def _read_resp(self):\n        prefix = self._read_exact(1)\n        if prefix == b\"+\":\n            return self._read_line().decode(\"utf-8\", errors=\"replace\")\n        if prefix == b\"-\":\n            raise RuntimeError(self._read_line().decode(\"utf-8\", errors=\"replace\"))\n        if prefix == b\":\":\n            return int(self._read_line())\n        if prefix == b\"$\":\n            n = int(self._read_line())\n            if n == -1:\n                return None\n            data = self._read_exact(n)\n            _ = self._read_exact(2)\n            return data.decode(\"utf-8\", errors=\"replace\")\n        if prefix == b\"*\":\n            n = int(self._read_line())\n            if n == -1:\n                return None\n            return [self._read_resp() for _ in range(n)]\n        raise RuntimeError(f\"unknown RESP prefix: {prefix!r}\")\n\n    def execute(self, *args):\n        if not self.sock:\n            self.connect()\n        self.sock.sendall(self._encode(*args))\n        return self._read_resp()\n\n    def publish(self, channel, payload):\n        return self.execute(\"PUBLISH\", channel, payload)\n\n    def subscribe(self, channel):\n        return self.execute(\"SUBSCRIBE\", channel)\n\n    def read_pubsub_message(self):\n        try:\n            msg = self._read_resp()\n        except (TimeoutError, socket.timeout):\n            return None\n        if not isinstance(msg, list) or len(msg) < 3:\n            return None\n        if msg[0] != \"message\":\n            return None\n        return {\"channel\": msg[1], \"data\": msg[2]}\n\n_mod = types.ModuleType(\"mini_redis\")\n_mod.MiniRedis = MiniRedis\nsys.modules.setdefault(\"mini_redis\", _mod)\n"
 }
 
 func (m *Manager) prepareBacktestStrategyFile(inst *StrategyInstance, backtestID uint) (string, func(), error) {
@@ -1789,6 +1790,26 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	exOpenCount := int64(0)
 	exSymbolOpen := false
 	exSymbolKey := exchange.NormalizeSymbol(symbol)
+
+	inst.orderMu.Lock()
+	if inst.invalidSymbol != nil {
+		if until, ok := inst.invalidSymbol[exSymbolKey]; ok && time.Now().Before(until) {
+			if inst.lastSkipLogAt == nil {
+				inst.lastSkipLogAt = map[string]time.Time{}
+			}
+			k := "invalid_symbol:" + exSymbolKey
+			if t, ok := inst.lastSkipLogAt[k]; !ok || time.Since(t) >= 60*time.Second {
+				inst.lastSkipLogAt[k] = time.Now()
+				inst.orderMu.Unlock()
+				emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: symbol not supported in current market symbol=%s", symbol))
+				return
+			}
+			inst.orderMu.Unlock()
+			return
+		}
+	}
+	inst.orderMu.Unlock()
+
 	if ps, err := inst.exchange.FetchPositions(inst.OwnerID, "active"); err == nil {
 		for _, p := range ps {
 			if math.Abs(p.Amount) <= 0 {
@@ -1880,6 +1901,25 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			errMsg = fmt.Sprintf("Failed to place order: notional 小于最小下单额 (%v)", err)
 		} else if strings.Contains(errMsg, "\"code\":-1003") {
 			errMsg = fmt.Sprintf("Failed to place order: IP 限流/封禁 (%v)", err)
+		} else if strings.Contains(errMsg, "symbol not found:") {
+			inst.orderMu.Lock()
+			if inst.invalidSymbol == nil {
+				inst.invalidSymbol = map[string]time.Time{}
+			}
+			inst.invalidSymbol[exSymbolKey] = time.Now().Add(10 * time.Minute)
+			if inst.lastSkipLogAt == nil {
+				inst.lastSkipLogAt = map[string]time.Time{}
+			}
+			k := "symbol_not_found_err:" + exSymbolKey
+			if t, ok := inst.lastSkipLogAt[k]; ok && time.Since(t) < 10*time.Second {
+				inst.orderMu.Unlock()
+				database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
+					Updates(map[string]interface{}{"status": "failed", "updated_at": time.Now()})
+				return
+			}
+			inst.lastSkipLogAt[k] = time.Now()
+			inst.orderMu.Unlock()
+			errMsg = fmt.Sprintf("Failed to place order: symbol not supported in current market, will skip for 10m (%v)", err)
 		}
 
 		database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
@@ -1930,7 +1970,7 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 		if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
 			var lastErr error
 			for i := 0; i < 30; i++ {
-				amt, _, err := bx.USDMPositionAmt(inst.OwnerID, symbol)
+				amt, _, _, err := bx.USDMPositionAmt(inst.OwnerID, symbol)
 				if err == nil && amt != 0 {
 					lastErr = bx.PlaceUSDMTPStopOrders(inst.OwnerID, baseClientOrderID, symbol, takeProfit, stopLoss)
 					if lastErr == nil {
@@ -1942,7 +1982,14 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 				lastErr = err
 				time.Sleep(500 * time.Millisecond)
 			}
-			emitStrategyLog(inst, "error", fmt.Sprintf("设置止盈止损失败，回退为本地监控 symbol=%s tp=%v sl=%v err=%v", symbol, takeProfit, stopLoss, lastErr))
+			level := "error"
+			if lastErr != nil {
+				msg := lastErr.Error()
+				if strings.Contains(msg, "\"code\":-2021") || strings.Contains(msg, "immediately trigger") {
+					level = "info"
+				}
+			}
+			emitStrategyLog(inst, level, fmt.Sprintf("设置止盈止损失败，回退为本地监控 symbol=%s tp=%v sl=%v err=%v", symbol, takeProfit, stopLoss, lastErr))
 			m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
 			return
 		}
@@ -1958,6 +2005,12 @@ func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, t
 	if sym == "" {
 		return
 	}
+	isShort := false
+	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		if amt, _, _, err := bx.USDMPositionAmt(inst.OwnerID, sym); err == nil && amt < 0 {
+			isShort = true
+		}
+	}
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -1970,8 +2023,15 @@ func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, t
 		if px <= 0 {
 			continue
 		}
-		hitTP := takeProfit > 0 && px >= takeProfit
-		hitSL := stopLoss > 0 && px <= stopLoss
+		hitTP := false
+		hitSL := false
+		if !isShort {
+			hitTP = takeProfit > 0 && px >= takeProfit
+			hitSL = stopLoss > 0 && px <= stopLoss
+		} else {
+			hitTP = takeProfit > 0 && px <= takeProfit
+			hitSL = stopLoss > 0 && px >= stopLoss
+		}
 		if !hitTP && !hitSL {
 			continue
 		}
