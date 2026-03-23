@@ -1899,6 +1899,12 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			errMsg = fmt.Sprintf("Failed to place order: 保证金不足 (%v)", err)
 		} else if strings.Contains(errMsg, "\"code\":-4164") {
 			errMsg = fmt.Sprintf("Failed to place order: notional 小于最小下单额 (%v)", err)
+		} else if strings.Contains(errMsg, "\"code\":-2027") {
+			lev := int(getNumber(inst.Config["leverage"]))
+			if lev <= 0 {
+				lev = 1
+			}
+			errMsg = fmt.Sprintf("Failed to place order: 当前杠杆下持仓上限超出，请降低杠杆或下单金额(数量) lev=%d (%v)", lev, err)
 		} else if strings.Contains(errMsg, "\"code\":-1003") {
 			errMsg = fmt.Sprintf("Failed to place order: IP 限流/封禁 (%v)", err)
 		} else if strings.Contains(errMsg, "symbol not found:") {
