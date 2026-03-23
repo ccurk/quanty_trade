@@ -171,6 +171,8 @@ func resolveConfigPath(root string) string {
 			profile = "pro"
 		case "debug", "test":
 			profile = "dev"
+		default:
+			profile = "dev"
 		}
 	}
 
