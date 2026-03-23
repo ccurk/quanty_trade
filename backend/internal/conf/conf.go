@@ -166,37 +166,27 @@ func resolveConfigPath(root string) string {
 		profile = strings.ToLower(strings.TrimSpace(os.Getenv("ENV")))
 	}
 	if profile == "" {
-		if v := strings.ToLower(strings.TrimSpace(os.Getenv("GIN_MODE"))); v != "" {
-			if v == "release" {
-				profile = "pro"
-			} else {
-				profile = "dev"
-			}
-		}
-	}
-	if profile != "" {
-		switch profile {
-		case "pro", "prod", "production":
-			p := filepath.Join(root, "conf", "conf_pro.yaml")
-			if _, err := os.Stat(p); err == nil {
-				return p
-			}
-		case "dev", "test", "testing", "staging":
-			p := filepath.Join(root, "conf", "conf_dev.yaml")
-			if _, err := os.Stat(p); err == nil {
-				return p
-			}
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("GIN_MODE"))) {
+		case "release":
+			profile = "pro"
+		case "debug", "test":
+			profile = "dev"
 		}
 	}
 
-	p := filepath.Join(root, "conf", "conf_pro.yaml")
-	if _, err := os.Stat(p); err == nil {
-		return p
+	if profile == "pro" || profile == "prod" || profile == "production" {
+		p := filepath.Join(root, "conf", "conf_pro.yaml")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
 	}
-	p = filepath.Join(root, "conf", "conf_dev.yaml")
-	if _, err := os.Stat(p); err == nil {
-		return p
+	if profile == "dev" || profile == "test" || profile == "testing" || profile == "staging" {
+		p := filepath.Join(root, "conf", "conf_dev.yaml")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
 	}
+
 	return ""
 }
 
