@@ -1,2 +1,5 @@
 logs/
 .deploy_*
+conf/config.yaml
+conf/conf_pro.yaml
+conf/conf_dev.yaml

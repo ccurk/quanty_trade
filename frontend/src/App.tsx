@@ -2318,12 +2318,12 @@ const App: React.FC = () => {
       {/* Edit Config Modal */}
       {showEditConfigModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className={`w-full max-w-xl p-8 rounded-2xl shadow-2xl ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
-            <div className="flex items-center gap-3 text-gray-400 mb-6">
+          <div className={`w-full max-w-xl p-8 rounded-2xl shadow-2xl flex flex-col max-h-[90vh] ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
+            <div className="flex items-center gap-3 text-gray-400 mb-6 shrink-0">
               <Settings size={28} />
               <h3 className="text-2xl font-bold">编辑策略配置</h3>
             </div>
-            <div className="space-y-4 mb-8">
+            <div className="space-y-4 flex-1 overflow-y-auto pr-2 mb-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div />
                 <div>
@@ -2668,7 +2668,7 @@ const App: React.FC = () => {
               </div>
               <p className="mt-2 text-xs text-gray-500 italic">提示: 只有在策略停止状态下修改配置才会生效。</p>
             </div>
-            <div className="flex gap-4">
+            <div className="flex gap-4 shrink-0">
               <button 
                 onClick={() => { setShowEditConfigModal(false); setStrategyToEdit(null); }}
                 className={`flex-1 py-3 rounded-xl font-bold transition ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-gray-100 hover:bg-gray-200'}`}

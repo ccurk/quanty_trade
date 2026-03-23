@@ -265,12 +265,16 @@ type StrategyInstance struct {
 	restarting      bool
 	resync          bool
 	resyncLogBootID string
+	resyncNextAt    time.Time
+	resyncBackoff   time.Duration
 	stateReadySeen  bool
 	heartbeatSeen   bool
 	feedSymbols     []string
 	candleStops     map[string]func()
 	candlePubCount  map[string]int
 	candleRxCount   map[string]int
+	lastCandleClose map[string]float64
+	lastCandleAt    map[string]time.Time
 }
 
 // Manager manages lifecycle of all strategy instances and coordinates exchange access.
@@ -818,6 +822,14 @@ func (m *Manager) StartStrategy(id string) error {
 							inst.candleRxCount = map[string]int{}
 						}
 						inst.candleRxCount[sym]++
+						if inst.lastCandleClose == nil {
+							inst.lastCandleClose = map[string]float64{}
+						}
+						if inst.lastCandleAt == nil {
+							inst.lastCandleAt = map[string]time.Time{}
+						}
+						inst.lastCandleClose[sym] = candle.Close
+						inst.lastCandleAt[sym] = candle.Timestamp
 						rxN := inst.candleRxCount[sym]
 						inst.mu.Unlock()
 						if rxN == 1 {
@@ -903,6 +915,14 @@ func (m *Manager) StartStrategy(id string) error {
 							inst.candleRxCount = map[string]int{}
 						}
 						inst.candleRxCount[sym]++
+						if inst.lastCandleClose == nil {
+							inst.lastCandleClose = map[string]float64{}
+						}
+						if inst.lastCandleAt == nil {
+							inst.lastCandleAt = map[string]time.Time{}
+						}
+						inst.lastCandleClose[sym] = candle.Close
+						inst.lastCandleAt[sym] = candle.Timestamp
 						rxN := inst.candleRxCount[sym]
 						inst.mu.Unlock()
 						if rxN == 1 {
@@ -1351,9 +1371,13 @@ func (m *Manager) historySyncLoop(ctx context.Context, inst *StrategyInstance, r
 			need := inst.resync
 			bootID := inst.bootID
 			symbols := append([]string(nil), inst.feedSymbols...)
+			nextAt := inst.resyncNextAt
 			inst.mu.Unlock()
 
 			if !need || strings.TrimSpace(bootID) == "" || len(symbols) == 0 {
+				continue
+			}
+			if !nextAt.IsZero() && time.Now().Before(nextAt) {
 				continue
 			}
 
@@ -1403,10 +1427,26 @@ func (m *Manager) historySyncLoop(ctx context.Context, inst *StrategyInstance, r
 				inst.mu.Lock()
 				inst.resync = false
 				inst.resyncLogBootID = ""
+				inst.resyncNextAt = time.Time{}
+				inst.resyncBackoff = 0
 				inst.mu.Unlock()
 				if getBool(inst.Config["log_redis"]) {
 					emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish history done boot_id=%s", bootID))
 				}
+			} else {
+				inst.mu.Lock()
+				b := inst.resyncBackoff
+				if b <= 0 {
+					b = 2 * time.Second
+				} else {
+					b = b * 2
+				}
+				if b > 60*time.Second {
+					b = 60 * time.Second
+				}
+				inst.resyncBackoff = b
+				inst.resyncNextAt = time.Now().Add(b)
+				inst.mu.Unlock()
 			}
 		}
 	}
@@ -1650,23 +1690,48 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		if mode == "" {
 			mode = "notional"
 		}
-		if mode == "notional" && price <= 0 {
-			px, err := bx.LastPrice(symbol)
+		minNotional := getNumber(inst.Config["min_order_notional"])
+		if minNotional <= 0 {
+			minNotional = 5
+		}
+
+		getPx := func() (float64, error) {
+			if price > 0 {
+				return price, nil
+			}
+			inst.mu.Lock()
+			px := 0.0
+			if inst.lastCandleClose != nil {
+				px = inst.lastCandleClose[symbol]
+			}
+			inst.mu.Unlock()
+			if px > 0 {
+				return px, nil
+			}
+			return bx.LastPrice(symbol)
+		}
+
+		avail := 0.0
+		if v, err := bx.USDMAvailableUSDT(inst.OwnerID); err == nil && v > 0 {
+			avail = v
+		}
+
+		maxNotional := 0.0
+		if avail > 0 {
+			maxNotional = avail * float64(lev) * 0.95
+		}
+
+		if mode == "notional" {
+			px, err := getPx()
 			if err != nil || px <= 0 {
 				emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: 获取价格失败 symbol=%s err=%v", symbol, err))
 				return
 			}
 			notional := amount
-			minNotional := getNumber(inst.Config["min_order_notional"])
-			if minNotional <= 0 {
-				minNotional = 5
-			}
 			if notional < minNotional {
 				notional = minNotional
 			}
-
-			if avail, err := bx.USDMAvailableUSDT(inst.OwnerID); err == nil && avail > 0 {
-				maxNotional := avail * float64(lev) * 0.95
+			if maxNotional > 0 {
 				if maxNotional < minNotional {
 					emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: 保证金不足(最低下单额) symbol=%s avail=%0.4f lev=%d min_notional=%0.2f", symbol, avail, lev, minNotional))
 					return
@@ -1675,8 +1740,37 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 					notional = maxNotional
 				}
 			}
-
 			amount = notional / px
+		} else {
+			px, err := getPx()
+			if err != nil || px <= 0 {
+				emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: 获取价格失败 symbol=%s err=%v", symbol, err))
+				return
+			}
+			notional := amount * px
+			if notional < minNotional {
+				amount = minNotional / px
+				notional = minNotional
+			}
+			if maxNotional > 0 {
+				if maxNotional < minNotional {
+					emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: 保证金不足(最低下单额) symbol=%s avail=%0.4f lev=%d min_notional=%0.2f", symbol, avail, lev, minNotional))
+					return
+				}
+				if notional > maxNotional {
+					amount = maxNotional / px
+				}
+			}
+		}
+		amount = clampOrderAmount(inst, amount)
+		if amount <= 0 {
+			return
+		}
+		if px, err := getPx(); err == nil && px > 0 {
+			if amount*px < minNotional {
+				emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: notional too small symbol=%s notional=%0.4f min_notional=%0.2f", symbol, amount*px, minNotional))
+				return
+			}
 		}
 	}
 
@@ -1779,19 +1873,28 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			_, _ = rb.ReleaseOpenSlot(context.Background(), inst.ID)
 		}
 
+		errMsg := fmt.Sprintf("Failed to place order: %v", err)
+		if strings.Contains(errMsg, "\"code\":-2019") {
+			errMsg = fmt.Sprintf("Failed to place order: 保证金不足 (%v)", err)
+		} else if strings.Contains(errMsg, "\"code\":-4164") {
+			errMsg = fmt.Sprintf("Failed to place order: notional 小于最小下单额 (%v)", err)
+		} else if strings.Contains(errMsg, "\"code\":-1003") {
+			errMsg = fmt.Sprintf("Failed to place order: IP 限流/封禁 (%v)", err)
+		}
+
 		database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
 			Updates(map[string]interface{}{"status": "failed", "updated_at": time.Now()})
 		database.DB.Create(&models.StrategyLog{
 			StrategyID: inst.ID,
 			Level:      "error",
-			Message:    fmt.Sprintf("Failed to place order: %v", err),
+			Message:    errMsg,
 			CreatedAt:  time.Now(),
 		})
 		inst.hub.BroadcastJSON(map[string]interface{}{
 			"type":        "error",
 			"strategy_id": inst.ID,
 			"owner_id":    inst.OwnerID,
-			"error":       fmt.Sprintf("Failed to place order: %v", err),
+			"error":       errMsg,
 		})
 		return
 	}
@@ -1858,12 +1961,12 @@ func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, t
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		candles, err := inst.exchange.FetchCandles(sym, "1m", 1)
-		if err != nil || len(candles) == 0 {
-			continue
+		inst.mu.Lock()
+		px := 0.0
+		if inst.lastCandleClose != nil {
+			px = inst.lastCandleClose[sym]
 		}
-		last := candles[len(candles)-1]
-		px := last.Close
+		inst.mu.Unlock()
 		if px <= 0 {
 			continue
 		}

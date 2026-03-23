@@ -56,6 +56,14 @@ type BinanceExchange struct {
 	symbolSelectCache    SymbolSelectResult
 	symbolSelectCacheExp time.Time
 	symbolSelectBanUntil time.Time
+
+	positionsCacheMu  sync.Mutex
+	positionsCacheExp map[uint]time.Time
+	positionsCache    map[uint][]Position
+
+	usdmAvailMu    sync.Mutex
+	usdmAvailExp   map[uint]time.Time
+	usdmAvailCache map[uint]float64
 }
 
 type SymbolSelectCriteria struct {
@@ -110,6 +118,10 @@ func NewBinanceExchange() *BinanceExchange {
 	}
 	ex.streamsByID = make(map[uint]*binanceUserStream)
 	ex.leverageByKey = make(map[string]int)
+	ex.positionsCacheExp = make(map[uint]time.Time)
+	ex.positionsCache = make(map[uint][]Position)
+	ex.usdmAvailExp = make(map[uint]time.Time)
+	ex.usdmAvailCache = make(map[uint]float64)
 	return ex
 }
 
@@ -143,6 +155,16 @@ func (b *BinanceExchange) USDMAvailableUSDT(ownerID uint) (float64, error) {
 	if b.market != "usdm" {
 		return 0, fmt.Errorf("not usdm")
 	}
+
+	now := time.Now()
+	b.usdmAvailMu.Lock()
+	if exp, ok := b.usdmAvailExp[ownerID]; ok && now.Before(exp) {
+		v := b.usdmAvailCache[ownerID]
+		b.usdmAvailMu.Unlock()
+		return v, nil
+	}
+	b.usdmAvailMu.Unlock()
+
 	cred, err := b.getCred(ownerID)
 	if err != nil {
 		return 0, err
@@ -161,9 +183,17 @@ func (b *BinanceExchange) USDMAvailableUSDT(ownerID uint) (float64, error) {
 	for _, r := range raw {
 		if strings.EqualFold(r.Asset, "USDT") {
 			v, _ := strconv.ParseFloat(strings.TrimSpace(r.AvailableBalance), 64)
+			b.usdmAvailMu.Lock()
+			b.usdmAvailCache[ownerID] = v
+			b.usdmAvailExp[ownerID] = time.Now().Add(5 * time.Second)
+			b.usdmAvailMu.Unlock()
 			return v, nil
 		}
 	}
+	b.usdmAvailMu.Lock()
+	b.usdmAvailCache[ownerID] = 0
+	b.usdmAvailExp[ownerID] = time.Now().Add(5 * time.Second)
+	b.usdmAvailMu.Unlock()
 	return 0, nil
 }
 
@@ -1161,6 +1191,16 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 		return []Position{}, nil
 	}
 
+	now := time.Now()
+	b.positionsCacheMu.Lock()
+	if exp, ok := b.positionsCacheExp[ownerID]; ok && now.Before(exp) {
+		cached := b.positionsCache[ownerID]
+		out := append([]Position(nil), cached...)
+		b.positionsCacheMu.Unlock()
+		return out, nil
+	}
+	b.positionsCacheMu.Unlock()
+
 	cred, err := b.getCred(ownerID)
 	if err != nil {
 		return nil, err
@@ -1221,6 +1261,11 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 				OpenTime:      ts,
 			})
 		}
+
+		b.positionsCacheMu.Lock()
+		b.positionsCache[ownerID] = append([]Position(nil), out...)
+		b.positionsCacheExp[ownerID] = time.Now().Add(5 * time.Second)
+		b.positionsCacheMu.Unlock()
 		return out, nil
 	}
 
@@ -1241,7 +1286,7 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 	}
 
 	out := make([]Position, 0)
-	now := time.Now()
+	now2 := time.Now()
 	for _, bal := range resp.Balances {
 		free, _ := strconv.ParseFloat(bal.Free, 64)
 		locked, _ := strconv.ParseFloat(bal.Locked, 64)
@@ -1265,9 +1310,13 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 			ExchangeName: b.name,
 			Status:       "active",
 			OwnerID:      ownerID,
-			OpenTime:     now,
+			OpenTime:     now2,
 		})
 	}
+	b.positionsCacheMu.Lock()
+	b.positionsCache[ownerID] = append([]Position(nil), out...)
+	b.positionsCacheExp[ownerID] = time.Now().Add(5 * time.Second)
+	b.positionsCacheMu.Unlock()
 	return out, nil
 }
 

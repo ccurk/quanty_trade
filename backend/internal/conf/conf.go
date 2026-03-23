@@ -158,11 +158,42 @@ func repoRootFromWD() string {
 }
 
 func resolveConfigPath(root string) string {
-	p := filepath.Join(root, "conf", "config.yaml")
+	profile := strings.ToLower(strings.TrimSpace(os.Getenv("QT_ENV")))
+	if profile == "" {
+		profile = strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	}
+	if profile == "" {
+		profile = strings.ToLower(strings.TrimSpace(os.Getenv("ENV")))
+	}
+	if profile == "" {
+		if v := strings.ToLower(strings.TrimSpace(os.Getenv("GIN_MODE"))); v != "" {
+			if v == "release" {
+				profile = "pro"
+			} else {
+				profile = "dev"
+			}
+		}
+	}
+	if profile != "" {
+		switch profile {
+		case "pro", "prod", "production":
+			p := filepath.Join(root, "conf", "conf_pro.yaml")
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		case "dev", "test", "testing", "staging":
+			p := filepath.Join(root, "conf", "conf_dev.yaml")
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
+
+	p := filepath.Join(root, "conf", "conf_pro.yaml")
 	if _, err := os.Stat(p); err == nil {
 		return p
 	}
-	p = filepath.Join(root, "conf", "config.example.yaml")
+	p = filepath.Join(root, "conf", "conf_dev.yaml")
 	if _, err := os.Stat(p); err == nil {
 		return p
 	}
