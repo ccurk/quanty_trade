@@ -2387,9 +2387,21 @@ func (m *Manager) closePositionForInstance(inst *StrategyInstance, symbol string
 		inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
 		if strings.ToLower(order.Status) == "filled" {
 			applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, 0, 0, order.Timestamp)
-			_ = bx.CancelUSDMAlgoOpenOrders(inst.OwnerID, sym)
-			_ = bx.CancelPrePositionOpenOrders(inst.OwnerID, sym)
 		}
+		go func(ownerID uint, symbol string) {
+			deadline := time.Now().Add(45 * time.Second)
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			for time.Now().Before(deadline) {
+				amt, _, _, e := bx.USDMPositionAmt(ownerID, symbol)
+				if e == nil && amt == 0 {
+					_ = bx.CancelUSDMAlgoOpenOrders(ownerID, symbol)
+					_ = bx.CancelPrePositionOpenOrders(ownerID, symbol)
+					return
+				}
+				<-ticker.C
+			}
+		}(inst.OwnerID, sym)
 		return nil
 	}
 
