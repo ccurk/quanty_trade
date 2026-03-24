@@ -556,20 +556,59 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		return
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].rr > cands[j].rr })
-	best := cands[0]
-	amount := clampOrderAmount(inst, best.s.Amount)
-	side := strings.ToLower(strings.TrimSpace(best.s.Side))
-	if side == "long" {
-		side = "buy"
-	} else if side == "short" {
-		side = "sell"
-	} else if side == "" {
-		side = "buy"
+	chosen := false
+	for i := 0; i < len(cands); i++ {
+		sig := cands[i].s
+		amount := clampOrderAmount(inst, sig.Amount)
+		side := strings.ToLower(strings.TrimSpace(sig.Side))
+		if side == "long" {
+			side = "buy"
+		} else if side == "short" {
+			side = "sell"
+		} else if side == "" {
+			side = "buy"
+		}
+		if m.tryPlaceCandidate(inst, sig.Symbol, side, amount, sig.TakeProfit, sig.StopLoss, strings.TrimSpace(sig.SignalID)) {
+			chosen = true
+			for j := 0; j < len(cands); j++ {
+				if j == i {
+					continue
+				}
+				emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: better candidate selected symbol=%s rr=%0.4f", cands[j].s.Symbol, cands[j].rr))
+			}
+			break
+		} else {
+			emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: candidate failed constraints symbol=%s rr=%0.4f", sig.Symbol, cands[i].rr))
+		}
 	}
-	m.placeOrderForInstance(inst, best.s.Symbol, side, amount, 0, best.s.TakeProfit, best.s.StopLoss, strings.TrimSpace(best.s.SignalID))
-	for i := 1; i < len(cands); i++ {
-		emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: better candidate selected symbol=%s rr=%0.4f", cands[i].s.Symbol, cands[i].rr))
+	if !chosen {
+		emitStrategyLog(inst, "info", "Skip signal: all candidates failed")
 	}
+}
+
+func (m *Manager) tryPlaceCandidate(inst *StrategyInstance, symbol string, side string, amount float64, tp float64, sl float64, signalID string) bool {
+	if inst == nil {
+		return false
+	}
+	m.placeOrderForInstance(inst, symbol, side, amount, 0, tp, sl, signalID)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var ord models.StrategyOrder
+		err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ?", inst.OwnerID, inst.ID, symbol).
+			Order("requested_at desc").
+			First(&ord).Error
+		if err == nil && ord.ID > 0 {
+			st := strings.ToLower(strings.TrimSpace(ord.Status))
+			if st == "filled" || st == "new" || st == "requested" {
+				return true
+			}
+			if st == "failed" || st == "rejected" {
+				return false
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
 }
 
 // AddStrategy registers an in-memory strategy instance. It does not start the process.
@@ -2169,9 +2208,20 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 					var pos models.StrategyPosition
 					errDB := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").First(&pos).Error
 					if errDB != nil || pos.Amount <= 0 {
-						lastErr = fmt.Errorf("position not recorded yet")
-						time.Sleep(300 * time.Millisecond)
-						continue
+						now := time.Now()
+						newPos := models.StrategyPosition{
+							StrategyID:   inst.ID,
+							StrategyName: inst.Name,
+							OwnerID:      inst.OwnerID,
+							Exchange:     bx.GetName(),
+							Symbol:       symbol,
+							Amount:       math.Abs(amt),
+							AvgPrice:     entryPx,
+							Status:       "open",
+							OpenTime:     now,
+							UpdatedAt:    now,
+						}
+						_ = database.DB.Create(&newPos).Error
 					}
 					if entryPx > 0 && stopLoss > 0 {
 						if amt > 0 {

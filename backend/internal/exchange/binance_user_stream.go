@@ -294,6 +294,9 @@ func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[st
 
 			if statusLower == "filled" {
 				b.applyFillToPosition(s.hub, stratOrder.StrategyID, stratOrder.StrategyName, s.ownerID, b.name, symbol, sideLower, execQty, avgPrice, eventTime)
+			} else if statusLower == "canceled" {
+				// After cancellation, ensure no pre-position entry orders remain for this symbol
+				_ = b.CancelPrePositionOpenOrders(s.ownerID, b.displaySymbol(symbol))
 			}
 		}
 	}

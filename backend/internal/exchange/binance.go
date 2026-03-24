@@ -1637,6 +1637,70 @@ func (b *BinanceExchange) ClosePositionOrder(symbol string, ownerID uint) (*Orde
 	}, entryPrice, positionAmt, nil
 }
 
+// CancelPrePositionOpenOrders cancels open orders that could open a new position (non-reduceOnly).
+// It is triggered after a cancellation event to ensure no stale entry orders remain for the symbol.
+func (b *BinanceExchange) CancelPrePositionOpenOrders(ownerID uint, symbol string) error {
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return err
+	}
+	if b.market == "usdm" {
+		params := url.Values{}
+		params.Set("symbol", binanceSymbol(symbol))
+		body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/openOrders", params)
+		if err != nil {
+			return err
+		}
+		var orders []struct {
+			OrderID     int64  `json:"orderId"`
+			ClientOrder string `json:"clientOrderId"`
+			ReduceOnly  bool   `json:"reduceOnly"`
+			Side        string `json:"side"`
+			Type        string `json:"type"`
+			Status      string `json:"status"`
+			OrigQty     string `json:"origQty"`
+			Price       string `json:"price"`
+		}
+		if err := json.Unmarshal(body, &orders); err != nil {
+			return err
+		}
+		for _, o := range orders {
+			if o.ReduceOnly {
+				continue
+			}
+			// cancel this open entry order
+			q := url.Values{}
+			q.Set("symbol", binanceSymbol(symbol))
+			q.Set("orderId", strconv.FormatInt(o.OrderID, 10))
+			_, _, _ = b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/order", q)
+		}
+		return nil
+	}
+	// spot: cancel all open orders for this symbol
+	params := url.Values{}
+	params.Set("symbol", binanceSymbol(symbol))
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/api/v3/openOrders", params)
+	if err != nil {
+		return err
+	}
+	var orders []struct {
+		OrderID int64  `json:"orderId"`
+		Status  string `json:"status"`
+		Side    string `json:"side"`
+		Type    string `json:"type"`
+	}
+	if err := json.Unmarshal(body, &orders); err != nil {
+		return err
+	}
+	for _, o := range orders {
+		q := url.Values{}
+		q.Set("symbol", binanceSymbol(symbol))
+		q.Set("orderId", strconv.FormatInt(o.OrderID, 10))
+		_, _, _ = b.signedRequest(context.Background(), cred, http.MethodDelete, "/api/v3/order", q)
+	}
+	return nil
+}
+
 // USDMMaxNotionalForLeverage returns the symbol-specific maximum notional allowed at the given leverage bracket.
 // If the exchange does not return brackets or leverage is out of range, it returns 0.
 func (b *BinanceExchange) USDMMaxNotionalForLeverage(ownerID uint, symbol string, leverage int) (float64, error) {
