@@ -118,6 +118,7 @@ func main() {
 	mgr.SyncFromDB(database.DB)
 	go mgr.SyncRedisOpenCountsFromExchange(context.Background())
 	api.SetManager(mgr)
+	api.StartDashboardSnapshotJob(context.Background())
 
 	// Auth Routes
 	r.POST("/api/login", api.Login)

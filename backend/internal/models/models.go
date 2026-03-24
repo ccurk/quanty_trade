@@ -257,7 +257,9 @@ type StrategyPosition struct {
 	// Amount is the current position size in base asset.
 	Amount float64 `json:"amount"`
 	// AvgPrice is the volume-weighted average entry price.
-	AvgPrice float64 `json:"avg_price"`
+	AvgPrice   float64 `json:"avg_price"`
+	TakeProfit float64 `json:"take_profit"`
+	StopLoss   float64 `json:"stop_loss"`
 	// ClosedQty is the cumulative closed quantity across partial closes.
 	ClosedQty float64 `json:"closed_qty"`
 	// AvgClosePrice is the volume-weighted average close price.

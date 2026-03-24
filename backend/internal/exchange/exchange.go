@@ -47,7 +47,9 @@ type Position struct {
 	// Amount is the position size in base asset.
 	Amount float64 `json:"amount"`
 	// Price is the average entry price (platform-derived).
-	Price float64 `json:"price"`
+	Price      float64 `json:"price"`
+	TakeProfit float64 `json:"take_profit,omitempty"`
+	StopLoss   float64 `json:"stop_loss,omitempty"`
 	// CurrentPrice is the latest mark/last price used for PnL display.
 	CurrentPrice float64 `json:"current_price"`
 	// UnrealizedPnL is the unrealized profit/loss for active positions.

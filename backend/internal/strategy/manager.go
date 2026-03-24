@@ -1134,7 +1134,7 @@ func (m *Manager) prepareBacktestStrategyFile(inst *StrategyInstance, backtestID
 	return tmp, func() { _ = os.Remove(tmp) }, nil
 }
 
-func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, executedQty float64, avgPrice float64, eventTime time.Time) {
+func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, executedQty float64, avgPrice float64, takeProfit float64, stopLoss float64, eventTime time.Time) {
 	if database.DB == nil || executedQty <= 0 || strategyID == "" {
 		return
 	}
@@ -1154,6 +1154,8 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 			Symbol:           symbol,
 			Amount:           executedQty,
 			AvgPrice:         avgPrice,
+			TakeProfit:       takeProfit,
+			StopLoss:         stopLoss,
 			ClosedQty:        0,
 			AvgClosePrice:    0,
 			RealizedPnL:      0,
@@ -1175,11 +1177,23 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 		if newAmt > 0 {
 			newAvg = ((pos.AvgPrice * pos.Amount) + (avgPrice * executedQty)) / newAmt
 		}
-		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
-			Updates(map[string]interface{}{"amount": newAmt, "avg_price": newAvg, "updated_at": now})
+		upd := map[string]interface{}{"amount": newAmt, "avg_price": newAvg, "updated_at": now}
+		if takeProfit > 0 {
+			upd["take_profit"] = takeProfit
+		}
+		if stopLoss > 0 {
+			upd["stop_loss"] = stopLoss
+		}
+		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).Updates(upd)
 		if hub != nil {
 			pos.Amount = newAmt
 			pos.AvgPrice = newAvg
+			if takeProfit > 0 {
+				pos.TakeProfit = takeProfit
+			}
+			if stopLoss > 0 {
+				pos.StopLoss = stopLoss
+			}
 			hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
 		}
 		return
@@ -1653,6 +1667,10 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 		}
 		return
 	}
+	if !(s.TakeProfit > 0 && s.StopLoss > 0) {
+		emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: 缺少止盈止损，拒绝开仓 symbol=%s side=%s amount=%v tp=%v sl=%v", symbol, side, amount, s.TakeProfit, s.StopLoss))
+		return
+	}
 	if logSignal {
 		emitStrategyLog(inst, "info", fmt.Sprintf("Recv signal: symbol=%s side=%s amount=%v tp=%v sl=%v signal_id=%s", symbol, side, amount, s.TakeProfit, s.StopLoss, strings.TrimSpace(s.SignalID)))
 	}
@@ -1663,6 +1681,8 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	if inst == nil {
 		return
 	}
+	// 强制使用市价单
+	price = 0
 	if !isAllowedSymbol(inst, symbol) {
 		inst.orderMu.Lock()
 		if inst.lastSkipLogAt == nil {
@@ -1968,7 +1988,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
 
 	if strings.ToLower(order.Status) == "filled" {
-		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, order.Timestamp)
+		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, takeProfit, stopLoss, order.Timestamp)
 	}
 
 	if takeProfit > 0 || stopLoss > 0 {
@@ -2099,7 +2119,7 @@ func (m *Manager) closePositionForInstance(inst *StrategyInstance, symbol string
 		})
 		inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
 		if strings.ToLower(order.Status) == "filled" {
-			applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, order.Timestamp)
+			applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, 0, 0, order.Timestamp)
 		}
 		return nil
 	}
@@ -2145,7 +2165,7 @@ func (m *Manager) closePositionForInstance(inst *StrategyInstance, symbol string
 		})
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
 	if strings.ToLower(order.Status) == "filled" {
-		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, "sell", order.Amount, order.Price, order.Timestamp)
+		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, "sell", order.Amount, order.Price, 0, 0, order.Timestamp)
 	}
 	_ = reason
 	_ = signalID

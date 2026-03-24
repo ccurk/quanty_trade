@@ -49,6 +49,8 @@ interface Position {
   direction?: string;
   amount: number;
   price: number;
+  take_profit?: number;
+  stop_loss?: number;
   current_price?: number;
   unrealized_pnl?: number;
   return_rate?: number;
@@ -1606,7 +1608,7 @@ const App: React.FC = () => {
             </div>
 
             <div className={`rounded-2xl border overflow-x-auto shadow-2xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-              <table className="w-full text-left min-w-[800px]">
+              <table className="w-full text-left min-w-[1000px]">
                 <thead className={`text-xs uppercase tracking-wider ${isDarkMode ? 'bg-gray-800/50 text-gray-400' : 'bg-gray-50 text-gray-500'}`}>
                   <tr>
                     <th className="px-4 md:px-6 py-4">交易对</th>
@@ -1615,6 +1617,8 @@ const App: React.FC = () => {
                     <th className="px-4 md:px-6 py-4">方向</th>
                     <th className="px-4 md:px-6 py-4">数量</th>
                     <th className="px-4 md:px-6 py-4">均价</th>
+                    <th className="px-4 md:px-6 py-4">止盈</th>
+                    <th className="px-4 md:px-6 py-4">止损</th>
                     <th className="px-4 md:px-6 py-4">{positionStatus === 'active' ? '最新价' : '平仓均价'}</th>
                     <th className="px-4 md:px-6 py-4">{positionStatus === 'active' ? '未实现盈亏' : '已实现盈亏'}</th>
                     <th className="px-4 md:px-6 py-4">回报率</th>
@@ -1638,6 +1642,12 @@ const App: React.FC = () => {
                       </td>
                       <td className="px-4 md:px-6 py-4 font-mono">{p.amount}</td>
                       <td className="px-4 md:px-6 py-4 font-mono">${p.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                      <td className="px-4 md:px-6 py-4 font-mono">
+                        {typeof p.take_profit === 'number' && p.take_profit > 0 ? `$${p.take_profit.toLocaleString(undefined, { minimumFractionDigits: 6 })}` : '--'}
+                      </td>
+                      <td className="px-4 md:px-6 py-4 font-mono">
+                        {typeof p.stop_loss === 'number' && p.stop_loss > 0 ? `$${p.stop_loss.toLocaleString(undefined, { minimumFractionDigits: 6 })}` : '--'}
+                      </td>
                       <td className="px-4 md:px-6 py-4 font-mono">
                         {positionStatus === 'active'
                           ? (typeof p.current_price === 'number' && p.current_price > 0 ? `$${p.current_price.toLocaleString(undefined, { minimumFractionDigits: 4 })}` : '--')

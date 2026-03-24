@@ -334,12 +334,14 @@ func ListPositions(c *gin.Context) {
 				StrategyName string
 				OpenTime     time.Time
 				AvgPrice     float64
+				TakeProfit   float64
+				StopLoss     float64
 			}
 			bySymbol := map[string]stratInfo{}
 			var rows []models.StrategyPosition
 			_ = database.DB.Where("owner_id = ? AND status = ?", userID.(uint), "open").Find(&rows).Error
 			for _, p := range rows {
-				bySymbol[strings.ToUpper(p.Symbol)] = stratInfo{StrategyName: p.StrategyName, OpenTime: p.OpenTime, AvgPrice: p.AvgPrice}
+				bySymbol[strings.ToUpper(p.Symbol)] = stratInfo{StrategyName: p.StrategyName, OpenTime: p.OpenTime, AvgPrice: p.AvgPrice, TakeProfit: p.TakeProfit, StopLoss: p.StopLoss}
 			}
 
 			out := make([]exchange.Position, 0, len(exPos))
@@ -353,6 +355,8 @@ func ListPositions(c *gin.Context) {
 					if p.Price == 0 && info.AvgPrice > 0 {
 						p.Price = info.AvgPrice
 					}
+					p.TakeProfit = info.TakeProfit
+					p.StopLoss = info.StopLoss
 				} else {
 					strategyID, strategyName := findStrategyForSymbol(p.Symbol)
 					if strategyID != "" {
@@ -561,6 +565,12 @@ func GetDashboard(c *gin.Context) {
 	rangePreset := strings.TrimSpace(c.Query("range"))
 	startRaw := strings.TrimSpace(c.Query("start"))
 	endRaw := strings.TrimSpace(c.Query("end"))
+	if rangePreset == "" && startRaw == "" && endRaw == "" {
+		if snap, ok := getDashboardSnapshot(uid); ok {
+			c.JSON(http.StatusOK, snap)
+			return
+		}
+	}
 
 	var pnlResp PnLSummaryResponse
 	func() {
