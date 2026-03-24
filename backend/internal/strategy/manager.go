@@ -2166,6 +2166,13 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 			for i := 0; i < 30; i++ {
 				amt, entryPx, _, err := bx.USDMPositionAmt(inst.OwnerID, symbol)
 				if err == nil && amt != 0 {
+					var pos models.StrategyPosition
+					errDB := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").First(&pos).Error
+					if errDB != nil || pos.Amount <= 0 {
+						lastErr = fmt.Errorf("position not recorded yet")
+						time.Sleep(300 * time.Millisecond)
+						continue
+					}
 					if entryPx > 0 && stopLoss > 0 {
 						if amt > 0 {
 							// long: SL in [entry*0.7, entry]

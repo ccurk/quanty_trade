@@ -771,9 +771,18 @@ func (b *BinanceExchange) loadRateLimitIfNeeded() error {
 	if b.market == "usdm" {
 		endpoint = "/fapi/v1/exchangeInfo"
 	}
-	body, _, err := b.publicRequest(context.Background(), endpoint, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, b.baseURL+endpoint, nil)
 	if err != nil {
 		return err
+	}
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("binance api error: %s", string(body))
 	}
 	var parsed struct {
 		RateLimits []struct {
@@ -1675,6 +1684,26 @@ func (b *BinanceExchange) USDMMaxNotionalForLeverage(ownerID uint, symbol string
 }
 
 func (b *BinanceExchange) USDMPositionAmt(ownerID uint, symbol string) (float64, float64, float64, error) {
+	// Try cached positions first to avoid high-frequency polling
+	now := time.Now()
+	b.positionsCacheMu.Lock()
+	if exp, ok := b.positionsCacheExp[ownerID]; ok && now.Before(exp) {
+		cached := b.positionsCache[ownerID]
+		target := strings.ToUpper(NormalizeSymbol(symbol))
+		for _, p := range cached {
+			if strings.ToUpper(NormalizeSymbol(p.Symbol)) == target {
+				amt := p.Amount
+				if strings.EqualFold(p.Direction, "short") {
+					amt = -amt
+				}
+				entry := p.Price
+				mark := p.CurrentPrice
+				b.positionsCacheMu.Unlock()
+				return amt, entry, mark, nil
+			}
+		}
+	}
+	b.positionsCacheMu.Unlock()
 	cred, err := b.getCred(ownerID)
 	if err != nil {
 		return 0, 0, 0, err
