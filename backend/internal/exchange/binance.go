@@ -64,6 +64,12 @@ type BinanceExchange struct {
 	usdmAvailMu    sync.Mutex
 	usdmAvailExp   map[uint]time.Time
 	usdmAvailCache map[uint]float64
+
+	// rate limit tracking
+	rateLimitWeight1m int
+	lastRateLimitLoad time.Time
+	usedWeight1m      int
+	requestBanUntil   time.Time
 }
 
 type SymbolSelectCriteria struct {
@@ -122,6 +128,7 @@ func NewBinanceExchange() *BinanceExchange {
 	ex.positionsCache = make(map[uint][]Position)
 	ex.usdmAvailExp = make(map[uint]time.Time)
 	ex.usdmAvailCache = make(map[uint]float64)
+	ex.rateLimitWeight1m = 1200 // sensible default; will be overridden by exchangeInfo
 	return ex
 }
 
@@ -614,6 +621,12 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 		params = url.Values{}
 	}
 
+	// Honor ban window if set
+	if !b.requestBanUntil.IsZero() && time.Now().Before(b.requestBanUntil) {
+		return nil, 0, fmt.Errorf("binance api error: {\"code\":429,\"msg\":\"Rate limited\"}")
+	}
+	_ = b.loadRateLimitIfNeeded()
+
 	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
 	if params.Get("recvWindow") == "" {
 		params.Set("recvWindow", "5000")
@@ -637,6 +650,16 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
+	// Track used weight
+	if w := strings.TrimSpace(resp.Header.Get("X-MBX-USED-WEIGHT-1m")); w != "" {
+		if v, err := strconv.Atoi(w); err == nil {
+			b.usedWeight1m = v
+		}
+	}
+	// If approaching limit, small cooperative delay
+	if b.rateLimitWeight1m > 0 && b.usedWeight1m*100/b.rateLimitWeight1m >= 80 {
+		time.Sleep(200 * time.Millisecond)
+	}
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
 		if code, msg, ok := binanceAPIError(body); ok {
@@ -646,6 +669,32 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 			if code == -4120 {
 				return body, resp.StatusCode, fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q} (币安已将 USDM 条件单迁移到 Algo Order 接口，需要使用 /fapi/v1/algoOrder)", code, msg)
 			}
+			// 429 handling: set ban window using Retry-After or body.retryAfter
+			if resp.StatusCode == 429 || code == 429 || code == -1003 {
+				retryAfter := int64(0)
+				if ra := strings.TrimSpace(resp.Header.Get("Retry-After")); ra != "" {
+					if v, err := strconv.ParseInt(ra, 10, 64); err == nil {
+						// Retry-After may be seconds
+						retryAfter = time.Now().Add(time.Duration(v) * time.Second).UnixMilli()
+					}
+				}
+				if retryAfter == 0 {
+					var obj map[string]interface{}
+					if err := json.Unmarshal(body, &obj); err == nil {
+						switch t := obj["retryAfter"].(type) {
+						case float64:
+							retryAfter = int64(t)
+						case int64:
+							retryAfter = t
+						}
+					}
+				}
+				if retryAfter > 0 {
+					b.requestBanUntil = time.UnixMilli(retryAfter)
+				} else {
+					b.requestBanUntil = time.Now().Add(2 * time.Minute)
+				}
+			}
 			return body, resp.StatusCode, fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q}", code, msg)
 		}
 		return body, resp.StatusCode, fmt.Errorf("binance api error: %s", string(body))
@@ -654,6 +703,10 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 }
 
 func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params url.Values) ([]byte, int, error) {
+	if !b.requestBanUntil.IsZero() && time.Now().Before(b.requestBanUntil) {
+		return nil, 0, fmt.Errorf("binance api error: {\"code\":429,\"msg\":\"Rate limited\"}")
+	}
+	_ = b.loadRateLimitIfNeeded()
 	u := b.baseURL + path
 	if params != nil && len(params) > 0 {
 		u += "?" + params.Encode()
@@ -667,9 +720,41 @@ func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
+	if w := strings.TrimSpace(resp.Header.Get("X-MBX-USED-WEIGHT-1m")); w != "" {
+		if v, err := strconv.Atoi(w); err == nil {
+			b.usedWeight1m = v
+		}
+	}
+	if b.rateLimitWeight1m > 0 && b.usedWeight1m*100/b.rateLimitWeight1m >= 80 {
+		time.Sleep(200 * time.Millisecond)
+	}
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
 		if code, msg, ok := binanceAPIError(body); ok {
+			if resp.StatusCode == 429 || code == 429 || code == -1003 {
+				retryAfter := int64(0)
+				if ra := strings.TrimSpace(resp.Header.Get("Retry-After")); ra != "" {
+					if v, err := strconv.ParseInt(ra, 10, 64); err == nil {
+						retryAfter = time.Now().Add(time.Duration(v) * time.Second).UnixMilli()
+					}
+				}
+				if retryAfter == 0 {
+					var obj map[string]interface{}
+					if err := json.Unmarshal(body, &obj); err == nil {
+						switch t := obj["retryAfter"].(type) {
+						case float64:
+							retryAfter = int64(t)
+						case int64:
+							retryAfter = t
+						}
+					}
+				}
+				if retryAfter > 0 {
+					b.requestBanUntil = time.UnixMilli(retryAfter)
+				} else {
+					b.requestBanUntil = time.Now().Add(2 * time.Minute)
+				}
+			}
 			return body, resp.StatusCode, fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q}", code, msg)
 		}
 		return body, resp.StatusCode, fmt.Errorf("binance api error: %s", string(body))
@@ -677,6 +762,38 @@ func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params
 	return body, resp.StatusCode, nil
 }
 
+func (b *BinanceExchange) loadRateLimitIfNeeded() error {
+	// Load once per hour
+	if !b.lastRateLimitLoad.IsZero() && time.Since(b.lastRateLimitLoad) < time.Hour && b.rateLimitWeight1m > 0 {
+		return nil
+	}
+	endpoint := "/api/v3/exchangeInfo"
+	if b.market == "usdm" {
+		endpoint = "/fapi/v1/exchangeInfo"
+	}
+	body, _, err := b.publicRequest(context.Background(), endpoint, nil)
+	if err != nil {
+		return err
+	}
+	var parsed struct {
+		RateLimits []struct {
+			RateLimitType string `json:"rateLimitType"`
+			Interval      string `json:"interval"`
+			IntervalNum   int    `json:"intervalNum"`
+			Limit         int    `json:"limit"`
+		} `json:"rateLimits"`
+	}
+	if json.Unmarshal(body, &parsed) == nil {
+		for _, rl := range parsed.RateLimits {
+			if strings.EqualFold(rl.RateLimitType, "REQUEST_WEIGHT") && strings.EqualFold(rl.Interval, "MINUTE") {
+				b.rateLimitWeight1m = rl.Limit
+				break
+			}
+		}
+	}
+	b.lastRateLimitLoad = time.Now()
+	return nil
+}
 func (b *BinanceExchange) FetchCandles(symbol string, timeframe string, limit int) ([]Candle, error) {
 	interval, err := binanceInterval(timeframe)
 	if err != nil {

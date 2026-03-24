@@ -255,6 +255,10 @@ type StrategyInstance struct {
 	hub *ws.Hub
 	// exchange is the exchange implementation (mock/binance/etc.).
 	exchange exchange.Exchange
+	// signal batching for per-kline selection
+	sigMu           sync.Mutex
+	pendingSignals  map[string][]bus.SignalMessage
+	signalBatchWait time.Duration
 
 	mgr *Manager
 
@@ -289,6 +293,10 @@ type Manager struct {
 	exchange exchange.Exchange
 
 	redisBus *bus.RedisBus
+
+	sigMu           sync.Mutex
+	pendingSignals  map[string][]bus.SignalMessage
+	signalBatchWait time.Duration
 }
 
 func (m *Manager) ReleaseOpenSlot(strategyID string) {
@@ -421,9 +429,11 @@ type EquityPoint struct {
 // - NewManager(hub, exchange)
 func NewManager(hub *ws.Hub, ex exchange.Exchange) *Manager {
 	return &Manager{
-		instances: make(map[string]*StrategyInstance),
-		hub:       hub,
-		exchange:  ex,
+		instances:       make(map[string]*StrategyInstance),
+		hub:             hub,
+		exchange:        ex,
+		pendingSignals:  make(map[string][]bus.SignalMessage),
+		signalBatchWait: 500 * time.Millisecond,
 	}
 }
 
@@ -431,6 +441,135 @@ func (m *Manager) SetRedisBus(b *bus.RedisBus) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.redisBus = b
+}
+
+func (m *Manager) enqueueSignalForSelection(inst *StrategyInstance, s bus.SignalMessage) {
+	if m == nil || inst == nil {
+		return
+	}
+	m.sigMu.Lock()
+	key := inst.ID
+	m.pendingSignals[key] = append(m.pendingSignals[key], s)
+	isFirst := len(m.pendingSignals[key]) == 1
+	wait := m.signalBatchWait
+	m.sigMu.Unlock()
+	if isFirst {
+		go func() {
+			time.Sleep(wait)
+			m.processSignalBatch(inst.ID)
+		}()
+	}
+}
+
+func (m *Manager) processSignalBatch(strategyID string) {
+	m.mu.RLock()
+	inst := m.instances[strategyID]
+	m.mu.RUnlock()
+	if inst == nil {
+		return
+	}
+	m.sigMu.Lock()
+	batch := m.pendingSignals[strategyID]
+	delete(m.pendingSignals, strategyID)
+	m.sigMu.Unlock()
+	if len(batch) == 0 {
+		return
+	}
+	// Dedupe by symbol, keep latest signal
+	latestBySymbol := map[string]bus.SignalMessage{}
+	for _, sig := range batch {
+		sym := strings.TrimSpace(sig.Symbol)
+		if sym == "" || !isAllowedSymbol(inst, sym) {
+			continue
+		}
+		prev, ok := latestBySymbol[sym]
+		if !ok || sig.GeneratedAt.After(prev.GeneratedAt) {
+			latestBySymbol[sym] = sig
+		}
+	}
+	// Filter stale signals: only keep those aligned with latest candle time or recent
+	filtered := make([]bus.SignalMessage, 0, len(latestBySymbol))
+	now := time.Now()
+	for sym, sig := range latestBySymbol {
+		cAt := time.Time{}
+		inst.mu.Lock()
+		if inst.lastCandleAt != nil {
+			cAt = inst.lastCandleAt[sym]
+		}
+		inst.mu.Unlock()
+		// Accept if generated within 10s of last candle time, or within last 10s if candle time missing
+		ok := false
+		if !cAt.IsZero() {
+			early := cAt.Add(-10 * time.Second)
+			late := cAt.Add(10 * time.Second)
+			ok = (sig.GeneratedAt.After(early) && sig.GeneratedAt.Before(late))
+		} else {
+			ok = sig.GeneratedAt.After(now.Add(-10 * time.Second))
+		}
+		if ok {
+			filtered = append(filtered, sig)
+		}
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	pxCache := map[string]float64{}
+	type cand struct {
+		s  bus.SignalMessage
+		rr float64
+		ok bool
+		px float64
+	}
+	cands := make([]cand, 0, len(filtered))
+	for _, sig := range filtered {
+		sym := strings.TrimSpace(sig.Symbol)
+		if sym == "" || !isAllowedSymbol(inst, sym) {
+			continue
+		}
+		inst.mu.Lock()
+		px := 0.0
+		if inst.lastCandleClose != nil {
+			px = inst.lastCandleClose[sym]
+		}
+		inst.mu.Unlock()
+		if px <= 0 {
+			px = pxCache[sym]
+		}
+		if px <= 0 {
+			continue
+		}
+		rr := 0.0
+		side := strings.ToLower(strings.TrimSpace(sig.Side))
+		if side == "long" || side == "buy" || side == "" {
+			if sig.TakeProfit > px && sig.StopLoss < px && sig.StopLoss > 0 {
+				rr = (sig.TakeProfit - px) / (px - sig.StopLoss)
+			}
+		} else {
+			if sig.TakeProfit < px && sig.StopLoss > px {
+				rr = (px - sig.TakeProfit) / (sig.StopLoss - px)
+			}
+		}
+		ok := rr > 0
+		cands = append(cands, cand{s: sig, rr: rr, ok: ok, px: px})
+	}
+	if len(cands) == 0 {
+		return
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].rr > cands[j].rr })
+	best := cands[0]
+	amount := clampOrderAmount(inst, best.s.Amount)
+	side := strings.ToLower(strings.TrimSpace(best.s.Side))
+	if side == "long" {
+		side = "buy"
+	} else if side == "short" {
+		side = "sell"
+	} else if side == "" {
+		side = "buy"
+	}
+	m.placeOrderForInstance(inst, best.s.Symbol, side, amount, 0, best.s.TakeProfit, best.s.StopLoss, strings.TrimSpace(best.s.SignalID))
+	for i := 1; i < len(cands); i++ {
+		emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: better candidate selected symbol=%s rr=%0.4f", cands[i].s.Symbol, cands[i].rr))
+	}
 }
 
 // AddStrategy registers an in-memory strategy instance. It does not start the process.
@@ -1674,7 +1813,7 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 	if logSignal {
 		emitStrategyLog(inst, "info", fmt.Sprintf("Recv signal: symbol=%s side=%s amount=%v tp=%v sl=%v signal_id=%s", symbol, side, amount, s.TakeProfit, s.StopLoss, strings.TrimSpace(s.SignalID)))
 	}
-	m.placeOrderForInstance(inst, symbol, side, amount, 0, s.TakeProfit, s.StopLoss, strings.TrimSpace(s.SignalID))
+	m.enqueueSignalForSelection(inst, s)
 }
 
 func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, side string, amount float64, price float64, takeProfit float64, stopLoss float64, signalID string) {
@@ -1717,8 +1856,6 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		if lev <= 0 {
 			lev = 1
 		}
-		_ = bx.SetLeverage(inst.OwnerID, symbol, lev)
-
 		mode := strings.ToLower(strings.TrimSpace(getString(inst.Config["order_amount_mode"])))
 		if mode == "" {
 			mode = "notional"
@@ -1744,81 +1881,85 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			return bx.LastPrice(symbol)
 		}
 
+		px, err := getPx()
+		if err != nil || px <= 0 {
+			emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: 获取价格失败 symbol=%s err=%v", symbol, err))
+			return
+		}
 		avail := 0.0
 		if v, err := bx.USDMAvailableUSDT(inst.OwnerID); err == nil && v > 0 {
 			avail = v
 		}
-
-		maxNotional := 0.0
-		if avail > 0 {
-			maxNotional = avail * float64(lev) * 0.95
-		}
-		// Apply symbol-specific leverage bracket cap
-		if capN, err := bx.USDMMaxNotionalForLeverage(inst.OwnerID, symbol, lev); err == nil && capN > 0 {
-			// Subtract current position notional to get remaining capacity under bracket
-			if posAmt, _, markPx, e2 := bx.USDMPositionAmt(inst.OwnerID, symbol); e2 == nil && markPx > 0 && posAmt != 0 {
-				curN := math.Abs(posAmt) * markPx
-				rem := capN - curN
-				if rem < 0 {
-					rem = 0
-				}
-				capN = rem
-			}
-			if maxNotional == 0 || capN < maxNotional {
-				maxNotional = capN
-			}
-		}
-
+		desiredNotional := amount * px
 		if mode == "notional" {
-			px, err := getPx()
-			if err != nil || px <= 0 {
-				emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: 获取价格失败 symbol=%s err=%v", symbol, err))
-				return
+			desiredNotional = amount
+		}
+		if desiredNotional < minNotional {
+			desiredNotional = minNotional
+		}
+		levChosen := lev
+		finalNotional := 0.0
+		for l := lev; l >= 1; l-- {
+			availCap := 0.0
+			if avail > 0 {
+				availCap = avail * float64(l) * 0.95
 			}
-			notional := amount
-			if notional < minNotional {
-				notional = minNotional
-			}
-			if maxNotional > 0 {
-				if maxNotional < minNotional {
-					emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: 保证金不足(最低下单额) symbol=%s avail=%0.4f lev=%d min_notional=%0.2f", symbol, avail, lev, minNotional))
-					return
+			remCap := 0.0
+			if capN, err := bx.USDMMaxNotionalForLeverage(inst.OwnerID, symbol, l); err == nil && capN > 0 {
+				if posAmt, _, markPx, e2 := bx.USDMPositionAmt(inst.OwnerID, symbol); e2 == nil && markPx > 0 && posAmt != 0 {
+					curN := math.Abs(posAmt) * markPx
+					rem := capN - curN
+					if rem > 0 {
+						remCap = rem * 0.98
+					} else {
+						remCap = 0
+					}
+				} else {
+					remCap = capN * 0.98
 				}
-				if notional > maxNotional {
-					notional = maxNotional
-				}
 			}
-			amount = notional / px
-		} else {
-			px, err := getPx()
-			if err != nil || px <= 0 {
-				emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: 获取价格失败 symbol=%s err=%v", symbol, err))
-				return
-			}
-			notional := amount * px
-			if notional < minNotional {
-				amount = minNotional / px
-				notional = minNotional
-			}
-			if maxNotional > 0 {
-				if maxNotional < minNotional {
-					emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: 保证金不足(最低下单额) symbol=%s avail=%0.4f lev=%d min_notional=%0.2f", symbol, avail, lev, minNotional))
-					return
+			maxNotional := 0.0
+			if availCap > 0 && remCap > 0 {
+				if availCap < remCap {
+					maxNotional = availCap
+				} else {
+					maxNotional = remCap
 				}
-				if notional > maxNotional {
-					amount = maxNotional / px
-				}
+			} else if availCap > 0 {
+				maxNotional = availCap
+			} else if remCap > 0 {
+				maxNotional = remCap
+			}
+			if maxNotional <= 0 {
+				continue
+			}
+			if maxNotional >= desiredNotional {
+				levChosen = l
+				finalNotional = desiredNotional
+				break
+			}
+			if maxNotional >= minNotional {
+				levChosen = l
+				finalNotional = maxNotional
+				break
 			}
 		}
+		if finalNotional <= 0 {
+			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: leverage bracket remaining cap insufficient symbol=%s desired=%0.4f min=%0.4f lev=%d", symbol, desiredNotional, minNotional, lev))
+			return
+		}
+		if levChosen != lev {
+			_ = bx.SetLeverage(inst.OwnerID, symbol, levChosen)
+			emitStrategyLog(inst, "info", fmt.Sprintf("Auto adjust leverage due to bracket cap symbol=%s lev=%d->%d", symbol, lev, levChosen))
+		}
+		amount = finalNotional / px
 		amount = clampOrderAmount(inst, amount)
 		if amount <= 0 {
 			return
 		}
-		if px, err := getPx(); err == nil && px > 0 {
-			if amount*px < minNotional {
-				emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: notional too small symbol=%s notional=%0.4f min_notional=%0.2f", symbol, amount*px, minNotional))
-				return
-			}
+		if amount*px < minNotional {
+			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: notional too small symbol=%s notional=%0.4f min_notional=%0.2f", symbol, amount*px, minNotional))
+			return
 		}
 	}
 
