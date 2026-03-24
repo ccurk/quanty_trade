@@ -1753,6 +1753,12 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		if avail > 0 {
 			maxNotional = avail * float64(lev) * 0.95
 		}
+		// Apply symbol-specific leverage bracket cap
+		if capN, err := bx.USDMMaxNotionalForLeverage(inst.OwnerID, symbol, lev); err == nil && capN > 0 {
+			if maxNotional == 0 || capN < maxNotional {
+				maxNotional = capN
+			}
+		}
 
 		if mode == "notional" {
 			px, err := getPx()
@@ -2008,8 +2014,29 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 		if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
 			var lastErr error
 			for i := 0; i < 30; i++ {
-				amt, _, _, err := bx.USDMPositionAmt(inst.OwnerID, symbol)
+				amt, entryPx, _, err := bx.USDMPositionAmt(inst.OwnerID, symbol)
 				if err == nil && amt != 0 {
+					if entryPx > 0 && stopLoss > 0 {
+						if amt > 0 {
+							// long: SL in [entry*0.7, entry]
+							minSL := entryPx * 0.7
+							maxSL := entryPx
+							if stopLoss < minSL {
+								stopLoss = minSL
+							} else if stopLoss > maxSL {
+								stopLoss = maxSL
+							}
+						} else {
+							// short: SL in [entry, entry*1.3]
+							minSL := entryPx
+							maxSL := entryPx * 1.3
+							if stopLoss < minSL {
+								stopLoss = minSL
+							} else if stopLoss > maxSL {
+								stopLoss = maxSL
+							}
+						}
+					}
 					lastErr = bx.PlaceUSDMTPStopOrders(inst.OwnerID, baseClientOrderID, symbol, takeProfit, stopLoss)
 					if lastErr == nil {
 						emitStrategyLog(inst, "info", fmt.Sprintf("已设置止盈止损 symbol=%s tp=%v sl=%v", symbol, takeProfit, stopLoss))
@@ -2045,8 +2072,29 @@ func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, t
 	}
 	isShort := false
 	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
-		if amt, _, _, err := bx.USDMPositionAmt(inst.OwnerID, sym); err == nil && amt < 0 {
-			isShort = true
+		if amt, entryPx, _, err := bx.USDMPositionAmt(inst.OwnerID, sym); err == nil {
+			if amt < 0 {
+				isShort = true
+			}
+			if entryPx > 0 && stopLoss > 0 {
+				if !isShort {
+					minSL := entryPx * 0.7
+					maxSL := entryPx
+					if stopLoss < minSL {
+						stopLoss = minSL
+					} else if stopLoss > maxSL {
+						stopLoss = maxSL
+					}
+				} else {
+					minSL := entryPx
+					maxSL := entryPx * 1.3
+					if stopLoss < minSL {
+						stopLoss = minSL
+					} else if stopLoss > maxSL {
+						stopLoss = maxSL
+					}
+				}
+			}
 		}
 	}
 	ticker := time.NewTicker(2 * time.Second)

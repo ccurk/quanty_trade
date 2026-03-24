@@ -1511,6 +1511,52 @@ func (b *BinanceExchange) ClosePositionOrder(symbol string, ownerID uint) (*Orde
 	}, entryPrice, positionAmt, nil
 }
 
+// USDMMaxNotionalForLeverage returns the symbol-specific maximum notional allowed at the given leverage bracket.
+// If the exchange does not return brackets or leverage is out of range, it returns 0.
+func (b *BinanceExchange) USDMMaxNotionalForLeverage(ownerID uint, symbol string, leverage int) (float64, error) {
+	if b.market != "usdm" {
+		return 0, fmt.Errorf("not usdm")
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return 0, err
+	}
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/leverageBracket", nil)
+	if err != nil {
+		return 0, err
+	}
+	var resp []struct {
+		Symbol   string `json:"symbol"`
+		Brackets []struct {
+			InitialLeverage int     `json:"initialLeverage"`
+			NotionalCap     float64 `json:"notionalCap"`
+			NotionalFloor   float64 `json:"notionalFloor"`
+		} `json:"brackets"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return 0, err
+	}
+	target := strings.ToUpper(binanceSymbol(symbol))
+	maxCap := 0.0
+	for _, e := range resp {
+		if strings.ToUpper(e.Symbol) != target {
+			continue
+		}
+		for _, br := range e.Brackets {
+			if br.InitialLeverage == leverage {
+				return br.NotionalCap, nil
+			}
+			if br.InitialLeverage >= leverage {
+				if maxCap == 0 || br.NotionalCap < maxCap {
+					maxCap = br.NotionalCap
+				}
+			}
+		}
+		break
+	}
+	return maxCap, nil
+}
+
 func (b *BinanceExchange) USDMPositionAmt(ownerID uint, symbol string) (float64, float64, float64, error) {
 	cred, err := b.getCred(ownerID)
 	if err != nil {
