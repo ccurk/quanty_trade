@@ -1755,6 +1755,15 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		}
 		// Apply symbol-specific leverage bracket cap
 		if capN, err := bx.USDMMaxNotionalForLeverage(inst.OwnerID, symbol, lev); err == nil && capN > 0 {
+			// Subtract current position notional to get remaining capacity under bracket
+			if posAmt, _, markPx, e2 := bx.USDMPositionAmt(inst.OwnerID, symbol); e2 == nil && markPx > 0 && posAmt != 0 {
+				curN := math.Abs(posAmt) * markPx
+				rem := capN - curN
+				if rem < 0 {
+					rem = 0
+				}
+				capN = rem
+			}
 			if maxNotional == 0 || capN < maxNotional {
 				maxNotional = capN
 			}
