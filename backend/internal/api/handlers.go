@@ -512,6 +512,14 @@ type PnLPeriodSummary struct {
 	TotalPnL          float64   `json:"total_pnl"`
 }
 
+type DailyPnLEntry struct {
+	Day               string  `json:"day"`
+	RealizedPnL       float64 `json:"realized_pnl"`
+	RealizedNotional  float64 `json:"realized_notional"`
+	RealizedReturnPct float64 `json:"realized_return_pct"`
+	Trades            int     `json:"trades"`
+}
+
 type PnLSummaryResponse struct {
 	UpdatedAt     time.Time         `json:"updated_at"`
 	UnrealizedPnL float64           `json:"unrealized_pnl"`
@@ -520,6 +528,7 @@ type PnLSummaryResponse struct {
 	Month         PnLPeriodSummary  `json:"month"`
 	Custom        *PnLPeriodSummary `json:"custom,omitempty"`
 	CustomLabel   string            `json:"custom_label,omitempty"`
+	Calendar      []DailyPnLEntry   `json:"calendar,omitempty"`
 }
 
 type DashboardResponse struct {
@@ -745,6 +754,8 @@ func GetDashboard(c *gin.Context) {
 		`).
 		Where("owner_id = ?", uid).
 		Scan(&stratAgg).Error
+
+	pnlResp.Calendar = loadDailyPnLCalendar(uid, 60)
 
 	resp := DashboardResponse{
 		UpdatedAt: now,

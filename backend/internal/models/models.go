@@ -277,3 +277,24 @@ type StrategyPosition struct {
 	// UpdatedAt is when we last updated this row.
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// DailyPnL is a daily realized PnL snapshot for the user.
+// It is computed by a scheduled job (00:05 local time) for the previous day.
+type DailyPnL struct {
+	ID uint `gorm:"primaryKey" json:"id"`
+
+	OwnerID uint   `gorm:"index:idx_daily_pnl_owner_day,unique" json:"owner_id"`
+	Day     string `gorm:"type:varchar(10);index:idx_daily_pnl_owner_day,unique" json:"day"` // YYYY-MM-DD (local)
+
+	StartTime time.Time `json:"start_time"`
+	EndTime   time.Time `json:"end_time"`
+
+	GrossProfit      float64 `json:"gross_profit"`
+	GrossLoss        float64 `json:"gross_loss"`
+	RealizedPnL      float64 `json:"realized_pnl"`
+	RealizedNotional float64 `json:"realized_notional"`
+	Trades           int     `json:"trades"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

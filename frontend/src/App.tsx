@@ -77,6 +77,14 @@ interface PnLPeriodSummary {
   total_pnl: number;
 }
 
+interface DailyPnLEntry {
+  day: string;
+  realized_pnl: number;
+  realized_notional: number;
+  realized_return_pct: number;
+  trades: number;
+}
+
 interface PnLSummaryResponse {
   updated_at: string;
   unrealized_pnl: number;
@@ -85,6 +93,7 @@ interface PnLSummaryResponse {
   month: PnLPeriodSummary;
   custom?: PnLPeriodSummary;
   custom_label?: string;
+  calendar?: DailyPnLEntry[];
 }
 
 interface DashboardResponse {
@@ -638,6 +647,47 @@ const App: React.FC = () => {
       localStorage.removeItem('dev_template_id');
     } catch (err: unknown) {
       showToast(getAxiosErrorMessage(err) || '保存失败', 'error');
+    }
+  };
+
+  const saveStrategyTemplateAsNew = async () => {
+    const readName = () => {
+      const byDom = (devNameInputRef.current?.value || '').trim();
+      if (byDom) return byDom;
+      const byState = (devName || '').trim();
+      return byState;
+    };
+    if (devNameIsComposing) {
+      for (let i = 0; i < 10; i += 1) {
+        await new Promise<void>(resolve => setTimeout(() => resolve(), 20));
+        if (!devNameIsComposing) break;
+      }
+    }
+    const baseName = readName();
+    if (!baseName) {
+      showToast('请输入模板名称', 'warning');
+      return;
+    }
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+    const defaultNewName = `${baseName}_copy_${stamp}`;
+    const picked = (window.prompt('另存为：请输入新模板名称', defaultNewName) || '').trim();
+    const newName = picked || defaultNewName;
+    try {
+      showToast(`正在另存为：${newName}`, 'success');
+      const res = await axios.post('/api/templates', {
+        name: newName,
+        description: devDesc,
+        code: devCode,
+        template_type: devTemplateType,
+        is_draft: false
+      });
+      await fetchTemplates();
+      setDevTemplateId((res.data as { id?: number }).id || 0);
+      setDevCodeName(newName);
+      showToast('已另存为新模板', 'success');
+    } catch (err: unknown) {
+      showToast(getAxiosErrorMessage(err) || '另存失败', 'error');
     }
   };
 
@@ -1257,6 +1307,14 @@ const App: React.FC = () => {
                  >
                    <PlusCircle size={18} /> 保存到我的模版
                  </button>
+                 {devTemplateId > 0 && (
+                   <button
+                     onClick={saveStrategyTemplateAsNew}
+                     className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold transition shadow-lg border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 text-white border-gray-700' : 'bg-white hover:bg-gray-50 text-gray-900 border-gray-200'}`}
+                   >
+                     <PlusCircle size={18} /> 另存为新模版
+                   </button>
+                 )}
                </div>
               {testResult && (
                 <div className={`mt-4 p-4 rounded-xl border ${testResult.valid ? 'bg-green-900/20 border-green-800 text-green-400' : 'bg-red-900/20 border-red-800 text-red-400'}`}>
@@ -1855,6 +1913,52 @@ const App: React.FC = () => {
                     </div>
                   );
                 });
+              })()}
+            </div>
+
+            <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-bold">盈亏日历</div>
+                <div className="text-xs text-gray-500">每天 00:05 统计上一天</div>
+              </div>
+              {(() => {
+                const cal = dashboard?.pnl.calendar || [];
+                if (!cal.length) {
+                  return <div className="text-sm text-gray-500">暂无数据</div>;
+                }
+                const maxAbs = cal.reduce((m, d) => Math.max(m, Math.abs(d.realized_pnl || 0)), 0) || 1;
+                const getHeat = (v: number) => {
+                  const r = Math.abs(v) / maxAbs;
+                  const level = r >= 0.75 ? 4 : r >= 0.5 ? 3 : r >= 0.25 ? 2 : r > 0 ? 1 : 0;
+                  if (level === 0) return isDarkMode ? 'bg-gray-800/40' : 'bg-gray-100';
+                  const base = v >= 0 ? 'bg-green-500' : 'bg-red-500';
+                  const alpha = level === 1 ? '/20' : level === 2 ? '/35' : level === 3 ? '/55' : '/75';
+                  return `${base}${alpha}`;
+                };
+                const first = new Date(`${cal[0].day}T00:00:00`);
+                const offset = (first.getDay() + 6) % 7;
+                const cells: Array<DailyPnLEntry | null> = [];
+                for (let i = 0; i < offset; i++) cells.push(null);
+                for (const d of cal) cells.push(d);
+                return (
+                  <div className="grid grid-cols-7 gap-2">
+                    {cells.map((d, idx) => {
+                      if (!d) return <div key={`empty-${idx}`} className="h-10" />;
+                      const dayNum = d.day.slice(-2);
+                      const pnl = d.realized_pnl || 0;
+                      const title = `${d.day}  已实现: $${pnl.toFixed(2)}  回报率: ${(d.realized_return_pct || 0).toFixed(2)}%  交易数: ${d.trades || 0}`;
+                      return (
+                        <div
+                          key={d.day}
+                          title={title}
+                          className={`h-10 rounded-lg border flex items-center justify-center text-xs font-mono select-none ${isDarkMode ? 'border-gray-800' : 'border-gray-200'} ${getHeat(pnl)}`}
+                        >
+                          <span className={isDarkMode ? 'text-gray-200' : 'text-gray-800'}>{dayNum}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
               })()}
             </div>
 

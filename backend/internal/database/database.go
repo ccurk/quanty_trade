@@ -99,6 +99,7 @@ func InitDB() {
 		&models.ExchangeOrderEvent{},
 		&models.StrategyOrder{},
 		&models.StrategyPosition{},
+		&models.DailyPnL{},
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)
@@ -121,5 +122,6 @@ func InitDB() {
 			WHERE name = '' OR name IS NULL OR author_id = 0
 		`, admin.ID).Error
 	}
+	SeedBuiltInTemplates(admin.ID)
 	logger.Infof("Database schema is up to date.")
 }

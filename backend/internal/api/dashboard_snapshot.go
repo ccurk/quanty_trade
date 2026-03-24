@@ -173,6 +173,7 @@ func buildDashboardSnapshot(uid uint, now time.Time) (DashboardResponse, error) 
 		Day:           period(startDay, now),
 		Week:          period(startWeek, now),
 		Month:         period(startMonth, now),
+		Calendar:      loadDailyPnLCalendar(uid, 60),
 	}
 	resp.Account.Exchange = stratMgr.GetExchange().GetName()
 	if bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange); ok {
