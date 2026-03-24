@@ -1347,6 +1347,7 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 			PositionAmt      string `json:"positionAmt"`
 			EntryPrice       string `json:"entryPrice"`
 			MarkPrice        string `json:"markPrice"`
+			Leverage         string `json:"leverage"`
 			UnrealizedProfit string `json:"unRealizedProfit"`
 			UpdateTime       int64  `json:"updateTime"`
 		}
@@ -1367,10 +1368,16 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 			entry, _ := strconv.ParseFloat(p.EntryPrice, 64)
 			mark, _ := strconv.ParseFloat(p.MarkPrice, 64)
 			unpnl, _ := strconv.ParseFloat(p.UnrealizedProfit, 64)
+			lev, _ := strconv.ParseFloat(p.Leverage, 64)
 			entryValue := math.Abs(amt) * entry
 			ret := 0.0
 			if entryValue > 0 {
-				ret = (unpnl / entryValue) * 100
+				// ROI = unrealizedPnL / initialMargin, initialMargin ~= notional/leverage
+				if lev > 0 {
+					ret = (unpnl / (entryValue / lev)) * 100
+				} else {
+					ret = (unpnl / entryValue) * 100
+				}
 			}
 			ts := time.Now()
 			if p.UpdateTime > 0 {
@@ -1448,6 +1455,38 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 	b.positionsCacheExp[ownerID] = time.Now().Add(5 * time.Second)
 	b.positionsCacheMu.Unlock()
 	return out, nil
+}
+
+func (b *BinanceExchange) USDMPositionInfo(ownerID uint, symbol string) (float64, float64, float64, float64, error) {
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v2/positionRisk", nil)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	var raw []struct {
+		Symbol      string `json:"symbol"`
+		PositionAmt string `json:"positionAmt"`
+		EntryPrice  string `json:"entryPrice"`
+		MarkPrice   string `json:"markPrice"`
+		Leverage    string `json:"leverage"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	target := binanceSymbol(symbol)
+	for _, p := range raw {
+		if strings.EqualFold(p.Symbol, target) {
+			positionAmt, _ := strconv.ParseFloat(p.PositionAmt, 64)
+			entryPrice, _ := strconv.ParseFloat(p.EntryPrice, 64)
+			markPrice, _ := strconv.ParseFloat(p.MarkPrice, 64)
+			lev, _ := strconv.ParseFloat(p.Leverage, 64)
+			return positionAmt, entryPrice, markPrice, lev, nil
+		}
+	}
+	return 0, 0, 0, 0, nil
 }
 
 func (b *BinanceExchange) ClosePosition(symbol string, ownerID uint) error {
@@ -1674,6 +1713,10 @@ func (b *BinanceExchange) CancelPrePositionOpenOrders(ownerID uint, symbol strin
 			q.Set("orderId", strconv.FormatInt(o.OrderID, 10))
 			_, _, _ = b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/order", q)
 		}
+		// If no position, also cancel remaining conditional (algo) orders for this symbol
+		if amt, _, _, err := b.USDMPositionAmt(ownerID, symbol); err == nil && amt == 0 {
+			_ = b.CancelUSDMAlgoOpenOrders(ownerID, symbol)
+		}
 		return nil
 	}
 	// spot: cancel all open orders for this symbol
@@ -1697,6 +1740,35 @@ func (b *BinanceExchange) CancelPrePositionOpenOrders(ownerID uint, symbol strin
 		q.Set("symbol", binanceSymbol(symbol))
 		q.Set("orderId", strconv.FormatInt(o.OrderID, 10))
 		_, _, _ = b.signedRequest(context.Background(), cred, http.MethodDelete, "/api/v3/order", q)
+	}
+	return nil
+}
+
+func (b *BinanceExchange) CancelUSDMAlgoOpenOrders(ownerID uint, symbol string) error {
+	if b.market != "usdm" {
+		return nil
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return err
+	}
+	params := url.Values{}
+	params.Set("symbol", binanceSymbol(symbol))
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/algoOpenOrders", params)
+	if err != nil {
+		return err
+	}
+	var orders []struct {
+		AlgoID       int64  `json:"algoId"`
+		ClientAlgoID string `json:"clientAlgoId"`
+	}
+	if err := json.Unmarshal(body, &orders); err != nil {
+		return err
+	}
+	for _, o := range orders {
+		q := url.Values{}
+		q.Set("algoId", strconv.FormatInt(o.AlgoID, 10))
+		_, _, _ = b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/algoOrder", q)
 	}
 	return nil
 }

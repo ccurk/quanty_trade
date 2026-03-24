@@ -2203,7 +2203,7 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 		if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
 			var lastErr error
 			for i := 0; i < 30; i++ {
-				amt, entryPx, _, err := bx.USDMPositionAmt(inst.OwnerID, symbol)
+				amt, entryPx, _, levUsed, err := bx.USDMPositionInfo(inst.OwnerID, symbol)
 				if err == nil && amt != 0 {
 					var pos models.StrategyPosition
 					errDB := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").First(&pos).Error
@@ -2224,9 +2224,15 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 						_ = database.DB.Create(&newPos).Error
 					}
 					if entryPx > 0 && stopLoss > 0 {
+						if levUsed <= 0 {
+							levUsed = float64(int(getNumber(inst.Config["leverage"])))
+						}
+						if levUsed <= 0 {
+							levUsed = 1
+						}
 						if amt > 0 {
-							// long: SL in [entry*0.7, entry]
-							minSL := entryPx * 0.7
+							// long: SL in [entry*(1-0.3/lev), entry]
+							minSL := entryPx * (1 - 0.3/levUsed)
 							maxSL := entryPx
 							if stopLoss < minSL {
 								stopLoss = minSL
@@ -2234,9 +2240,9 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 								stopLoss = maxSL
 							}
 						} else {
-							// short: SL in [entry, entry*1.3]
+							// short: SL in [entry, entry*(1+0.3/lev)]
 							minSL := entryPx
-							maxSL := entryPx * 1.3
+							maxSL := entryPx * (1 + 0.3/levUsed)
 							if stopLoss < minSL {
 								stopLoss = minSL
 							} else if stopLoss > maxSL {
@@ -2279,13 +2285,19 @@ func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, t
 	}
 	isShort := false
 	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
-		if amt, entryPx, _, err := bx.USDMPositionAmt(inst.OwnerID, sym); err == nil {
+		if amt, entryPx, _, levUsed, err := bx.USDMPositionInfo(inst.OwnerID, sym); err == nil {
 			if amt < 0 {
 				isShort = true
 			}
 			if entryPx > 0 && stopLoss > 0 {
+				if levUsed <= 0 {
+					levUsed = float64(int(getNumber(inst.Config["leverage"])))
+				}
+				if levUsed <= 0 {
+					levUsed = 1
+				}
 				if !isShort {
-					minSL := entryPx * 0.7
+					minSL := entryPx * (1 - 0.3/levUsed)
 					maxSL := entryPx
 					if stopLoss < minSL {
 						stopLoss = minSL
@@ -2294,7 +2306,7 @@ func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, t
 					}
 				} else {
 					minSL := entryPx
-					maxSL := entryPx * 1.3
+					maxSL := entryPx * (1 + 0.3/levUsed)
 					if stopLoss < minSL {
 						stopLoss = minSL
 					} else if stopLoss > maxSL {
@@ -2375,6 +2387,8 @@ func (m *Manager) closePositionForInstance(inst *StrategyInstance, symbol string
 		inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
 		if strings.ToLower(order.Status) == "filled" {
 			applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, 0, 0, order.Timestamp)
+			_ = bx.CancelUSDMAlgoOpenOrders(inst.OwnerID, sym)
+			_ = bx.CancelPrePositionOpenOrders(inst.OwnerID, sym)
 		}
 		return nil
 	}
