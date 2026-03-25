@@ -297,6 +297,9 @@ type Manager struct {
 	sigMu           sync.Mutex
 	pendingSignals  map[string][]bus.SignalMessage
 	signalBatchWait time.Duration
+
+	quickCloseMu sync.Mutex
+	quickCloseAt map[string]time.Time
 }
 
 func (m *Manager) ReleaseOpenSlot(strategyID string) {
@@ -434,6 +437,7 @@ func NewManager(hub *ws.Hub, ex exchange.Exchange) *Manager {
 		exchange:        ex,
 		pendingSignals:  make(map[string][]bus.SignalMessage),
 		signalBatchWait: 500 * time.Millisecond,
+		quickCloseAt:    make(map[string]time.Time),
 	}
 }
 
