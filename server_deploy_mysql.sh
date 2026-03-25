@@ -7,10 +7,10 @@ HOST_PORT="3306"
 
 DATA_DIR="/root/quanty_trade/mysql"
 
-MYSQL_ROOT_PASSWORD="REPLACE_MYSQL_ROOT_PASSWORD"
+MYSQL_ROOT_PASSWORD="work@..."
 MYSQL_DATABASE="quanty_trade"
-MYSQL_USER="quanty"
-MYSQL_PASSWORD="REPLACE_MYSQL_PASSWORD"
+MYSQL_USER="root"
+MYSQL_PASSWORD="work@..."
 
 docker version >/dev/null
 
