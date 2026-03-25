@@ -16,8 +16,8 @@ db:
   type: "mysql"
   host: "137.220.219.172"
   port: "3307"
-  user: "quanty"
-  pass: "quantypass"
+  user: "root"
+  pass: "work@..."
   name: "quanty_trade"
 
 admin:
