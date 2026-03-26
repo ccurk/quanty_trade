@@ -3,9 +3,9 @@ import math
 import time
 
 try:
-    from mini_redis import MiniRedis
+    from mini_redis import MiniRedis  # optional external module
 except Exception:
-    MiniRedis = None
+    pass
 
 
 class Config:
@@ -437,7 +437,9 @@ class MemeSignalEngineV3:
         r.publish(f"qt:state:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
 
     def run(self):
-        if MiniRedis is None:
+        try:
+            MiniRedis  # provided by runtime shim or optional import
+        except NameError:
             raise RuntimeError("MiniRedis is required")
         if not self.strategy_id:
             raise RuntimeError("strategy_id required")

@@ -4,7 +4,7 @@ import time
 try:
     from mini_redis import MiniRedis
 except Exception:
-    MiniRedis = None
+    pass
 
 
 class Config:
@@ -72,7 +72,9 @@ class MemeSignalEngineV2:
         r.publish(f"qt:signal:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
 
     def run(self):
-        if MiniRedis is None:
+        try:
+            MiniRedis
+        except NameError:
             raise RuntimeError("MiniRedis required")
         if not self.strategy_id:
             raise RuntimeError("strategy_id required")
