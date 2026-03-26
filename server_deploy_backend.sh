@@ -11,7 +11,7 @@ HOST_PORT="8080"
 DB_TYPE="mysql"
 DB_HOST="137.220.219.172"
 DB_PORT="3306"
-DB_USER="quanty"
+DB_USER="root"
 DB_PASS="work@..."
 DB_NAME="quanty_trade"
 
