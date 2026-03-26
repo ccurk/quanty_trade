@@ -118,7 +118,7 @@ func upsertDailyPnL(uid uint, day string, start time.Time, end time.Time) error 
 			"end_time":          end,
 			"gross_profit":      row.GrossProfit,
 			"gross_loss":        row.GrossLoss,
-			"realized_pnl":      row.RealizedPnL,
+			"realized_pn_l":     row.RealizedPnL,
 			"realized_notional": row.RealizedNotional,
 			"trades":            int(row.Trades),
 			"updated_at":        now,

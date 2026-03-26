@@ -291,7 +291,7 @@ type DailyPnL struct {
 
 	GrossProfit      float64 `json:"gross_profit"`
 	GrossLoss        float64 `json:"gross_loss"`
-	RealizedPnL      float64 `json:"realized_pnl"`
+	RealizedPnL      float64 `gorm:"column:realized_pn_l" json:"realized_pnl"`
 	RealizedNotional float64 `json:"realized_notional"`
 	Trades           int     `json:"trades"`
 
