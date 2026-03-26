@@ -428,6 +428,14 @@ class MemeSignalEngineV3:
         }
         r.publish(f"qt:signal:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
 
+    def _emit_ready(self, r: MiniRedis):
+        msg = {
+            "type": "ready",
+            "strategy_id": self.strategy_id,
+            "owner_id": self.owner_id,
+        }
+        r.publish(f"qt:state:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
+
     def run(self):
         if MiniRedis is None:
             raise RuntimeError("MiniRedis is required")
@@ -437,7 +445,7 @@ class MemeSignalEngineV3:
         ps = r.pubsub()
         for sym in self.symbols:
             ps.psubscribe(f"qt:candle:{self.strategy_id}:{sym}")
-        r.set(f"qt:strategy:{self.strategy_id}:state", "ready")
+        self._emit_ready(r)
         while True:
             msg = ps.get_message(timeout=1.0)
             if not msg:
