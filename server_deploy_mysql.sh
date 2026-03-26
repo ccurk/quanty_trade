@@ -9,7 +9,7 @@ DATA_DIR="/root/quanty_trade/mysql"
 
 MYSQL_ROOT_PASSWORD="work@..."
 MYSQL_DATABASE="quanty_trade"
-MYSQL_USER="root"
+MYSQL_USER="quanty"
 MYSQL_PASSWORD="work@..."
 
 docker version >/dev/null
