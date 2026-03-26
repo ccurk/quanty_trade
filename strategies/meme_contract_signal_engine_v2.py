@@ -16,10 +16,20 @@ class Config:
 class MemeSignalEngineV2:
     def __init__(self, cfg=None):
         self.cfg = cfg or {}
+        addr = str(self.cfg.get("redis_addr", "") or "").strip()
         self.redis_host = self.cfg.get("redis_host", "127.0.0.1")
         self.redis_port = int(self.cfg.get("redis_port", 6379))
+        if addr:
+            try:
+                if ":" in addr:
+                    h, p = addr.split(":", 1)
+                    self.redis_host = h.strip() or self.redis_host
+                    self.redis_port = int(p.strip())
+            except Exception:
+                pass
         self.redis_db = int(self.cfg.get("redis_db", 0))
         self.redis_password = self.cfg.get("redis_password", "")
+        self.redis_prefix = str(self.cfg.get("redis_prefix", "qt") or "qt")
         self.strategy_id = self.cfg.get("strategy_id", "")
         self.owner_id = int(self.cfg.get("owner_id", 0))
         self.symbols = self._parse_symbols(self.cfg.get("symbols", ""))
@@ -52,7 +62,7 @@ class MemeSignalEngineV2:
 
     def _emit_ready(self, r: MiniRedis):
         msg = {"type": "ready", "strategy_id": self.strategy_id, "owner_id": self.owner_id}
-        r.publish(f"qt:state:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
+        r.publish(f"{self.redis_prefix}:state:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
 
     def _emit_signal(self, r: MiniRedis, sig: dict):
         msg = {
@@ -69,7 +79,7 @@ class MemeSignalEngineV2:
             "confidence": 0.5,
             "generated_at": time.time(),
         }
-        r.publish(f"qt:signal:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
+        r.publish(f"{self.redis_prefix}:signal:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
 
     def run(self):
         try:
@@ -82,7 +92,7 @@ class MemeSignalEngineV2:
         self._emit_ready(r)
         ps = r.pubsub()
         for sym in self.symbols:
-            ps.psubscribe(f"qt:candle:{self.strategy_id}:{sym}")
+            ps.psubscribe(f"{self.redis_prefix}:candle:{self.strategy_id}:{sym}")
         while True:
             msg = ps.get_message(timeout=1.0)
             if not msg or msg.get("type") not in ("pmessage", "message"):
