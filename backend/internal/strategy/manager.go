@@ -118,6 +118,8 @@ func loadLatestDiskStrategyCode(inst *StrategyInstance, row *models.StrategyInst
 	}
 
 	seen := map[string]struct{}{}
+	bestCode := ""
+	bestAt := time.Time{}
 	for _, p := range candidates {
 		abs, err := resolveStrategyPath(p)
 		if err != nil {
@@ -136,9 +138,20 @@ func loadLatestDiskStrategyCode(inst *StrategyInstance, row *models.StrategyInst
 			continue
 		}
 		code := strings.TrimSpace(string(b))
-		if code != "" {
-			return code, true
+		if code == "" {
+			continue
 		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			continue
+		}
+		if bestCode == "" || info.ModTime().After(bestAt) {
+			bestCode = code
+			bestAt = info.ModTime()
+		}
+	}
+	if bestCode != "" {
+		return bestCode, true
 	}
 	return "", false
 }

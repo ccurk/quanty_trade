@@ -522,12 +522,12 @@ class MemeSignalEngineV3:
         t = threading.Thread(target=loop, daemon=True)
         t.start()
 
-    def _subscribe_candles(self, ps):
+    def _subscribe_candles(self, receiver: MiniRedis):
         channels = [f"{self.redis_prefix}:candle:{self.strategy_id}"]
         if self.redis_prefix != "qt":
             channels.append(f"qt:candle:{self.strategy_id}")
         for ch in channels:
-            ps.subscribe(ch)
+            receiver.subscribe(ch)
             self._log(f"订阅K线通道 {ch}")
 
     def _accept_symbol(self, sym: str) -> bool:
@@ -593,18 +593,17 @@ class MemeSignalEngineV3:
                 time.sleep(0.5)
         if r is None:
             raise last_err or RuntimeError("Redis connect failed")
-        ps = r.pubsub()
-        self._subscribe_candles(ps)
-        self._emit_ready(r)
-        self._start_heartbeat(r)
+        receiver = r
+        sender = MiniRedis(self.redis_host, self.redis_port, self.redis_password, self.redis_db).connect()
+        self._subscribe_candles(receiver)
+        self._emit_ready(sender)
+        self._start_heartbeat(sender)
         self._log(
             f"策略已就绪 strategy_id={self.strategy_id} boot_id={self.boot_id} symbols={len(self.symbols)} leverage={self.leverage}"
         )
         while True:
-            msg = ps.get_message(timeout=1.0)
+            msg = receiver.read_pubsub_message()
             if not msg:
-                continue
-            if msg.get("type") not in ("pmessage", "message"):
                 continue
             data = msg.get("data")
             if not data:
@@ -625,7 +624,7 @@ class MemeSignalEngineV3:
                 self._log(
                     f"生成信号 symbol={sig['symbol']} side={sig['side']} entry={sig['entry']:.8f} tp={sig['tp']:.8f} sl={sig['sl']:.8f} conf={sig['confidence']:.4f}"
                 )
-            self._emit_signal(r, sig)
+            self._emit_signal(sender, sig)
             self.last_signal_at = time.time()
 
     def _base_send_log(self, text: str):
