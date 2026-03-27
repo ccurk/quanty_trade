@@ -300,6 +300,8 @@ type Manager struct {
 
 	quickCloseMu sync.Mutex
 	quickCloseAt map[string]time.Time
+
+	orderCh chan orderReq
 }
 
 func (m *Manager) ReleaseOpenSlot(strategyID string) {
@@ -438,6 +440,42 @@ func NewManager(hub *ws.Hub, ex exchange.Exchange) *Manager {
 		pendingSignals:  make(map[string][]bus.SignalMessage),
 		signalBatchWait: 500 * time.Millisecond,
 		quickCloseAt:    make(map[string]time.Time),
+		orderCh:         make(chan orderReq, 256),
+	}
+}
+
+type orderReq struct {
+	inst       *StrategyInstance
+	symbol     string
+	side       string
+	amount     float64
+	price      float64
+	takeProfit float64
+	stopLoss   float64
+	signalID   string
+}
+
+func (m *Manager) StartWorkers() {
+	go m.runOrderWorker()
+}
+
+func (m *Manager) runOrderWorker() {
+	for req := range m.orderCh {
+		func() {
+			defer func() { recover() }()
+			m.placeOrderForInstance(req.inst, req.symbol, req.side, req.amount, req.price, req.takeProfit, req.stopLoss, req.signalID)
+		}()
+	}
+}
+
+func (m *Manager) enqueueOrderForInstance(inst *StrategyInstance, symbol string, side string, amount float64, price float64, takeProfit float64, stopLoss float64, signalID string) {
+	if inst == nil || symbol == "" || side == "" {
+		return
+	}
+	select {
+	case m.orderCh <- orderReq{inst: inst, symbol: symbol, side: side, amount: amount, price: price, takeProfit: takeProfit, stopLoss: stopLoss, signalID: signalID}:
+	default:
+		emitStrategyLog(inst, "error", "Order queue is full, dropping order request")
 	}
 }
 
@@ -594,7 +632,7 @@ func (m *Manager) tryPlaceCandidate(inst *StrategyInstance, symbol string, side 
 	if inst == nil {
 		return false
 	}
-	m.placeOrderForInstance(inst, symbol, side, amount, 0, tp, sl, signalID)
+	m.enqueueOrderForInstance(inst, symbol, side, amount, 0, tp, sl, signalID)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		var ord models.StrategyOrder

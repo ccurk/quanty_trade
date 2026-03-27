@@ -118,6 +118,7 @@ func main() {
 	mgr.SyncFromDB(database.DB)
 	go mgr.SyncRedisOpenCountsFromExchange(context.Background())
 	mgr.StartQuickTradeMonitor(context.Background())
+	mgr.StartWorkers()
 	api.SetManager(mgr)
 	api.StartDashboardSnapshotJob(context.Background())
 	api.StartDailyPnLJob(context.Background())
