@@ -912,18 +912,7 @@ func (m *Manager) StartStrategy(id string) error {
 		}
 		inst.mu.Unlock()
 	})
-	go func() {
-		time.Sleep(10 * time.Second)
-		inst.mu.Lock()
-		seen := inst.stateReadySeen
-		inst.mu.Unlock()
-		if !seen {
-			emitStrategyLog(inst, "info", "Waiting strategy ready (python state channel not received yet)")
-		}
-	}()
-	go m.historySyncLoop(ctx, inst, redisBus)
-	go m.healthMonitorLoop(ctx, inst)
-	go m.waitProcessLoop(inst)
+	m.attachRedisIO(inst, redisBus, logTrace)
 
 	if database.DB != nil {
 		debugOn := false
@@ -948,253 +937,9 @@ func (m *Manager) StartStrategy(id string) error {
 		}
 	}
 
-	if ex, ok := inst.exchange.(interface {
-		EnsureUserDataStream(ownerID uint, hub *ws.Hub) error
-	}); ok {
-		_ = ex.EnsureUserDataStream(inst.OwnerID, inst.hub)
-	}
+	m.attachUserDataStream(inst)
 
-	if len(feedSymbols) == 0 {
-		logger.Warnf("[STRATEGY START WARN] id=%s owner=%d reason=no symbol in config", inst.ID, inst.OwnerID)
-		database.DB.Create(&models.StrategyLog{
-			StrategyID: inst.ID,
-			Level:      "error",
-			Message:    "No symbol in config; strategy will not receive market data",
-			CreatedAt:  time.Now(),
-		})
-		inst.hub.BroadcastJSON(map[string]interface{}{
-			"type":        "error",
-			"strategy_id": inst.ID,
-			"owner_id":    inst.OwnerID,
-			"error":       "No symbol in config; strategy will not receive market data",
-		})
-	} else {
-		runCfg["symbols"] = feedSymbols
-		if _, ok := runCfg["symbol"].(string); !ok || strings.TrimSpace(fmt.Sprintf("%v", runCfg["symbol"])) == "" {
-			runCfg["symbol"] = feedSymbols[0]
-		}
-
-		go func(syms []string) {
-			time.Sleep(20 * time.Second)
-			inst.mu.Lock()
-			rx := inst.candleRxCount
-			inst.mu.Unlock()
-			for _, s := range syms {
-				n := 0
-				if rx != nil {
-					n = rx[s]
-				}
-				if n == 0 {
-					emitStrategyLog(inst, "info", fmt.Sprintf("Waiting first closed kline symbol=%s (Binance kline only triggers on close)", s))
-				}
-			}
-		}(append([]string(nil), feedSymbols...))
-
-		for _, sym := range feedSymbols {
-			sym := sym
-			go func() {
-				emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles start symbol=%s", sym))
-				var (
-					stop func()
-					err  error
-				)
-				if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok {
-					stop, err = bx.SubscribeCandlesWithEvents(sym, func(candle exchange.Candle) {
-						inst.mu.Lock()
-						if inst.candleRxCount == nil {
-							inst.candleRxCount = map[string]int{}
-						}
-						inst.candleRxCount[sym]++
-						if inst.lastCandleClose == nil {
-							inst.lastCandleClose = map[string]float64{}
-						}
-						if inst.lastCandleAt == nil {
-							inst.lastCandleAt = map[string]time.Time{}
-						}
-						inst.lastCandleClose[sym] = candle.Close
-						inst.lastCandleAt[sym] = candle.Timestamp
-						rxN := inst.candleRxCount[sym]
-						inst.mu.Unlock()
-						if rxN == 1 {
-							emitStrategyLog(inst, "info", fmt.Sprintf("Exchange candle first symbol=%s ts=%s close=%v", sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
-						}
-
-						payload := map[string]interface{}{
-							"symbol":    sym,
-							"timestamp": candle.Timestamp,
-							"open":      candle.Open,
-							"high":      candle.High,
-							"low":       candle.Low,
-							"close":     candle.Close,
-							"volume":    candle.Volume,
-						}
-						pubErr := redisBus.PublishCandle(context.Background(), bus.CandleMessage{
-							StrategyID: inst.ID,
-							Symbol:     sym,
-							Timestamp:  candle.Timestamp,
-							Open:       candle.Open,
-							High:       candle.High,
-							Low:        candle.Low,
-							Close:      candle.Close,
-							Volume:     candle.Volume,
-						})
-						if pubErr != nil {
-							logger.Errorf("[REDIS PUBLISH ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, pubErr)
-							emitStrategyLog(inst, "error", fmt.Sprintf("Redis publish candle failed symbol=%s err=%v", sym, pubErr))
-						} else {
-							inst.mu.Lock()
-							if inst.candlePubCount == nil {
-								inst.candlePubCount = map[string]int{}
-							}
-							inst.candlePubCount[sym]++
-							pubN := inst.candlePubCount[sym]
-							inst.mu.Unlock()
-							if pubN == 1 {
-								emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle first ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
-							}
-							logRedis := getBool(inst.Config["log_redis"])
-							logEvery := int(getNumber(inst.Config["log_candle_every"]))
-							if logEvery <= 0 {
-								logEvery = 60
-							}
-							if logRedis {
-								if pubN%logEvery == 0 {
-									emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle ok ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
-								}
-							}
-						}
-						inst.hub.BroadcastJSON(map[string]interface{}{
-							"type":        "candle",
-							"strategy_id": inst.ID,
-							"owner_id":    inst.OwnerID,
-							"data":        payload,
-						})
-					}, func(event string, detail string, err error) {
-						switch event {
-						case "dialing":
-							emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS dialing symbol=%s url=%s", sym, detail))
-						case "connected":
-							emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS connected symbol=%s url=%s", sym, detail))
-						case "connect_failed":
-							emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS connect failed symbol=%s url=%s err=%v", sym, detail, err))
-						case "disconnected":
-							emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS disconnected symbol=%s url=%s err=%v", sym, detail, err))
-						case "rx_raw_first":
-							emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS recv first raw symbol=%s %s", sym, detail))
-						case "rx_first":
-							emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS recv first kline symbol=%s %s", sym, detail))
-						case "rx_first_closed":
-							emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS recv first closed kline symbol=%s %s", sym, detail))
-						case "unmarshal_failed":
-							emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS unmarshal failed symbol=%s err=%s", sym, detail))
-						default:
-							emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS unknown event symbol=%s event=%s detail=%s err=%v", sym, event, detail, err))
-						}
-					})
-				} else {
-					stop, err = inst.exchange.SubscribeCandles(sym, func(candle exchange.Candle) {
-						inst.mu.Lock()
-						if inst.candleRxCount == nil {
-							inst.candleRxCount = map[string]int{}
-						}
-						inst.candleRxCount[sym]++
-						if inst.lastCandleClose == nil {
-							inst.lastCandleClose = map[string]float64{}
-						}
-						if inst.lastCandleAt == nil {
-							inst.lastCandleAt = map[string]time.Time{}
-						}
-						inst.lastCandleClose[sym] = candle.Close
-						inst.lastCandleAt[sym] = candle.Timestamp
-						rxN := inst.candleRxCount[sym]
-						inst.mu.Unlock()
-						if rxN == 1 {
-							emitStrategyLog(inst, "info", fmt.Sprintf("Exchange candle first symbol=%s ts=%s close=%v", sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
-						}
-
-						payload := map[string]interface{}{
-							"symbol":    sym,
-							"timestamp": candle.Timestamp,
-							"open":      candle.Open,
-							"high":      candle.High,
-							"low":       candle.Low,
-							"close":     candle.Close,
-							"volume":    candle.Volume,
-						}
-						pubErr := redisBus.PublishCandle(context.Background(), bus.CandleMessage{
-							StrategyID: inst.ID,
-							Symbol:     sym,
-							Timestamp:  candle.Timestamp,
-							Open:       candle.Open,
-							High:       candle.High,
-							Low:        candle.Low,
-							Close:      candle.Close,
-							Volume:     candle.Volume,
-						})
-						if pubErr != nil {
-							logger.Errorf("[REDIS PUBLISH ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, pubErr)
-							emitStrategyLog(inst, "error", fmt.Sprintf("Redis publish candle failed symbol=%s err=%v", sym, pubErr))
-						} else {
-							inst.mu.Lock()
-							if inst.candlePubCount == nil {
-								inst.candlePubCount = map[string]int{}
-							}
-							inst.candlePubCount[sym]++
-							pubN := inst.candlePubCount[sym]
-							inst.mu.Unlock()
-							if pubN == 1 {
-								emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle first ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
-							}
-							logRedis := getBool(inst.Config["log_redis"])
-							logEvery := int(getNumber(inst.Config["log_candle_every"]))
-							if logEvery <= 0 {
-								logEvery = 60
-							}
-							if logRedis {
-								if pubN%logEvery == 0 {
-									emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle ok ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
-								}
-							}
-						}
-						inst.hub.BroadcastJSON(map[string]interface{}{
-							"type":        "candle",
-							"strategy_id": inst.ID,
-							"owner_id":    inst.OwnerID,
-							"data":        payload,
-						})
-					})
-				}
-				if err != nil {
-					logger.Errorf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, err)
-					database.DB.Create(&models.StrategyLog{
-						StrategyID: inst.ID,
-						Level:      "error",
-						Message:    fmt.Sprintf("SubscribeCandles error: %v", err),
-						CreatedAt:  time.Now(),
-					})
-					inst.hub.BroadcastJSON(map[string]interface{}{
-						"type":        "error",
-						"strategy_id": inst.ID,
-						"owner_id":    inst.OwnerID,
-						"error":       fmt.Sprintf("SubscribeCandles error: %v", err),
-					})
-					return
-				}
-				emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles ok symbol=%s", sym))
-				if stop != nil {
-					inst.mu.Lock()
-					if inst.candleStops == nil {
-						inst.candleStops = map[string]func(){}
-					}
-					if prev, ok := inst.candleStops[sym]; ok && prev != nil {
-						prev()
-					}
-					inst.candleStops[sym] = stop
-					inst.mu.Unlock()
-				}
-			}()
-		}
-	}
+	_ = m.attachMarketData(inst, redisBus, feedSymbols, runCfg, stderr)
 
 	go inst.readStdout()
 	go inst.readStderr(stderr)
@@ -1934,7 +1679,25 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			avail = v
 		}
 		desiredNotional := amount * px
-		if mode == "notional" {
+		if mode == "percent_balance" {
+			pct := getNumber(inst.Config["order_amount_pct"])
+			if pct <= 0 {
+				pct = amount / 100
+			}
+			if pct > 1 {
+				pct = 1
+			}
+			initial := avail * pct
+			maxInit := getNumber(inst.Config["max_initial_margin_usdt"])
+			if maxInit > 0 && initial > maxInit {
+				initial = maxInit
+			}
+			if initial <= 0 {
+				emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: percent_balance computed initial margin <=0 symbol=%s", symbol))
+				return
+			}
+			desiredNotional = initial * float64(lev)
+		} else if mode == "notional" {
 			desiredNotional = amount
 		}
 		if desiredNotional < minNotional {
@@ -2329,27 +2092,54 @@ func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, t
 			px = inst.lastCandleClose[sym]
 		}
 		inst.mu.Unlock()
-		if px <= 0 {
-			continue
+		hit := false
+		reason := ""
+		if px > 0 {
+			if !isShort {
+				if takeProfit > 0 && px >= takeProfit {
+					hit = true
+					reason = "tp"
+				}
+				if stopLoss > 0 && px <= stopLoss {
+					hit = true
+					reason = "sl"
+				}
+			} else {
+				if takeProfit > 0 && px <= takeProfit {
+					hit = true
+					reason = "tp"
+				}
+				if stopLoss > 0 && px >= stopLoss {
+					hit = true
+					reason = "sl"
+				}
+			}
 		}
-		hitTP := false
-		hitSL := false
-		if !isShort {
-			hitTP = takeProfit > 0 && px >= takeProfit
-			hitSL = stopLoss > 0 && px <= stopLoss
-		} else {
-			hitTP = takeProfit > 0 && px <= takeProfit
-			hitSL = stopLoss > 0 && px >= stopLoss
+		if !hit {
+			if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+				if amt, entryPx, markPx, levUsed, err := bx.USDMPositionInfo(inst.OwnerID, sym); err == nil && entryPx > 0 && levUsed > 0 && amt != 0 {
+					pnl := (markPx - entryPx) * amt
+					initial := (math.Abs(amt) * entryPx) / levUsed
+					if initial > 0 {
+						roi := (pnl / initial) * 100
+						slPct := getNumber(inst.Config["stop_loss_pct"]) * 100
+						tpPct := getNumber(inst.Config["take_profit_pct"]) * 100
+						if tpPct > 0 && roi >= tpPct {
+							hit = true
+							reason = "roi_tp"
+						}
+						if slPct > 0 && roi <= -slPct {
+							hit = true
+							reason = "roi_sl"
+						}
+					}
+				}
+			}
 		}
-		if !hitTP && !hitSL {
-			continue
+		if hit {
+			_ = m.closePositionForInstance(inst, sym, reason, signalID)
+			return
 		}
-		reason := "tp"
-		if hitSL {
-			reason = "sl"
-		}
-		_ = m.closePositionForInstance(inst, sym, reason, signalID)
-		return
 	}
 }
 

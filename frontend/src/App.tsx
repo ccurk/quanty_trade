@@ -1922,9 +1922,37 @@ const App: React.FC = () => {
                 <div className="text-xs text-gray-500">每天 00:05 统计上一天</div>
               </div>
               {(() => {
-                const cal = dashboard?.pnl.calendar || [];
+                const [selMonth, setSelMonth] = (window as any).__pnlMonthState || ((window as any).__pnlMonthState = (() => {
+                  let value = new Date().toISOString().slice(0,7);
+                  const setValue = (v: string) => { value = v; (window as any).__pnlMonthValue = v; };
+                  return [value, setValue];
+                })());
+                const calAll = dashboard?.pnl.calendar || [];
+                const month = ((window as any).__pnlMonthValue as string) || selMonth;
+                const cal = calAll.filter(d => (d.day || '').startsWith(month));
                 if (!cal.length) {
-                  return <div className="text-sm text-gray-500">暂无数据</div>;
+                  return (
+                    <div>
+                      <div className="flex items-center gap-3 mb-3">
+                        <button onClick={() => {
+                          const dt = new Date(month + '-01T00:00:00');
+                          dt.setMonth(dt.getMonth() - 1);
+                          const nv = dt.toISOString().slice(0,7);
+                          setSelMonth(nv);
+                          (window as any).__pnlMonthValue = nv;
+                        }} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>上个月</button>
+                        <div className="text-sm">{month}</div>
+                        <button onClick={() => {
+                          const dt = new Date(month + '-01T00:00:00');
+                          dt.setMonth(dt.getMonth() + 1);
+                          const nv = dt.toISOString().slice(0,7);
+                          setSelMonth(nv);
+                          (window as any).__pnlMonthValue = nv;
+                        }} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>下个月</button>
+                      </div>
+                      <div className="text-sm text-gray-500">该月暂无数据</div>
+                    </div>
+                  );
                 }
                 const maxAbs = cal.reduce((m, d) => Math.max(m, Math.abs(d.realized_pnl || 0)), 0) || 1;
                 const getHeat = (v: number) => {
@@ -1935,28 +1963,47 @@ const App: React.FC = () => {
                   const alpha = level === 1 ? '/20' : level === 2 ? '/35' : level === 3 ? '/55' : '/75';
                   return `${base}${alpha}`;
                 };
-                const first = new Date(`${cal[0].day}T00:00:00`);
+                const first = new Date(`${month}-01T00:00:00`);
                 const offset = (first.getDay() + 6) % 7;
                 const cells: Array<DailyPnLEntry | null> = [];
                 for (let i = 0; i < offset; i++) cells.push(null);
                 for (const d of cal) cells.push(d);
                 return (
-                  <div className="grid grid-cols-7 gap-2">
-                    {cells.map((d, idx) => {
-                      if (!d) return <div key={`empty-${idx}`} className="h-10" />;
-                      const dayNum = d.day.slice(-2);
-                      const pnl = d.realized_pnl || 0;
-                      const title = `${d.day}  已实现: $${pnl.toFixed(2)}  回报率: ${(d.realized_return_pct || 0).toFixed(2)}%  交易数: ${d.trades || 0}`;
-                      return (
-                        <div
-                          key={d.day}
-                          title={title}
-                          className={`h-10 rounded-lg border flex items-center justify-center text-xs font-mono select-none ${isDarkMode ? 'border-gray-800' : 'border-gray-200'} ${getHeat(pnl)}`}
-                        >
-                          <span className={isDarkMode ? 'text-gray-200' : 'text-gray-800'}>{dayNum}</span>
-                        </div>
-                      );
-                    })}
+                  <div>
+                    <div className="flex items-center gap-3 mb-3">
+                      <button onClick={() => {
+                        const dt = new Date(month + '-01T00:00:00');
+                        dt.setMonth(dt.getMonth() - 1);
+                        const nv = dt.toISOString().slice(0,7);
+                        setSelMonth(nv);
+                        (window as any).__pnlMonthValue = nv;
+                      }} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>上个月</button>
+                      <div className="text-sm">{month}</div>
+                      <button onClick={() => {
+                        const dt = new Date(month + '-01T00:00:00');
+                        dt.setMonth(dt.getMonth() + 1);
+                        const nv = dt.toISOString().slice(0,7);
+                        setSelMonth(nv);
+                        (window as any).__pnlMonthValue = nv;
+                      }} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>下个月</button>
+                    </div>
+                    <div className="grid grid-cols-7 gap-2">
+                      {cells.map((d, idx) => {
+                        if (!d) return <div key={`empty-${idx}`} className="h-10" />;
+                        const dayNum = d.day.slice(-2);
+                        const pnl = d.realized_pnl || 0;
+                        const title = `${d.day}  已实现: $${pnl.toFixed(2)}  回报率: ${(d.realized_return_pct || 0).toFixed(2)}%  交易数: ${d.trades || 0}`;
+                        return (
+                          <div
+                            key={d.day}
+                            title={title}
+                            className={`h-10 rounded-lg border flex items-center justify-center text-xs font-mono select-none ${isDarkMode ? 'border-gray-800' : 'border-gray-200'} ${getHeat(pnl)}`}
+                          >
+                            <span className={isDarkMode ? 'text-gray-200' : 'text-gray-800'}>{dayNum}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 );
               })()}
