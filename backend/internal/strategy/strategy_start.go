@@ -253,6 +253,7 @@ func (m *Manager) startStrategyProcess(inst *StrategyInstance, plan *strategySta
 		runDir = filepath.Dir(runDir)
 	}
 	cmd.Dir = runDir
+	cmd.Env = append(cmd.Environ(), "STRATEGY_CONFIG_JSON="+string(configJSON))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -274,7 +275,6 @@ func (m *Manager) activateStartedStrategy(inst *StrategyInstance, plan *strategy
 	inst.mu.Lock()
 	inst.cmd = proc.cmd
 	inst.stdout = proc.stdout
-	inst.Status = StatusStarting
 	inst.feedSymbols = plan.feedSymbols
 	inst.resync = true
 	inst.bootID = ""
@@ -285,6 +285,7 @@ func (m *Manager) activateStartedStrategy(inst *StrategyInstance, plan *strategy
 	inst.stopping = false
 	inst.restarting = false
 	inst.mu.Unlock()
+	m.setStrategyStatus(inst, StatusStarting)
 
 	pid := 0
 	if proc.cmd.Process != nil {

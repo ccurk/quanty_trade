@@ -24,14 +24,12 @@ func (m *Manager) StartStrategy(id string) error {
 		inst.mu.Unlock()
 		return nil
 	}
-	inst.Status = StatusStarting
 	inst.mu.Unlock()
+	m.setStrategyStatus(inst, StatusStarting)
 	select {
 	case m.startCh <- id:
 	default:
-		inst.mu.Lock()
-		inst.Status = StatusError
-		inst.mu.Unlock()
+		m.setStrategyStatus(inst, StatusError)
 		return fmt.Errorf("strategy start queue is full")
 	}
 	return nil
@@ -129,9 +127,7 @@ func (m *Manager) markStrategyStartFailed(id string, err error) {
 	if inst == nil {
 		return
 	}
-	inst.mu.Lock()
-	inst.Status = StatusError
-	inst.mu.Unlock()
+	m.setStrategyStatus(inst, StatusError)
 	if err != nil {
 		emitStrategyLog(inst, "error", fmt.Sprintf("Strategy start failed: %v", err))
 	}
@@ -175,6 +171,7 @@ func (m *Manager) stopStrategyNow(id string, force bool) error {
 	}
 	inst.Status = StatusStopped
 	inst.stopping = false
+	go m.setStrategyStatus(inst, StatusStopped)
 	return nil
 }
 

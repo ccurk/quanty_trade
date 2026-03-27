@@ -55,6 +55,7 @@ func (m *Manager) attachRedisIO(inst *StrategyInstance, redisBus *bus.RedisBus, 
 			if !inst.stateReadySeen {
 				inst.stateReadySeen = true
 				inst.mu.Unlock()
+				m.setStrategyStatus(inst, StatusRunning)
 				emitStrategyLog(inst, "info", fmt.Sprintf("Strategy ready boot_id=%s", st.BootID))
 				inst.mu.Lock()
 			}

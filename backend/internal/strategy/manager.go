@@ -961,9 +961,13 @@ func (inst *StrategyInstance) readStdout() {
 		inst.hub.BroadcastJSON(map[string]interface{}{"type": "log", "data": logMsg, "id": inst.ID})
 	}
 
-	inst.mu.Lock()
-	inst.Status = StatusStopped
-	inst.mu.Unlock()
+	if inst.mgr != nil {
+		inst.mgr.setStrategyStatus(inst, StatusStopped)
+	} else {
+		inst.mu.Lock()
+		inst.Status = StatusStopped
+		inst.mu.Unlock()
+	}
 }
 
 func (m *Manager) SyncFromDB(db *gorm.DB) error {

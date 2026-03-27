@@ -84,10 +84,10 @@ func (m *Manager) waitProcessLoop(inst *StrategyInstance) {
 	inst.mu.Lock()
 	stopping := inst.stopping
 	active := inst.Status == StatusRunning || inst.Status == StatusStarting
-	if active {
-		inst.Status = StatusError
-	}
 	inst.mu.Unlock()
+	if active {
+		m.setStrategyStatus(inst, StatusError)
+	}
 
 	if stopping {
 		return

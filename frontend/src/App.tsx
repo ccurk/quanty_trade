@@ -827,6 +827,14 @@ const App: React.FC = () => {
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] Position ${sym} amount=${amt} status=${status}`, ...prev.slice(0, 99)]);
         fetchPositions(positionStatus);
         fetchDashboard();
+      } else if (type === 'strategy_status') {
+        const strategyID = typeof parsed.strategy_id === 'string' ? parsed.strategy_id : '';
+        const status = parsed.status;
+        if (strategyID && typeof status === 'string' && ['starting', 'running', 'stopped', 'error'].includes(status)) {
+          setStrategies(prev => prev.map(item => item.id === strategyID ? { ...item, status: status as Strategy['status'] } : item));
+        } else {
+          fetchStrategies();
+        }
       } else if (type === 'error') {
         const msg = typeof parsed.error === 'string' ? parsed.error : '发生错误';
         setLogs(prev => [`[${new Date().toLocaleTimeString()}] ERROR ${msg}`, ...prev.slice(0, 99)]);
@@ -869,6 +877,7 @@ const App: React.FC = () => {
       if (s.status === 'running') {
         try {
           await axios.post(`/api/strategies/${s.id}/stop`);
+          setStrategies(prev => prev.map(item => item.id === s.id ? { ...item, status: 'stopped' } : item));
         } catch (err: unknown) {
           const msg = getAxiosErrorMessage(err) || '';
           if (msg.includes('open positions') || msg.includes('未平仓')) {
@@ -893,6 +902,7 @@ const App: React.FC = () => {
         }
       } else if (s.status !== 'starting') {
         const resp = await axios.post(`/api/strategies/${s.id}/start`);
+        setStrategies(prev => prev.map(item => item.id === s.id ? { ...item, status: 'starting' } : item));
         const nextStatus = (resp?.data?.runtime_status || resp?.data?.status || '').toString();
         if (nextStatus) {
           showToast(nextStatus === 'starting' || nextStatus === 'queued' ? '策略已进入启动队列' : '策略启动请求已提交', 'success');
