@@ -245,10 +245,12 @@ func (m *Manager) activateStartedStrategy(inst *StrategyInstance, plan *strategy
 	inst.mu.Lock()
 	inst.cmd = proc.cmd
 	inst.stdout = proc.stdout
-	inst.Status = StatusRunning
+	inst.Status = StatusStarting
 	inst.feedSymbols = plan.feedSymbols
 	inst.resync = true
 	inst.bootID = ""
+	inst.stateReadySeen = false
+	inst.heartbeatSeen = false
 	inst.startedAt = time.Now()
 	inst.lastHB = time.Time{}
 	inst.stopping = false

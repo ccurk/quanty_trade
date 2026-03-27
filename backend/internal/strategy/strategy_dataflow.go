@@ -51,6 +51,7 @@ func (m *Manager) attachRedisIO(inst *StrategyInstance, redisBus *bus.RedisBus, 
 			inst.resync = true
 		}
 		if typ == "ready" {
+			inst.Status = StatusRunning
 			if !inst.stateReadySeen {
 				inst.stateReadySeen = true
 				inst.mu.Unlock()
