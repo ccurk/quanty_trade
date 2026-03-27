@@ -43,10 +43,9 @@ func (m *Manager) quickTradeTick() {
 	}
 
 	now := time.Now()
-	cutoff := now.Add(-30 * time.Minute)
 
 	var openRows []models.StrategyPosition
-	if err := database.DB.Where("status = ? AND open_time <= ?", "open", cutoff).Find(&openRows).Error; err != nil {
+	if err := database.DB.Where("status = ?", "open").Find(&openRows).Error; err != nil {
 		return
 	}
 	if len(openRows) == 0 {
@@ -63,28 +62,43 @@ func (m *Manager) quickTradeTick() {
 		if err != nil {
 			continue
 		}
-		pnlBySymbol := map[string]float64{}
+		posBySymbol := map[string]exchange.Position{}
 		for _, p := range ps {
-			pnlBySymbol[strings.ToUpper(p.Symbol)] = p.UnrealizedPnL
+			posBySymbol[strings.ToUpper(p.Symbol)] = p
 		}
 		for _, r := range rows {
-			symKey := strings.ToUpper(r.Symbol)
-			unpnl := pnlBySymbol[symKey]
-			if unpnl <= 5 {
-				continue
-			}
-			if !m.tryMarkQuickClose(uid, symKey, now) {
-				continue
-			}
-
 			m.mu.RLock()
 			inst := m.instances[r.StrategyID]
 			m.mu.RUnlock()
 			if inst == nil {
 				continue
 			}
-			emitStrategyLog(inst, "info", fmt.Sprintf("快速交易期触发：持仓超过30分钟且未实现盈利>%0.2fUSDT，自动平仓 symbol=%s pnl=%0.4f", 5.0, r.Symbol, unpnl))
-			_ = m.closePositionForInstance(inst, r.Symbol, "quick_trade", "")
+			enabled, after, hungerTPPct, hungerSLPct := resolveHungerMode(inst)
+			if !enabled || after <= 0 || r.OpenTime.IsZero() || now.Sub(r.OpenTime) < after {
+				continue
+			}
+			symKey := strings.ToUpper(r.Symbol)
+			pos, ok := posBySymbol[symKey]
+			if !ok {
+				continue
+			}
+			roi := pos.ReturnRate
+			unpnl := pos.UnrealizedPnL
+			reason := ""
+			if hungerTPPct > 0 && roi >= hungerTPPct*100 {
+				reason = "hunger_tp"
+			}
+			if reason == "" && hungerSLPct > 0 && roi <= -hungerSLPct*100 {
+				reason = "hunger_sl"
+			}
+			if reason == "" {
+				continue
+			}
+			if !m.tryMarkQuickClose(uid, symKey, now) {
+				continue
+			}
+			emitStrategyLog(inst, "info", fmt.Sprintf("饥饿模式触发：持仓时长=%s symbol=%s roi=%0.4f%% pnl=%0.4f tp=%0.2f%% sl=%0.2f%%，自动平仓", now.Sub(r.OpenTime).Round(time.Second), r.Symbol, roi, unpnl, hungerTPPct*100, hungerSLPct*100))
+			_ = m.closePositionForInstance(inst, r.Symbol, reason, "")
 		}
 	}
 }

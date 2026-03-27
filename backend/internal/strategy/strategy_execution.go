@@ -143,6 +143,105 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 	return amount, nil
 }
 
+func normalizedTPSLPct(inst *StrategyInstance, key string) float64 {
+	if inst == nil {
+		return 0
+	}
+	pct := getNumber(inst.Config[key])
+	if pct > 1 {
+		pct = pct / 100
+	}
+	if pct < 0 {
+		return 0
+	}
+	return pct
+}
+
+func hasEffectiveTPSL(inst *StrategyInstance, takeProfit float64, stopLoss float64) bool {
+	if takeProfit > 0 && stopLoss > 0 {
+		return true
+	}
+	return normalizedTPSLPct(inst, "take_profit_pct") > 0 && normalizedTPSLPct(inst, "stop_loss_pct") > 0
+}
+
+func resolveTPSLFromROI(inst *StrategyInstance, side string, entryPrice float64, takeProfit float64, stopLoss float64) (float64, float64) {
+	if inst == nil || entryPrice <= 0 {
+		return takeProfit, stopLoss
+	}
+	lev := int(getNumber(inst.Config["leverage"]))
+	if lev <= 0 {
+		lev = 1
+	}
+	dir := strings.ToLower(strings.TrimSpace(side))
+	if dir == "long" {
+		dir = "buy"
+	}
+	if dir == "short" {
+		dir = "sell"
+	}
+	if dir != "buy" && dir != "sell" {
+		return takeProfit, stopLoss
+	}
+
+	tpPct := normalizedTPSLPct(inst, "take_profit_pct")
+	slPct := normalizedTPSLPct(inst, "stop_loss_pct")
+	if tpPct <= 0 && slPct <= 0 {
+		return takeProfit, stopLoss
+	}
+
+	offset := func(pct float64) float64 {
+		if pct <= 0 {
+			return 0
+		}
+		return pct / float64(lev)
+	}
+
+	if off := offset(tpPct); off > 0 {
+		if dir == "buy" {
+			takeProfit = entryPrice * (1 + off)
+		} else {
+			takeProfit = entryPrice * (1 - off)
+		}
+	}
+	if off := offset(slPct); off > 0 {
+		if dir == "buy" {
+			stopLoss = entryPrice * (1 - off)
+		} else {
+			stopLoss = entryPrice * (1 + off)
+		}
+	}
+	return takeProfit, stopLoss
+}
+
+func resolveHungerMode(inst *StrategyInstance) (bool, time.Duration, float64, float64) {
+	if inst == nil {
+		return false, 0, 0, 0
+	}
+	enabled := true
+	if _, ok := inst.Config["hunger_mode_enabled"]; ok {
+		enabled = getBool(inst.Config["hunger_mode_enabled"])
+	}
+	afterMinutes := int(getNumber(inst.Config["hunger_after_minutes"]))
+	if afterMinutes <= 0 {
+		afterMinutes = 30
+	}
+
+	derivePct := func(raw float64, fallbackKey string) float64 {
+		if raw > 0 {
+			return raw
+		}
+		base := normalizedTPSLPct(inst, fallbackKey)
+		if base > 0 && base < 0.03 {
+			return base
+		}
+		return 0.03
+	}
+
+	tpPct := derivePct(normalizedTPSLPct(inst, "hunger_take_profit_pct"), "take_profit_pct")
+	slPct := derivePct(normalizedTPSLPct(inst, "hunger_stop_loss_pct"), "stop_loss_pct")
+	return enabled, time.Duration(afterMinutes) * time.Minute, tpPct, slPct
+}
+
 func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.BinanceExchange, sym string) error {
 	order, _, _, err := bx.ClosePositionOrder(sym, inst.OwnerID)
 	if err != nil {

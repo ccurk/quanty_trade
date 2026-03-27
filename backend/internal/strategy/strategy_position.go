@@ -55,7 +55,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	if amount <= 0 {
 		return
 	}
-	if takeProfit <= 0 || stopLoss <= 0 {
+	if !hasEffectiveTPSL(inst, takeProfit, stopLoss) {
 		emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: 缺少止盈止损，拒绝开仓 symbol=%s side=%s amount=%v tp=%v sl=%v", symbol, normalizedSide, amount, takeProfit, stopLoss))
 		return
 	}
@@ -256,15 +256,16 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			"avg_price":         order.Price,
 			"updated_at":        time.Now(),
 		})
+	effectiveTakeProfit, effectiveStopLoss := resolveTPSLFromROI(inst, normalizedSide, order.Price, takeProfit, stopLoss)
 	emitStrategyLog(inst, "info", fmt.Sprintf("Order placed symbol=%s side=%s status=%s order_id=%s client_order_id=%s qty=%v price=%v", symbol, normalizedSide, strings.ToLower(order.Status), order.ID, order.ClientOrderID, order.Amount, order.Price))
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
 
 	if strings.ToLower(order.Status) == "filled" {
-		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, takeProfit, stopLoss, order.Timestamp)
+		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, effectiveTakeProfit, effectiveStopLoss, order.Timestamp)
 	}
 
-	if takeProfit > 0 || stopLoss > 0 {
-		go m.tryPlaceExchangeTPStop(inst, symbol, takeProfit, stopLoss, clientOrderID, signalID)
+	if effectiveTakeProfit > 0 || effectiveStopLoss > 0 {
+		go m.tryPlaceExchangeTPStop(inst, symbol, effectiveTakeProfit, effectiveStopLoss, clientOrderID, signalID)
 	}
 }
 
@@ -300,6 +301,11 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 						}
 						_ = database.DB.Create(&newPos).Error
 					}
+					side := "buy"
+					if amt < 0 {
+						side = "sell"
+					}
+					takeProfit, stopLoss = resolveTPSLFromROI(inst, side, entryPx, takeProfit, stopLoss)
 					if entryPx > 0 && stopLoss > 0 {
 						if levUsed <= 0 {
 							levUsed = float64(int(getNumber(inst.Config["leverage"])))
@@ -373,6 +379,11 @@ func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, t
 			if amt < 0 {
 				isShort = true
 			}
+			side := "buy"
+			if isShort {
+				side = "sell"
+			}
+			takeProfit, stopLoss = resolveTPSLFromROI(inst, side, entryPx, takeProfit, stopLoss)
 			if entryPx > 0 && stopLoss > 0 {
 				if levUsed <= 0 {
 					levUsed = float64(int(getNumber(inst.Config["leverage"])))
