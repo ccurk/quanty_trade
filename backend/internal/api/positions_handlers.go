@@ -396,6 +396,10 @@ func ClosePosition(c *gin.Context) {
 			stratMgr.ReleaseOpenSlot(strategyID)
 		}
 		go func(ownerID uint, sym string) {
+			_ = bx.CancelUSDMAlgoOpenOrders(ownerID, sym)
+			_ = bx.CancelPrePositionOpenOrders(ownerID, sym)
+		}(uid, symbol)
+		go func(ownerID uint, sym string) {
 			deadline := time.Now().Add(45 * time.Second)
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()

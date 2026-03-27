@@ -248,6 +248,12 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 		return err
 	}
 	if order == nil {
+		if err := bx.CancelUSDMAlgoOpenOrders(inst.OwnerID, sym); err != nil {
+			emitStrategyLog(inst, "error", fmt.Sprintf("撤销止盈止损失败 symbol=%s err=%v", sym, err))
+		}
+		if err := bx.CancelPrePositionOpenOrders(inst.OwnerID, sym); err != nil {
+			emitStrategyLog(inst, "error", fmt.Sprintf("撤销剩余挂单失败 symbol=%s err=%v", sym, err))
+		}
 		return nil
 	}
 	database.DB.Create(&models.StrategyOrder{
@@ -273,14 +279,26 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, 0, 0, order.Timestamp)
 	}
 	go func(ownerID uint, symbol string) {
+		if err := bx.CancelUSDMAlgoOpenOrders(ownerID, symbol); err != nil {
+			emitStrategyLog(inst, "error", fmt.Sprintf("平仓后立即撤销止盈止损失败 symbol=%s err=%v", symbol, err))
+		}
+		if err := bx.CancelPrePositionOpenOrders(ownerID, symbol); err != nil {
+			emitStrategyLog(inst, "error", fmt.Sprintf("平仓后立即撤销剩余挂单失败 symbol=%s err=%v", symbol, err))
+		}
+	}(inst.OwnerID, sym)
+	go func(ownerID uint, symbol string) {
 		deadline := time.Now().Add(45 * time.Second)
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for time.Now().Before(deadline) {
 			amt, _, _, e := bx.USDMPositionAmt(ownerID, symbol)
 			if e == nil && amt == 0 {
-				_ = bx.CancelUSDMAlgoOpenOrders(ownerID, symbol)
-				_ = bx.CancelPrePositionOpenOrders(ownerID, symbol)
+				if err := bx.CancelUSDMAlgoOpenOrders(ownerID, symbol); err != nil {
+					emitStrategyLog(inst, "error", fmt.Sprintf("仓位归零后撤销止盈止损失败 symbol=%s err=%v", symbol, err))
+				}
+				if err := bx.CancelPrePositionOpenOrders(ownerID, symbol); err != nil {
+					emitStrategyLog(inst, "error", fmt.Sprintf("仓位归零后撤销剩余挂单失败 symbol=%s err=%v", symbol, err))
+				}
 				return
 			}
 			<-ticker.C

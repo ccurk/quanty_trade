@@ -1773,12 +1773,23 @@ func (b *BinanceExchange) CancelUSDMAlgoOpenOrders(ownerID uint, symbol string) 
 	if err := json.Unmarshal(body, &orders); err != nil {
 		return err
 	}
+	var firstErr error
 	for _, o := range orders {
 		q := url.Values{}
-		q.Set("algoId", strconv.FormatInt(o.AlgoID, 10))
-		_, _, _ = b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/algoOrder", q)
+		q.Set("symbol", binanceSymbol(symbol))
+		if o.AlgoID > 0 {
+			q.Set("algoId", strconv.FormatInt(o.AlgoID, 10))
+		} else if strings.TrimSpace(o.ClientAlgoID) != "" {
+			q.Set("clientAlgoId", o.ClientAlgoID)
+		} else {
+			continue
+		}
+		_, _, err := b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/algoOrder", q)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return nil
+	return firstErr
 }
 
 // USDMMaxNotionalForLeverage returns the symbol-specific maximum notional allowed at the given leverage bracket.
