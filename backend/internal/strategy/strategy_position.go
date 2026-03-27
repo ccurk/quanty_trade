@@ -55,8 +55,22 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	if amount <= 0 {
 		return
 	}
+	if takeProfit <= 0 || stopLoss <= 0 {
+		emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: 缺少止盈止损，拒绝开仓 symbol=%s side=%s amount=%v tp=%v sl=%v", symbol, normalizedSide, amount, takeProfit, stopLoss))
+		return
+	}
 
 	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		if err := bx.SupportsSymbol(symbol); err != nil {
+			inst.orderMu.Lock()
+			if inst.invalidSymbol == nil {
+				inst.invalidSymbol = map[string]time.Time{}
+			}
+			inst.invalidSymbol[exchange.NormalizeSymbol(symbol)] = time.Now().Add(10 * time.Minute)
+			inst.orderMu.Unlock()
+			emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: symbol not supported in current market symbol=%s err=%v", symbol, err))
+			return
+		}
 		resolvedAmount, err := resolveUSDMOrderAmount(inst, bx, symbol, amount, price)
 		if err != nil || resolvedAmount <= 0 {
 			return

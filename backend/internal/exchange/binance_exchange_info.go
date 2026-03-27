@@ -106,6 +106,11 @@ func (b *BinanceExchange) getFilters(symbol string) (binanceSymbolFilters, error
 	return f, nil
 }
 
+func (b *BinanceExchange) SupportsSymbol(symbol string) error {
+	_, err := b.getFilters(symbol)
+	return err
+}
+
 func splitBaseQuote(sym string) (string, string) {
 	s := strings.ToUpper(strings.TrimSpace(sym))
 	if strings.Contains(s, "/") {

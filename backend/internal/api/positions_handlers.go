@@ -293,6 +293,8 @@ func ClosePosition(c *gin.Context) {
 			return
 		}
 		if order == nil {
+			_ = bx.CancelUSDMAlgoOpenOrders(uid, symbol)
+			_ = bx.CancelPrePositionOpenOrders(uid, symbol)
 			if hasExisting && existing.StrategyID != "" && existing.StrategyID != "manual" {
 				stratMgr.ReleaseOpenSlot(existing.StrategyID)
 			}
@@ -393,6 +395,20 @@ func ClosePosition(c *gin.Context) {
 		if strategyID != "" && strategyID != "manual" {
 			stratMgr.ReleaseOpenSlot(strategyID)
 		}
+		go func(ownerID uint, sym string) {
+			deadline := time.Now().Add(45 * time.Second)
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			for time.Now().Before(deadline) {
+				amt, _, _, e := bx.USDMPositionAmt(ownerID, sym)
+				if e == nil && amt == 0 {
+					_ = bx.CancelUSDMAlgoOpenOrders(ownerID, sym)
+					_ = bx.CancelPrePositionOpenOrders(ownerID, sym)
+					return
+				}
+				<-ticker.C
+			}
+		}(uid, symbol)
 
 		c.JSON(http.StatusOK, gin.H{"status": "success"})
 		return

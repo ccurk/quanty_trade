@@ -30,6 +30,35 @@ type strategyProcess struct {
 	stderr io.ReadCloser
 }
 
+func validateFeedSymbolsForExchange(inst *StrategyInstance, feedSymbols []string, logTrace bool) ([]string, error) {
+	if inst == nil || len(feedSymbols) == 0 {
+		return feedSymbols, nil
+	}
+	bx, ok := inst.exchange.(*exchange.BinanceExchange)
+	if !ok {
+		return feedSymbols, nil
+	}
+	valid := make([]string, 0, len(feedSymbols))
+	for _, sym := range feedSymbols {
+		sym = strings.TrimSpace(sym)
+		if sym == "" {
+			continue
+		}
+		if err := bx.SupportsSymbol(sym); err != nil {
+			emitStrategyLog(inst, "error", fmt.Sprintf("Symbol filtered out symbol=%s reason=%v", sym, err))
+			continue
+		}
+		valid = append(valid, sym)
+	}
+	if len(valid) == 0 {
+		return nil, fmt.Errorf("no tradable symbols available in current market")
+	}
+	if logTrace && len(valid) != len(feedSymbols) {
+		emitStrategyLog(inst, "info", fmt.Sprintf("Symbol validation ok kept=%d dropped=%d market=%s", len(valid), len(feedSymbols)-len(valid), bx.Market()))
+	}
+	return valid, nil
+}
+
 func (m *Manager) getStartableStrategy(id string) (*StrategyInstance, error) {
 	m.mu.RLock()
 	inst, ok := m.instances[id]
@@ -150,7 +179,7 @@ func (m *Manager) resolveFeedSymbols(inst *StrategyInstance, logTrace bool) ([]s
 	}
 	useFilter := fixedSymbol == "" && (selectMode == "filter" || autoSymbols || minPrice > 0 || maxPrice > 0 || minPrecision > 0 || minVolatility > 0)
 	if !useFilter {
-		return feedSymbols, nil
+		return validateFeedSymbolsForExchange(inst, feedSymbols, logTrace)
 	}
 
 	emitStrategyLog(inst, "info", fmt.Sprintf("Symbol select start mode=%s min_price=%v max_price=%v min_precision=%d min_volatility=%v limit=%d", selectMode, minPrice, maxPrice, minPrecision, minVolatility, limit))
@@ -206,7 +235,7 @@ func (m *Manager) resolveFeedSymbols(inst *StrategyInstance, logTrace bool) ([]s
 			}
 		}
 	}
-	return feedSymbols, nil
+	return validateFeedSymbolsForExchange(inst, feedSymbols, logTrace)
 }
 
 func (m *Manager) startStrategyProcess(inst *StrategyInstance, plan *strategyStartPlan) (*strategyProcess, error) {
