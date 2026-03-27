@@ -76,6 +76,45 @@ func resolveStrategyPath(p string) (string, error) {
 	return "", fmt.Errorf("invalid strategy path: %s", p)
 }
 
+func loadLatestDiskStrategyCode(inst *StrategyInstance, row *models.StrategyInstance) (string, bool) {
+	candidates := make([]string, 0, 2)
+	if row != nil {
+		if p := strings.TrimSpace(row.Template.Path); p != "" && !strings.HasPrefix(strings.ToLower(p), "db://") {
+			candidates = append(candidates, p)
+		}
+	}
+	if inst != nil {
+		if p := strings.TrimSpace(inst.Path); p != "" && !strings.HasPrefix(strings.ToLower(p), "db://") {
+			candidates = append(candidates, p)
+		}
+	}
+
+	seen := map[string]struct{}{}
+	for _, p := range candidates {
+		abs, err := resolveStrategyPath(p)
+		if err != nil {
+			continue
+		}
+		abs = filepath.Clean(abs)
+		if _, ok := seen[abs]; ok {
+			continue
+		}
+		seen[abs] = struct{}{}
+		if strings.Contains(filepath.ToSlash(abs), "/_runtime/") {
+			continue
+		}
+		b, err := os.ReadFile(abs)
+		if err != nil {
+			continue
+		}
+		code := strings.TrimSpace(string(b))
+		if code != "" {
+			return code, true
+		}
+	}
+	return "", false
+}
+
 func parseSymbolsValue(v interface{}) []string {
 	out := make([]string, 0)
 	switch t := v.(type) {
@@ -525,20 +564,15 @@ func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, er
 	}
 
 	code := strings.TrimSpace(row.Template.Code)
+	if disk, ok := loadLatestDiskStrategyCode(inst, &row); ok {
+		if disk != code && row.Template.ID > 0 {
+			_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
+				Updates(map[string]interface{}{"code": disk, "updated_at": time.Now()}).Error
+		}
+		code = disk
+	}
 	if code == "" {
 		return resolveStrategyPath(inst.Path)
-	}
-	if p := strings.TrimSpace(row.Template.Path); p != "" && !strings.HasPrefix(strings.ToLower(p), "db://") {
-		if abs, err := resolveStrategyPath(p); err == nil {
-			if b, err := os.ReadFile(abs); err == nil {
-				disk := strings.TrimSpace(string(b))
-				if disk != "" && disk != code {
-					code = disk
-					_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
-						Updates(map[string]interface{}{"code": code, "updated_at": time.Now()}).Error
-				}
-			}
-		}
 	}
 
 	strategiesDir := conf.C().Paths.StrategiesDir
@@ -564,7 +598,6 @@ func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, er
 	inst.RuntimePath = absPath
 	inst.RuntimeGenerated = true
 	inst.RuntimeKeep = keep
-	inst.Path = absPath
 	return absPath, nil
 }
 
@@ -588,21 +621,16 @@ func (m *Manager) prepareBacktestStrategyFile(inst *StrategyInstance, backtestID
 	}
 
 	code := strings.TrimSpace(row.Template.Code)
+	if disk, ok := loadLatestDiskStrategyCode(inst, &row); ok {
+		if disk != code && row.Template.ID > 0 {
+			_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
+				Updates(map[string]interface{}{"code": disk, "updated_at": time.Now()}).Error
+		}
+		code = disk
+	}
 	if code == "" {
 		absPath, err := resolveStrategyPath(inst.Path)
 		return absPath, func() {}, err
-	}
-	if p := strings.TrimSpace(row.Template.Path); p != "" && !strings.HasPrefix(strings.ToLower(p), "db://") {
-		if abs, err := resolveStrategyPath(p); err == nil {
-			if b, err := os.ReadFile(abs); err == nil {
-				disk := strings.TrimSpace(string(b))
-				if disk != "" && disk != code {
-					code = disk
-					_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
-						Updates(map[string]interface{}{"code": code, "updated_at": time.Now()}).Error
-				}
-			}
-		}
 	}
 
 	strategiesDir := conf.C().Paths.StrategiesDir
