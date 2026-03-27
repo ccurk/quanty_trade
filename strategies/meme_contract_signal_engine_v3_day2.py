@@ -459,80 +459,69 @@ class MemeSignalEngineV3:
             pass
 
     def run(self):
-        use_redis = True
-        v = self.cfg.get("use_redis")
-        if isinstance(v, bool):
-            use_redis = v
-        if use_redis:
+        try:
+            MiniRedis
+        except NameError:
+            raise RuntimeError("MiniRedis is required")
+        if not self.strategy_id:
+            raise RuntimeError("strategy_id required")
+        candidates = [(self.redis_host, self.redis_port)]
+        if self.redis_host in ("127.0.0.1", "localhost"):
+            candidates.append(("host.docker.internal", self.redis_port))
+        r = None
+        last_err = None
+        for h, p in candidates:
             try:
-                MiniRedis
-            except NameError:
-                use_redis = False
-        if use_redis:
+                self._log(f"Connecting Redis host={h} port={p} db={self.redis_db} prefix={self.redis_prefix}")
+                r = MiniRedis(h, p, self.redis_password, self.redis_db).connect()
+                self._log("Redis connected")
+                break
+            except Exception as e:
+                last_err = e
+                self._log(f"Redis connect failed host={h}:{p} err={e}")
+                time.sleep(0.5)
+        if r is None:
+            raise last_err or RuntimeError("Redis connect failed")
+        ps = r.pubsub()
+        for sym in self.symbols:
+            ch1 = f"{self.redis_prefix}:candle:{self.strategy_id}:{sym}"
+            ps.psubscribe(ch1)
+            if self.redis_prefix != "qt":
+                ps.psubscribe(f"qt:candle:{self.strategy_id}:{sym}")
+        self._emit_ready(r)
+        self._log("Ready published")
+        while True:
+            msg = ps.get_message(timeout=1.0)
+            if not msg:
+                continue
+            if msg.get("type") not in ("pmessage", "message"):
+                continue
+            data = msg.get("data")
+            if not data:
+                continue
             try:
-                if not self.strategy_id:
-                    raise RuntimeError("strategy_id required")
-                candidates = [(self.redis_host, self.redis_port)]
-                if self.redis_host in ("127.0.0.1", "localhost"):
-                    candidates.append(("host.docker.internal", self.redis_port))
-                r = None
-                last_err = None
-                for h, p in candidates:
-                    try:
-                        self._log(f"Connecting Redis host={h} port={p} db={self.redis_db} prefix={self.redis_prefix}")
-                        r = MiniRedis(h, p, self.redis_password, self.redis_db).connect()
-                        self._log("Redis connected")
-                        break
-                    except Exception as e:
-                        last_err = e
-                        self._log(f"Redis connect failed host={h}:{p} err={e}")
-                        time.sleep(0.5)
-                if r is None:
-                    raise last_err or RuntimeError("Redis connect failed")
-                ps = r.pubsub()
-                for sym in self.symbols:
-                    ch1 = f"{self.redis_prefix}:candle:{self.strategy_id}:{sym}"
-                    ps.psubscribe(ch1)
-                    if self.redis_prefix != "qt":
-                        ps.psubscribe(f"qt:candle:{self.strategy_id}:{sym}")
-                self._emit_ready(r)
-                self._log("Ready published")
-                while True:
-                    msg = ps.get_message(timeout=1.0)
-                    if not msg:
-                        continue
-                    if msg.get("type") not in ("pmessage", "message"):
-                        continue
-                    data = msg.get("data")
-                    if not data:
-                        continue
-                    try:
-                        payload = json.loads(data)
-                    except Exception:
-                        continue
-                    sym = payload.get("symbol") or payload.get("s") or ""
-                    if not sym:
-                        continue
-                    c = {
-                        "open": float(payload.get("open", 0) or 0),
-                        "high": float(payload.get("high", 0) or 0),
-                        "low": float(payload.get("low", 0) or 0),
-                        "close": float(payload.get("close", 0) or 0),
-                        "vol": float(payload.get("volume", 0) or payload.get("vol", 0) or 0),
-                        "ts": payload.get("timestamp") or payload.get("ts") or 0,
-                    }
-                    self._push_candle(sym, c)
-                    if self.cooldown_sec > 0 and time.time() - self.last_signal_at < self.cooldown_sec:
-                        continue
-                    sig = self._compute(sym, self.candles.get(sym, []))
-                    if not sig:
-                        continue
-                    self._emit_signal(r, sig)
-                    self.last_signal_at = time.time()
+                payload = json.loads(data)
             except Exception:
-                self._base_run()
-        else:
-            self._base_run()
+                continue
+            sym = payload.get("symbol") or payload.get("s") or ""
+            if not sym:
+                continue
+            c = {
+                "open": float(payload.get("open", 0) or 0),
+                "high": float(payload.get("high", 0) or 0),
+                "low": float(payload.get("low", 0) or 0),
+                "close": float(payload.get("close", 0) or 0),
+                "vol": float(payload.get("volume", 0) or payload.get("vol", 0) or 0),
+                "ts": payload.get("timestamp") or payload.get("ts") or 0,
+            }
+            self._push_candle(sym, c)
+            if self.cooldown_sec > 0 and time.time() - self.last_signal_at < self.cooldown_sec:
+                continue
+            sig = self._compute(sym, self.candles.get(sym, []))
+            if not sig:
+                continue
+            self._emit_signal(r, sig)
+            self.last_signal_at = time.time()
 
     def _base_send_log(self, text: str):
         line = {"type": "log", "data": text}

@@ -98,7 +98,7 @@ func (m *Manager) attachUserDataStream(inst *StrategyInstance) {
 	}
 }
 
-func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBus, symbols []string, runCfg map[string]interface{}, stderr interface{}) error {
+func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBus, symbols []string, runCfg map[string]interface{}) error {
 	if inst == nil {
 		return nil
 	}

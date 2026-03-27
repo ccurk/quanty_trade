@@ -689,298 +689,34 @@ func (m *Manager) AddStrategy(id, name, path string, ownerID uint, config map[st
 // - Starts market data subscription if config contains "symbol"
 // - Starts User Data Stream for exchanges that support it (Binance)
 func (m *Manager) StartStrategy(id string) error {
-	m.mu.RLock()
-	inst, ok := m.instances[id]
-	redisBus := m.redisBus
-	m.mu.RUnlock()
-
-	if !ok {
-		return fmt.Errorf("strategy %s not found", id)
+	inst, err := m.getStartableStrategy(id)
+	if err != nil {
+		return err
 	}
-
-	inst.mu.Lock()
-	if inst.Status == StatusRunning {
-		inst.mu.Unlock()
+	if inst == nil {
 		return nil
 	}
-
-	logger.Infof("[STRATEGY START] id=%s owner=%d name=%s path=%s", inst.ID, inst.OwnerID, inst.Name, inst.Path)
-
-	if redisBus == nil {
-		inst.mu.Unlock()
-		rb, err := bus.NewRedisBusFromConfig()
-		if err != nil {
-			return fmt.Errorf("redis bus not available: %v (请确保已启动 Redis，并配置 REDIS_ENABLED=true / REDIS_ADDR)", err)
-		}
-		m.SetRedisBus(rb)
-		m.mu.RLock()
-		redisBus = m.redisBus
-		m.mu.RUnlock()
-		inst.mu.Lock()
-		if inst.Status == StatusRunning {
-			inst.mu.Unlock()
-			return nil
-		}
-	}
-
-	runCfg := make(map[string]interface{}, len(inst.Config)+4)
-	for k, v := range inst.Config {
-		runCfg[k] = v
-	}
-	debugOn := getBool(inst.Config["debug"])
-	logTrace := getBool(inst.Config["log_trace"]) || debugOn
-	if logTrace {
-		runCfg["log_trace"] = true
-		if _, ok := runCfg["log_every"]; !ok {
-			runCfg["log_every"] = 1
-		}
-		if _, ok := runCfg["log_idle_sec"]; !ok {
-			runCfg["log_idle_sec"] = 5
-		}
-		if _, ok := runCfg["log_rx"]; !ok {
-			runCfg["log_rx"] = true
-		}
-		if _, ok := runCfg["log_decisions"]; !ok {
-			runCfg["log_decisions"] = true
-		}
-	}
-	runCfg["strategy_id"] = inst.ID
-	runCfg["owner_id"] = inst.OwnerID
-	rc := conf.C().Redis
-	runCfg["redis_addr"] = rc.Addr
-	runCfg["redis_password"] = rc.Password
-	runCfg["redis_db"] = rc.DB
-	runCfg["redis_prefix"] = rc.Prefix
-	runCfg["use_redis"] = true
-	runCfg["healthcheck"] = map[string]interface{}{
-		"enabled":         true,
-		"interval_sec":    5,
-		"timeout_sec":     20,
-		"ready_grace_sec": 30,
-	}
-
-	fixedSymbol := ""
-	if raw, ok := inst.Config["symbol"].(string); ok {
-		fixedSymbol = strings.TrimSpace(raw)
-	}
-	activeSymbol := fixedSymbol
-
-	feedSymbols := parseSymbolsValue(inst.Config["symbols"])
-	if len(feedSymbols) == 0 && strings.TrimSpace(activeSymbol) != "" {
-		feedSymbols = []string{strings.TrimSpace(activeSymbol)}
-	}
-
-	selectMode := strings.ToLower(strings.TrimSpace(getString(inst.Config["symbol_select_mode"])))
-	autoSymbols := getBool(inst.Config["auto_symbols"])
-	minPrice := getNumber(inst.Config["min_price"])
-	maxPrice := getNumber(inst.Config["max_price"])
-	minPrecision := int(getNumber(inst.Config["min_precision"]))
-	minVolatility := getNumber(inst.Config["min_volatility"])
-	limit := int(getNumber(inst.Config["select_limit"]))
-	if limit <= 0 {
-		limit = 20
-	}
-	useFilter := strings.TrimSpace(activeSymbol) == "" && (selectMode == "filter" || autoSymbols || minPrice > 0 || maxPrice > 0 || minPrecision > 0 || minVolatility > 0)
-	if useFilter {
-		emitStrategyLog(inst, "info", fmt.Sprintf("Symbol select start mode=%s min_price=%v max_price=%v min_precision=%d min_volatility=%v limit=%d", selectMode, minPrice, maxPrice, minPrecision, minVolatility, limit))
-		criteria := exchange.SymbolSelectCriteria{
-			MinPrice:      minPrice,
-			MaxPrice:      maxPrice,
-			MinPrecision:  minPrecision,
-			MinVolatility: minVolatility,
-			Quote:         "USDT",
-			Limit:         limit,
-			OnlySymbols:   feedSymbols,
-		}
-		if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok {
-			res, err := bx.SelectSymbolsDetailed(criteria)
-			if err != nil {
-				emitStrategyLog(inst, "error", fmt.Sprintf("Symbol select failed err=%v", err))
-				if strings.TrimSpace(activeSymbol) == "" && len(feedSymbols) == 0 {
-					inst.mu.Unlock()
-					return fmt.Errorf("symbol select failed and no symbols configured")
-				}
-			} else if len(res.Selected) == 0 {
-				emitStrategyLog(inst, "error", "Symbol select returned empty set")
-				if strings.TrimSpace(activeSymbol) == "" && len(feedSymbols) == 0 {
-					inst.mu.Unlock()
-					return fmt.Errorf("symbol select returned empty set and no symbols configured")
-				}
-			} else {
-				before := append([]string(nil), feedSymbols...)
-				feedSymbols = res.Selected
-				preview := strings.Join(feedSymbols, ",")
-				if len(feedSymbols) > 10 {
-					preview = strings.Join(feedSymbols[:10], ",") + ",..."
-				}
-				emitStrategyLog(inst, "info", fmt.Sprintf("Symbol select ok count=%d mode=%s symbols=%s", len(feedSymbols), selectMode, preview))
-				if logTrace && len(before) > 0 && len(res.Rejected) > 0 {
-					n := 0
-					for _, s := range before {
-						if reason, ok := res.Rejected[s]; ok {
-							emitStrategyLog(inst, "info", fmt.Sprintf("Symbol filtered out symbol=%s reason=%s", s, reason))
-							n++
-							if n >= 20 {
-								break
-							}
-						}
-					}
-				}
-			}
-		} else {
-			emitStrategyLog(inst, "error", "Symbol select requires Binance exchange")
-			if strings.TrimSpace(activeSymbol) == "" && len(feedSymbols) == 0 {
-				inst.mu.Unlock()
-				return fmt.Errorf("symbol select requires binance and no symbols configured")
-			}
-		}
-	}
-	if len(feedSymbols) > 0 {
-		runCfg["symbols"] = feedSymbols
-		if _, ok := runCfg["symbol"].(string); !ok || strings.TrimSpace(fmt.Sprintf("%v", runCfg["symbol"])) == "" {
-			runCfg["symbol"] = feedSymbols[0]
-		}
-	}
-
-	configJSON, _ := json.Marshal(runCfg)
-
-	absPath, err := m.prepareRuntimeStrategyFile(inst)
+	plan, err := m.buildStrategyStartPlan(inst)
 	if err != nil {
-		inst.mu.Unlock()
 		return err
 	}
-	cmd := exec.Command("python3", absPath, string(configJSON))
-	runDir := filepath.Dir(absPath)
-	if inst.RuntimeGenerated {
-		runDir = filepath.Dir(runDir)
+	if plan == nil {
+		return nil
 	}
-	cmd.Dir = runDir
-	stdout, err := cmd.StdoutPipe()
+	proc, err := m.startStrategyProcess(inst, plan)
 	if err != nil {
-		inst.mu.Unlock()
 		return err
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		inst.mu.Unlock()
-		return err
+	if proc == nil {
+		return nil
 	}
-
-	if err := cmd.Start(); err != nil {
-		inst.mu.Unlock()
-		return err
-	}
-
-	inst.cmd = cmd
-	inst.stdout = stdout
-	inst.Status = StatusRunning
-	inst.feedSymbols = feedSymbols
-	inst.resync = true
-	inst.bootID = ""
-	inst.startedAt = time.Now()
-	inst.lastHB = time.Time{}
-	inst.stopping = false
-	inst.restarting = false
-	inst.mu.Unlock()
-
-	pid := 0
-	if cmd.Process != nil {
-		pid = cmd.Process.Pid
-	}
-	candleCh := ""
-	signalCh := ""
-	stateCh := ""
-	if redisBus != nil {
-		candleCh = redisBus.CandleChannel(inst.ID)
-		signalCh = redisBus.SignalChannel(inst.ID)
-		stateCh = redisBus.StateChannel(inst.ID)
-	}
-	logger.Infof("[STRATEGY PROCESS] id=%s owner=%d pid=%d symbols=%d candle_ch=%s signal_ch=%s state_ch=%s", inst.ID, inst.OwnerID, pid, len(feedSymbols), candleCh, signalCh, stateCh)
-	emitStrategyLog(inst, "info", fmt.Sprintf("Process started pid=%d symbols=%d candle_ch=%s signal_ch=%s state_ch=%s", pid, len(feedSymbols), candleCh, signalCh, stateCh))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	inst.mu.Lock()
-	inst.redisCancel = cancel
-	inst.mu.Unlock()
-	_ = redisBus.SubscribeSignals(ctx, inst.ID, func(s bus.SignalMessage) {
-		if strings.TrimSpace(s.StrategyID) == "" {
-			s.StrategyID = inst.ID
-		}
-		if s.StrategyID != inst.ID {
-			return
-		}
-		m.handleRedisSignal(inst, s)
-	})
-	_ = redisBus.SubscribeState(ctx, inst.ID, func(st bus.StateMessage) {
-		if st.StrategyID != inst.ID {
-			return
-		}
-		if strings.TrimSpace(st.BootID) == "" {
-			return
-		}
-		typ := strings.ToLower(strings.TrimSpace(st.Type))
-		if logTrace {
-			emitStrategyLog(inst, "info", fmt.Sprintf("State recv type=%s boot_id=%s", typ, st.BootID))
-		}
-		now := time.Now()
-		inst.mu.Lock()
-		changed := inst.bootID != st.BootID
-		if changed || typ == "ready" {
-			inst.bootID = st.BootID
-			inst.resync = true
-		}
-		if typ == "ready" {
-			if !inst.stateReadySeen {
-				inst.stateReadySeen = true
-				inst.mu.Unlock()
-				emitStrategyLog(inst, "info", fmt.Sprintf("Strategy ready boot_id=%s", st.BootID))
-				inst.mu.Lock()
-			}
-		}
-		if typ == "heartbeat" {
-			if !inst.heartbeatSeen {
-				inst.heartbeatSeen = true
-				inst.mu.Unlock()
-				emitStrategyLog(inst, "info", fmt.Sprintf("Strategy heartbeat boot_id=%s", st.BootID))
-				inst.mu.Lock()
-			}
-		}
-		if typ == "ready" || typ == "heartbeat" {
-			inst.lastHB = now
-		}
-		inst.mu.Unlock()
-	})
-	m.attachRedisIO(inst, redisBus, logTrace)
-
-	if database.DB != nil {
-		debugOn := false
-		if raw, ok := inst.Config["debug"]; ok {
-			if v, ok := raw.(bool); ok {
-				debugOn = v
-			} else if v, ok := raw.(float64); ok {
-				debugOn = v != 0
-			}
-		}
-		if debugOn {
-			cfg := make(map[string]interface{}, len(inst.Config))
-			for k, v := range inst.Config {
-				cfg[k] = v
-			}
-			cfg["debug"] = false
-			if b, err := json.Marshal(cfg); err == nil {
-				_ = database.DB.Model(&models.StrategyInstance{}).Where("id = ?", inst.ID).
-					Updates(map[string]interface{}{"config": string(b), "updated_at": time.Now()}).Error
-				inst.Config["debug"] = false
-			}
-		}
-	}
-
+	m.activateStartedStrategy(inst, plan, proc)
+	m.attachRedisIO(inst, plan.redisBus, plan.logTrace)
+	m.syncStrategyDebugConfig(inst)
 	m.attachUserDataStream(inst)
-
-	_ = m.attachMarketData(inst, redisBus, feedSymbols, runCfg, stderr)
-
+	_ = m.attachMarketData(inst, plan.redisBus, plan.feedSymbols, plan.runCfg)
 	go inst.readStdout()
-	go inst.readStderr(stderr)
+	go inst.readStderr(proc.stderr)
 	return nil
 }
 

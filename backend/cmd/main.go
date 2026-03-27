@@ -8,12 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"quanty_trade/internal/api"
-	"quanty_trade/internal/bus"
+	"quanty_trade/internal/app"
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
-	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/logger"
-	"quanty_trade/internal/strategy"
 	"quanty_trade/internal/ws"
 	"strconv"
 	"strings"
@@ -100,28 +98,9 @@ func main() {
 	hub := ws.NewHub()
 	go hub.Run()
 
-	var ex exchange.Exchange
-	switch conf.C().Exchange.Name {
-	case "binance":
-		ex = exchange.NewBinanceExchange()
-	default:
-		ex = &exchange.MockExchange{Name: "Mock"}
-	}
-	mgr := strategy.NewManager(hub, ex)
-	if conf.C().Redis.Enabled {
-		if rb, err := bus.NewRedisBusFromConfig(); err == nil {
-			mgr.SetRedisBus(rb)
-		} else {
-			logger.Errorf("Redis bus init failed err=%v", err)
-		}
-	}
-	mgr.SyncFromDB(database.DB)
-	go mgr.SyncRedisOpenCountsFromExchange(context.Background())
-	mgr.StartQuickTradeMonitor(context.Background())
-	mgr.StartWorkers()
-	api.SetManager(mgr)
-	api.StartDashboardSnapshotJob(context.Background())
-	api.StartDailyPnLJob(context.Background())
+	runtimeCtx := context.Background()
+	mgr := app.BuildStrategyManager(runtimeCtx, hub)
+	app.StartBackgroundJobs(runtimeCtx, mgr)
 
 	// Auth Routes
 	r.POST("/api/login", api.Login)
