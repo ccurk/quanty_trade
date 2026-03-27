@@ -78,14 +78,42 @@ func resolveStrategyPath(p string) (string, error) {
 
 func loadLatestDiskStrategyCode(inst *StrategyInstance, row *models.StrategyInstance) (string, bool) {
 	candidates := make([]string, 0, 2)
+	names := make([]string, 0, 3)
 	if row != nil {
 		if p := strings.TrimSpace(row.Template.Path); p != "" && !strings.HasPrefix(strings.ToLower(p), "db://") {
 			candidates = append(candidates, p)
+		}
+		if n := strings.TrimSpace(row.Template.Name); n != "" {
+			names = append(names, n, strings.ReplaceAll(n, " ", "_")+".py")
 		}
 	}
 	if inst != nil {
 		if p := strings.TrimSpace(inst.Path); p != "" && !strings.HasPrefix(strings.ToLower(p), "db://") {
 			candidates = append(candidates, p)
+			names = append(names, filepath.Base(p))
+		}
+	}
+
+	strategiesDir := conf.C().Paths.StrategiesDir
+	if strategiesDir == "" {
+		strategiesDir = conf.Path("strategies")
+	}
+	if absDir, err := filepath.Abs(strategiesDir); err == nil {
+		entries, _ := os.ReadDir(absDir)
+		for _, want := range names {
+			want = strings.ToLower(strings.TrimSpace(filepath.Base(want)))
+			if want == "" || want == "." {
+				continue
+			}
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				name := strings.ToLower(e.Name())
+				if name == want || strings.HasPrefix(name, strings.TrimSuffix(want, ".py")) {
+					candidates = append(candidates, filepath.Join(absDir, e.Name()))
+				}
+			}
 		}
 	}
 
