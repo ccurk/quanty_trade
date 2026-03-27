@@ -364,6 +364,7 @@ const App: React.FC = () => {
   const [dashboardRange, setDashboardRange] = useState<'default' | '1m' | '5m' | '1w' | '1mo' | 'custom'>('default');
   const [dashboardStart, setDashboardStart] = useState('');
   const [dashboardEnd, setDashboardEnd] = useState('');
+  const [dashboardCalendarMonth, setDashboardCalendarMonth] = useState(new Date().toISOString().slice(0, 7));
   
   // Backtest State
   const [showBacktestModal, setShowBacktestModal] = useState(false);
@@ -1791,26 +1792,27 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-                <div className="text-xs text-gray-500 uppercase font-bold mb-2">交易所</div>
-                <div className="font-bold">{dashboard ? `${dashboard.account.exchange} / ${dashboard.account.market}` : '--'}</div>
-              </div>
-              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-                <div className="text-xs text-gray-500 uppercase font-bold mb-2">持仓数量</div>
-                <div className="font-mono font-bold">{dashboard ? dashboard.positions.open_count : '--'}</div>
-              </div>
-              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-                <div className="text-xs text-gray-500 uppercase font-bold mb-2">持仓名义额</div>
-                <div className="font-mono font-bold">{dashboard ? `$${dashboard.positions.open_notional.toFixed(2)}` : '--'}</div>
-              </div>
-              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-                <div className="text-xs text-gray-500 uppercase font-bold mb-2">未实现盈亏</div>
-                <div className={`font-mono font-bold ${dashboard && dashboard.positions.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                  {dashboard ? `$${dashboard.positions.unrealized_pnl.toFixed(2)}` : '--'}
+            {(() => {
+              const overviewCards = [
+                { title: '交易所', value: dashboard ? dashboard.account.exchange : '--', sub: dashboard ? dashboard.account.market.toUpperCase() : '--' },
+                { title: '持仓数量', value: dashboard ? String(dashboard.positions.open_count) : '--', sub: dashboard ? `${dashboard.strategies.running} 个策略运行中` : '--' },
+                { title: '持仓名义额', value: dashboard ? `$${dashboard.positions.open_notional.toFixed(2)}` : '--', sub: '当前仓位规模' },
+                { title: '未实现盈亏', value: dashboard ? `$${dashboard.positions.unrealized_pnl.toFixed(2)}` : '--', sub: dashboard ? `${dashboard.positions.open_symbols} 个交易对持仓中` : '--', tone: dashboard && dashboard.positions.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500' },
+                { title: '今日总盈亏', value: dashboard ? `$${dashboard.pnl.day.total_pnl.toFixed(2)}` : '--', sub: dashboard ? `已实现 ${dashboard.pnl.day.realized_return_pct.toFixed(2)}%` : '--', tone: dashboard && dashboard.pnl.day.total_pnl >= 0 ? 'text-green-500' : 'text-red-500' },
+                { title: '本月总盈亏', value: dashboard ? `$${dashboard.pnl.month.total_pnl.toFixed(2)}` : '--', sub: dashboard ? `已实现 ${dashboard.pnl.month.realized_return_pct.toFixed(2)}%` : '--', tone: dashboard && dashboard.pnl.month.total_pnl >= 0 ? 'text-green-500' : 'text-red-500' },
+              ];
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
+                  {overviewCards.map(card => (
+                    <div key={card.title} className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                      <div className="text-xs text-gray-500 uppercase font-bold mb-2">{card.title}</div>
+                      <div className={`font-mono font-bold text-lg ${card.tone || ''}`}>{card.value}</div>
+                      <div className="text-xs text-gray-500 mt-2">{card.sub}</div>
+                    </div>
+                  ))}
                 </div>
-              </div>
-            </div>
+              );
+            })()}
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {(() => {
@@ -1853,33 +1855,27 @@ const App: React.FC = () => {
                 <div className="text-xs text-gray-500">每天 00:05 统计上一天</div>
               </div>
               {(() => {
-                const [selMonth, setSelMonth] = (window as any).__pnlMonthState || ((window as any).__pnlMonthState = (() => {
-                  let value = new Date().toISOString().slice(0,7);
-                  const setValue = (v: string) => { value = v; (window as any).__pnlMonthValue = v; };
-                  return [value, setValue];
-                })());
                 const calAll = dashboard?.pnl.calendar || [];
-                const month = ((window as any).__pnlMonthValue as string) || selMonth;
+                const month = dashboardCalendarMonth;
                 const cal = calAll.filter(d => (d.day || '').startsWith(month));
+                const weekdayHeaders = ['一', '二', '三', '四', '五', '六', '日'];
+                const monthPnl = cal.reduce((sum, d) => sum + (d.realized_pnl || 0), 0);
+                const monthTrades = cal.reduce((sum, d) => sum + (d.trades || 0), 0);
+                const positiveDays = cal.filter(d => (d.realized_pnl || 0) > 0).length;
+                const negativeDays = cal.filter(d => (d.realized_pnl || 0) < 0).length;
+                const moveMonth = (step: number) => {
+                  const dt = new Date(month + '-01T00:00:00');
+                  dt.setMonth(dt.getMonth() + step);
+                  setDashboardCalendarMonth(dt.toISOString().slice(0, 7));
+                };
                 if (!cal.length) {
                   return (
                     <div>
                       <div className="flex items-center gap-3 mb-3">
-                        <button onClick={() => {
-                          const dt = new Date(month + '-01T00:00:00');
-                          dt.setMonth(dt.getMonth() - 1);
-                          const nv = dt.toISOString().slice(0,7);
-                          setSelMonth(nv);
-                          (window as any).__pnlMonthValue = nv;
-                        }} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>上个月</button>
+                        <button onClick={() => moveMonth(-1)} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>上个月</button>
                         <div className="text-sm">{month}</div>
-                        <button onClick={() => {
-                          const dt = new Date(month + '-01T00:00:00');
-                          dt.setMonth(dt.getMonth() + 1);
-                          const nv = dt.toISOString().slice(0,7);
-                          setSelMonth(nv);
-                          (window as any).__pnlMonthValue = nv;
-                        }} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>下个月</button>
+                        <button onClick={() => moveMonth(1)} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>下个月</button>
+                        <button onClick={() => setDashboardCalendarMonth(new Date().toISOString().slice(0, 7))} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-blue-900/40 text-blue-200' : 'bg-blue-50 text-blue-700'}`}>本月</button>
                       </div>
                       <div className="text-sm text-gray-500">该月暂无数据</div>
                     </div>
@@ -1902,21 +1898,33 @@ const App: React.FC = () => {
                 return (
                   <div>
                     <div className="flex items-center gap-3 mb-3">
-                      <button onClick={() => {
-                        const dt = new Date(month + '-01T00:00:00');
-                        dt.setMonth(dt.getMonth() - 1);
-                        const nv = dt.toISOString().slice(0,7);
-                        setSelMonth(nv);
-                        (window as any).__pnlMonthValue = nv;
-                      }} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>上个月</button>
-                      <div className="text-sm">{month}</div>
-                      <button onClick={() => {
-                        const dt = new Date(month + '-01T00:00:00');
-                        dt.setMonth(dt.getMonth() + 1);
-                        const nv = dt.toISOString().slice(0,7);
-                        setSelMonth(nv);
-                        (window as any).__pnlMonthValue = nv;
-                      }} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>下个月</button>
+                      <button onClick={() => moveMonth(-1)} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>上个月</button>
+                      <div className="text-sm font-bold">{month}</div>
+                      <button onClick={() => moveMonth(1)} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>下个月</button>
+                      <button onClick={() => setDashboardCalendarMonth(new Date().toISOString().slice(0, 7))} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-blue-900/40 text-blue-200' : 'bg-blue-50 text-blue-700'}`}>本月</button>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                      <div className={`rounded-xl border p-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-gray-50'}`}>
+                        <div className="text-xs text-gray-500 mb-1">当月已实现</div>
+                        <div className={`font-mono font-bold ${monthPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>${monthPnl.toFixed(2)}</div>
+                      </div>
+                      <div className={`rounded-xl border p-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-gray-50'}`}>
+                        <div className="text-xs text-gray-500 mb-1">交易次数</div>
+                        <div className="font-mono font-bold">{monthTrades}</div>
+                      </div>
+                      <div className={`rounded-xl border p-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-gray-50'}`}>
+                        <div className="text-xs text-gray-500 mb-1">盈利天数</div>
+                        <div className="font-mono font-bold text-green-500">{positiveDays}</div>
+                      </div>
+                      <div className={`rounded-xl border p-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-gray-50'}`}>
+                        <div className="text-xs text-gray-500 mb-1">亏损天数</div>
+                        <div className="font-mono font-bold text-red-500">{negativeDays}</div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-7 gap-2 mb-2">
+                      {weekdayHeaders.map(day => (
+                        <div key={day} className={`h-8 flex items-center justify-center text-xs font-bold ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{day}</div>
+                      ))}
                     </div>
                     <div className="grid grid-cols-7 gap-2">
                       {cells.map((d, idx) => {
@@ -1934,6 +1942,11 @@ const App: React.FC = () => {
                           </div>
                         );
                       })}
+                    </div>
+                    <div className="flex items-center gap-4 mt-4 text-xs text-gray-500">
+                      <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-green-500/55" />盈利</div>
+                      <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-red-500/55" />亏损</div>
+                      <div className="flex items-center gap-2"><span className={`w-3 h-3 rounded ${isDarkMode ? 'bg-gray-800/40' : 'bg-gray-100'}`} />无交易</div>
                     </div>
                   </div>
                 );
