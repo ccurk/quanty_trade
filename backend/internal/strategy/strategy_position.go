@@ -39,7 +39,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		}
 		inst.lastSkipLogAt[k] = time.Now()
 		inst.orderMu.Unlock()
-		emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: symbol not allowed symbol=%s", symbol))
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：交易对不在允许列表 symbol=%s", symbol))
 		return
 	}
 	normalizedSide := strings.ToLower(strings.TrimSpace(side))
@@ -56,7 +56,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		return
 	}
 	if !hasEffectiveTPSL(inst, takeProfit, stopLoss) {
-		emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: 缺少止盈止损，拒绝开仓 symbol=%s side=%s amount=%v tp=%v sl=%v", symbol, normalizedSide, amount, takeProfit, stopLoss))
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：缺少止盈止损，拒绝开仓 symbol=%s side=%s amount=%v tp=%v sl=%v", symbol, normalizedSide, amount, takeProfit, stopLoss))
 		return
 	}
 
@@ -68,7 +68,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			}
 			inst.invalidSymbol[exchange.NormalizeSymbol(symbol)] = time.Now().Add(10 * time.Minute)
 			inst.orderMu.Unlock()
-			emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: symbol not supported in current market symbol=%s err=%v", symbol, err))
+			emitStrategyLog(inst, "error", fmt.Sprintf("跳过开仓：当前市场不支持该交易对 symbol=%s err=%v", symbol, err))
 			return
 		}
 		resolvedAmount, err := resolveUSDMOrderAmount(inst, bx, symbol, amount, price)
@@ -104,7 +104,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			if t, ok := inst.lastSkipLogAt[k]; !ok || time.Since(t) >= 60*time.Second {
 				inst.lastSkipLogAt[k] = time.Now()
 				inst.orderMu.Unlock()
-				emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: symbol not supported in current market symbol=%s", symbol))
+				emitStrategyLog(inst, "error", fmt.Sprintf("跳过开仓：当前市场不支持该交易对 symbol=%s", symbol))
 				return
 			}
 			inst.orderMu.Unlock()
@@ -139,7 +139,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		}
 		inst.lastSkipLogAt[k] = time.Now()
 		inst.orderMu.Unlock()
-		emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: symbol already has position symbol=%s", symbol))
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：该交易对已有持仓 symbol=%s", symbol))
 		return
 	}
 
@@ -148,7 +148,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		_ = rb.SetOpenCount(context.Background(), inst.ID, exOpenCount, 6*time.Hour)
 		ok, _, err := rb.AcquireOpenSlot(context.Background(), inst.ID, maxPos, 6*time.Hour)
 		if err != nil {
-			emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: redis acquire failed err=%v", err))
+			emitStrategyLog(inst, "error", fmt.Sprintf("跳过开仓：获取并发仓位锁失败 err=%v", err))
 			return
 		}
 		if !ok {
@@ -163,7 +163,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			}
 			inst.lastSkipLogAt[k] = time.Now()
 			inst.orderMu.Unlock()
-			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: max_concurrent_positions reached strategy=%s symbol=%s open=%d max=%d", inst.ID, symbol, exOpenCount, maxPos))
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：达到最大并发仓位 strategy=%s symbol=%s 当前=%d 最大=%d", inst.ID, symbol, exOpenCount, maxPos))
 			return
 		}
 		acquiredSlot = true
@@ -197,19 +197,19 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			_, _ = rb.ReleaseOpenSlot(context.Background(), inst.ID)
 		}
 
-		errMsg := fmt.Sprintf("Failed to place order: %v", err)
+		errMsg := fmt.Sprintf("开仓失败：%v", err)
 		if strings.Contains(errMsg, "\"code\":-2019") {
-			errMsg = fmt.Sprintf("Failed to place order: 保证金不足 (%v)", err)
+			errMsg = fmt.Sprintf("开仓失败：保证金不足 (%v)", err)
 		} else if strings.Contains(errMsg, "\"code\":-4164") {
-			errMsg = fmt.Sprintf("Failed to place order: notional 小于最小下单额 (%v)", err)
+			errMsg = fmt.Sprintf("开仓失败：notional 小于最小下单额 (%v)", err)
 		} else if strings.Contains(errMsg, "\"code\":-2027") {
 			lev := int(getNumber(inst.Config["leverage"]))
 			if lev <= 0 {
 				lev = 1
 			}
-			errMsg = fmt.Sprintf("Failed to place order: 当前杠杆下持仓上限超出，请降低杠杆或下单金额(数量) lev=%d (%v)", lev, err)
+			errMsg = fmt.Sprintf("开仓失败：当前杠杆下持仓上限超出，请降低杠杆或下单金额(数量) lev=%d (%v)", lev, err)
 		} else if strings.Contains(errMsg, "\"code\":-1003") {
-			errMsg = fmt.Sprintf("Failed to place order: IP 限流/封禁 (%v)", err)
+			errMsg = fmt.Sprintf("开仓失败：IP 限流/封禁 (%v)", err)
 		} else if strings.Contains(errMsg, "symbol not found:") {
 			inst.orderMu.Lock()
 			if inst.invalidSymbol == nil {
@@ -228,7 +228,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			}
 			inst.lastSkipLogAt[k] = time.Now()
 			inst.orderMu.Unlock()
-			errMsg = fmt.Sprintf("Failed to place order: symbol not supported in current market, will skip for 10m (%v)", err)
+			errMsg = fmt.Sprintf("开仓失败：当前市场不支持该交易对，10分钟内跳过 symbol (%v)", err)
 		}
 
 		database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
@@ -257,7 +257,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			"updated_at":        time.Now(),
 		})
 	effectiveTakeProfit, effectiveStopLoss := resolveTPSLFromROI(inst, normalizedSide, order.Price, takeProfit, stopLoss)
-	emitStrategyLog(inst, "info", fmt.Sprintf("Order placed symbol=%s side=%s status=%s order_id=%s client_order_id=%s qty=%v price=%v", symbol, normalizedSide, strings.ToLower(order.Status), order.ID, order.ClientOrderID, order.Amount, order.Price))
+	emitStrategyLog(inst, "info", fmt.Sprintf("开仓下单成功 symbol=%s side=%s status=%s order_id=%s client_order_id=%s qty=%v price=%v", symbol, normalizedSide, strings.ToLower(order.Status), order.ID, order.ClientOrderID, order.Amount, order.Price))
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
 
 	if strings.ToLower(order.Status) == "filled" {

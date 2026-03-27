@@ -46,7 +46,7 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 
 	px, err := getPx()
 	if err != nil || px <= 0 {
-		emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: 获取价格失败 symbol=%s err=%v", symbol, err))
+		emitStrategyLog(inst, "error", fmt.Sprintf("跳过开仓：获取价格失败 symbol=%s err=%v", symbol, err))
 		return 0, fmt.Errorf("price unavailable")
 	}
 	avail := 0.0
@@ -68,7 +68,7 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 			initial = maxInit
 		}
 		if initial <= 0 {
-			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: percent_balance computed initial margin <=0 symbol=%s", symbol))
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：按余额百分比计算后的初始保证金<=0 symbol=%s", symbol))
 			return 0, nil
 		}
 		desiredNotional = initial * float64(lev)
@@ -124,12 +124,12 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 		}
 	}
 	if finalNotional <= 0 {
-		emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: leverage bracket remaining cap insufficient symbol=%s desired=%0.4f min=%0.4f lev=%d", symbol, desiredNotional, minNotional, lev))
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：当前杠杆档位剩余额度不足 symbol=%s desired=%0.4f min=%0.4f lev=%d", symbol, desiredNotional, minNotional, lev))
 		return 0, nil
 	}
 	if levChosen != lev {
 		_ = bx.SetLeverage(inst.OwnerID, symbol, levChosen)
-		emitStrategyLog(inst, "info", fmt.Sprintf("Auto adjust leverage due to bracket cap symbol=%s lev=%d->%d", symbol, lev, levChosen))
+		emitStrategyLog(inst, "info", fmt.Sprintf("自动调整杠杆：因档位上限约束 symbol=%s lev=%d->%d", symbol, lev, levChosen))
 	}
 	amount = finalNotional / px
 	amount = clampOrderAmount(inst, amount)
@@ -137,7 +137,7 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 		return 0, nil
 	}
 	if amount*px < minNotional {
-		emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: notional too small symbol=%s notional=%0.4f min_notional=%0.2f", symbol, amount*px, minNotional))
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：名义价值过小 symbol=%s notional=%0.4f min_notional=%0.2f", symbol, amount*px, minNotional))
 		return 0, nil
 	}
 	return amount, nil

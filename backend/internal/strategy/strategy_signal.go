@@ -8,6 +8,7 @@ import (
 
 	"quanty_trade/internal/bus"
 	"quanty_trade/internal/database"
+	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/models"
 )
 
@@ -83,10 +84,12 @@ func (m *Manager) processSignalBatch(strategyID string) {
 
 	pxCache := map[string]float64{}
 	type cand struct {
-		s  bus.SignalMessage
-		rr float64
-		ok bool
-		px float64
+		s      bus.SignalMessage
+		rr     float64
+		ok     bool
+		px     float64
+		side   string
+		amount float64
 	}
 	cands := make([]cand, 0, len(filtered))
 	for _, sig := range filtered {
@@ -118,18 +121,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			}
 		}
 		ok := rr > 0
-		cands = append(cands, cand{s: sig, rr: rr, ok: ok, px: px})
-	}
-	if len(cands) == 0 {
-		return
-	}
-
-	sort.Slice(cands, func(i, j int) bool { return cands[i].rr > cands[j].rr })
-	chosen := false
-	for i := 0; i < len(cands); i++ {
-		sig := cands[i].s
 		amount := clampOrderAmount(inst, sig.Amount)
-		side := strings.ToLower(strings.TrimSpace(sig.Side))
 		if side == "long" {
 			side = "buy"
 		} else if side == "short" {
@@ -137,20 +129,80 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		} else if side == "" {
 			side = "buy"
 		}
-		if m.tryPlaceCandidate(inst, sig.Symbol, side, amount, sig.TakeProfit, sig.StopLoss, strings.TrimSpace(sig.SignalID)) {
-			chosen = true
-			for j := 0; j < len(cands); j++ {
-				if j == i {
+		cands = append(cands, cand{s: sig, rr: rr, ok: ok, px: px, side: side, amount: amount})
+	}
+	if len(cands) == 0 {
+		return
+	}
+
+	sort.Slice(cands, func(i, j int) bool { return cands[i].rr > cands[j].rr })
+	preview := make([]string, 0, len(cands))
+	for i := 0; i < len(cands) && i < 8; i++ {
+		preview = append(preview, fmt.Sprintf("%s(适配度=%0.4f)", cands[i].s.Symbol, cands[i].rr))
+	}
+	emitStrategyLog(inst, "info", fmt.Sprintf("同批信号排序完成，共%d个候选：%s", len(cands), strings.Join(preview, "，")))
+
+	maxPos := 1
+	if v, ok := inst.Config["max_concurrent_positions"].(float64); ok && int(v) > 0 {
+		maxPos = int(v)
+	}
+	openCount := 0
+	openSymbols := map[string]struct{}{}
+	if inst.exchange != nil {
+		if ps, err := inst.exchange.FetchPositions(inst.OwnerID, "active"); err == nil {
+			for _, p := range ps {
+				if p.Amount <= 0 || !isAllowedSymbol(inst, p.Symbol) {
 					continue
 				}
-				emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: better candidate selected symbol=%s rr=%0.4f", cands[j].s.Symbol, cands[j].rr))
+				key := exchange.NormalizeSymbol(p.Symbol)
+				openSymbols[key] = struct{}{}
+				openCount++
 			}
+		}
+	}
+	availableSlots := maxPos - openCount
+	if availableSlots <= 0 {
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过本批信号：当前已持仓%d个，达到最大并发仓位%d", openCount, maxPos))
+		return
+	}
+
+	selected := 0
+	selectedSymbols := map[string]struct{}{}
+	for i := 0; i < len(cands); i++ {
+		if selected >= availableSlots {
 			break
 		}
-		emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: candidate failed constraints symbol=%s rr=%0.4f", sig.Symbol, cands[i].rr))
+		c := cands[i]
+		sig := c.s
+		symKey := exchange.NormalizeSymbol(sig.Symbol)
+		if _, ok := openSymbols[symKey]; ok {
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 已有持仓", sig.Symbol))
+			continue
+		}
+		if _, ok := selectedSymbols[symKey]; ok {
+			continue
+		}
+		if c.amount <= 0 || (c.side != "buy" && c.side != "sell") || !c.ok {
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 条件无效，适配度=%0.4f", sig.Symbol, c.rr))
+			continue
+		}
+		if m.tryPlaceCandidate(inst, sig.Symbol, c.side, c.amount, sig.TakeProfit, sig.StopLoss, strings.TrimSpace(sig.SignalID)) {
+			selected++
+			selectedSymbols[symKey] = struct{}{}
+			openSymbols[symKey] = struct{}{}
+			emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓成功：%s 方向=%s 适配度=%0.4f，已占用 %d/%d 个仓位", sig.Symbol, c.side, c.rr, openCount+selected, maxPos))
+			continue
+		}
+		emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓失败：%s 方向=%s 适配度=%0.4f", sig.Symbol, c.side, c.rr))
 	}
-	if !chosen {
-		emitStrategyLog(inst, "info", "Skip signal: all candidates failed")
+	if selected == 0 {
+		emitStrategyLog(inst, "info", "本批信号未找到可开仓标的")
+		return
+	}
+	if selected < len(cands) {
+		emitStrategyLog(inst, "info", fmt.Sprintf("本批信号处理完成：成功开仓%d个，剩余候选因仓位或条件限制被跳过", selected))
+	} else {
+		emitStrategyLog(inst, "info", fmt.Sprintf("本批信号处理完成：成功开仓%d个", selected))
 	}
 }
 
@@ -187,13 +239,13 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 	symbol := strings.TrimSpace(s.Symbol)
 	if symbol == "" {
 		if logSignal {
-			emitStrategyLog(inst, "info", "Skip signal: empty symbol")
+			emitStrategyLog(inst, "info", "跳过信号：symbol 为空")
 		}
 		return
 	}
 	if !isAllowedSymbol(inst, symbol) {
 		if logSignal {
-			emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: symbol not allowed symbol=%s", symbol))
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过信号：交易对不在允许列表 symbol=%s", symbol))
 		}
 		return
 	}
@@ -203,7 +255,7 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 	}
 	if action != "open" {
 		if logSignal {
-			emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: unsupported action=%s", action))
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过信号：暂不支持的动作 action=%s", action))
 		}
 		return
 	}
@@ -228,23 +280,23 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 	}
 	if side != "buy" && side != "sell" {
 		if logSignal {
-			emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: invalid side=%s", side))
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过信号：方向无效 side=%s", side))
 		}
 		return
 	}
 	amount := clampOrderAmount(inst, s.Amount)
 	if amount <= 0 {
 		if logSignal {
-			emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: amount invalid raw=%v", s.Amount))
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过信号：下单数量无效 amount=%v", s.Amount))
 		}
 		return
 	}
 	if !(s.TakeProfit > 0 && s.StopLoss > 0) {
-		emitStrategyLog(inst, "info", fmt.Sprintf("Skip signal: 缺少止盈止损，拒绝开仓 symbol=%s side=%s amount=%v tp=%v sl=%v", symbol, side, amount, s.TakeProfit, s.StopLoss))
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过信号：缺少止盈止损，拒绝开仓 symbol=%s side=%s amount=%v tp=%v sl=%v", symbol, side, amount, s.TakeProfit, s.StopLoss))
 		return
 	}
 	if logSignal {
-		emitStrategyLog(inst, "info", fmt.Sprintf("Recv signal: symbol=%s side=%s amount=%v tp=%v sl=%v signal_id=%s", symbol, side, amount, s.TakeProfit, s.StopLoss, strings.TrimSpace(s.SignalID)))
+		emitStrategyLog(inst, "info", fmt.Sprintf("收到开仓信号：symbol=%s side=%s amount=%v tp=%v sl=%v signal_id=%s", symbol, side, amount, s.TakeProfit, s.StopLoss, strings.TrimSpace(s.SignalID)))
 	}
 	m.enqueueSignalForSelection(inst, s)
 }

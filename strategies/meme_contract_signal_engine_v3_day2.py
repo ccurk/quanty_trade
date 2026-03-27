@@ -1,6 +1,8 @@
 import json
 import math
 import time
+import uuid
+from datetime import datetime, timezone
 
 try:
     from mini_redis import MiniRedis  # optional external module
@@ -323,25 +325,55 @@ class MemeSignalEngineV3:
         self.redis_db = int(self.cfg.get("redis_db", 0))
         self.redis_password = self.cfg.get("redis_password", "")
         self.redis_prefix = str(self.cfg.get("redis_prefix", "qt") or "qt")
-        self.strategy_id = self.cfg.get("strategy_id", "")
-        self.owner_id = self.cfg.get("owner_id", 0)
+        self.strategy_id = str(self.cfg.get("strategy_id", "") or "").strip()
+        self.owner_id = int(self.cfg.get("owner_id", 0) or 0)
         self.symbols = self._parse_symbols(self.cfg.get("symbols", ""))
         self.cooldown_sec = int(self.cfg.get("cooldown_sec", Config.COOLDOWN_SEC))
         self.last_signal_at = 0.0
         self.market = str(self.cfg.get("market", "usdm")).lower()
-        self.trade_amount = float(self.cfg.get("order_amount", 100.0))
+        self.trade_amount = float(
+            self.cfg.get("trade_amount", self.cfg.get("order_amount", 100.0)) or 100.0
+        )
+        self.leverage = max(1, int(float(self.cfg.get("leverage", 20) or 20)))
+        self.take_profit_pct = self._parse_ratio(
+            self.cfg.get("take_profit_pct", Config.TP_RATIO)
+        )
+        self.stop_loss_pct = self._parse_ratio(
+            self.cfg.get("stop_loss_pct", Config.SL_RATIO)
+        )
+        self.boot_id = str(
+            self.cfg.get("boot_id")
+            or f"{self.strategy_id or 'strategy'}-{uuid.uuid4().hex[:12]}"
+        )
+        hc = self.cfg.get("healthcheck", {}) or {}
+        self.heartbeat_sec = int(hc.get("interval_sec", 5) or 5)
+        self.log_trace = bool(self.cfg.get("log_trace", False))
 
         self.candles = {}
 
     def _parse_symbols(self, s: str):
         if not s:
             return []
+        if isinstance(s, (list, tuple, set)):
+            return [str(part).strip() for part in s if str(part).strip()]
         out = []
-        for part in s.split(","):
+        for part in str(s).split(","):
             p = part.strip()
             if p:
                 out.append(p)
         return out
+
+    def _parse_ratio(self, value, default):
+        try:
+            v = float(value)
+        except Exception:
+            v = float(default)
+        if v > 1:
+            v = v / 100.0
+        return max(v, 0.0)
+
+    def _now_iso(self):
+        return datetime.now(timezone.utc).isoformat()
 
     def _push_candle(self, sym: str, c: dict):
         arr = self.candles.get(sym)
@@ -400,14 +432,14 @@ class MemeSignalEngineV3:
             return None
 
         if direction == "long":
-            default_tp = price * (1 + Config.TP_RATIO)
-            default_sl = price * (1 - Config.SL_RATIO)
+            default_tp = price * (1 + (self.take_profit_pct / self.leverage))
+            default_sl = price * (1 - (self.stop_loss_pct / self.leverage))
             sl, _ = calc_dynamic_sl("long", price, nearest_sup, nearest_res, default_sl)
             tp = default_tp
             side = "buy"
         else:
-            default_tp = price * (1 - Config.TP_RATIO)
-            default_sl = price * (1 + Config.SL_RATIO)
+            default_tp = price * (1 - (self.take_profit_pct / self.leverage))
+            default_sl = price * (1 + (self.stop_loss_pct / self.leverage))
             sl, _ = calc_dynamic_sl("short", price, nearest_sup, nearest_res, default_sl)
             tp = default_tp
             side = "sell"
@@ -433,30 +465,102 @@ class MemeSignalEngineV3:
             "price": 0,
             "take_profit": sig["tp"],
             "stop_loss": sig["sl"],
+            "signal_id": f"{self.boot_id}:{sig['symbol']}:{int(time.time() * 1000)}",
             "confidence": sig["confidence"],
-            "generated_at": time.time(),
+            "generated_at": self._now_iso(),
         }
         ch = f"{self.redis_prefix}:signal:{self.strategy_id}"
         r.publish(ch, json.dumps(msg, ensure_ascii=False))
         if self.redis_prefix != "qt":
             r.publish(f"qt:signal:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
 
-    def _emit_ready(self, r: MiniRedis):
+    def _publish_state(self, r: MiniRedis, typ: str):
         msg = {
-            "type": "ready",
+            "type": typ,
             "strategy_id": self.strategy_id,
             "owner_id": self.owner_id,
+            "boot_id": self.boot_id,
+            "created_at": self._now_iso(),
         }
         ch = f"{self.redis_prefix}:state:{self.strategy_id}"
         r.publish(ch, json.dumps(msg, ensure_ascii=False))
         if self.redis_prefix != "qt":
             r.publish(f"qt:state:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
 
+    def _emit_ready(self, r: MiniRedis):
+        self._publish_state(r, "ready")
+
+    def _emit_heartbeat(self, r: MiniRedis):
+        self._publish_state(r, "heartbeat")
+
     def _log(self, text: str):
         try:
             print(json.dumps({"type": "log", "data": text}, ensure_ascii=False), flush=True)
         except Exception:
             pass
+
+    def _start_heartbeat(self, r: MiniRedis):
+        interval = max(2, self.heartbeat_sec)
+
+        def loop():
+            while True:
+                try:
+                    self._emit_heartbeat(r)
+                except Exception as e:
+                    self._log(f"心跳发送失败 err={e}")
+                time.sleep(interval)
+
+        import threading
+
+        t = threading.Thread(target=loop, daemon=True)
+        t.start()
+
+    def _subscribe_candles(self, ps):
+        channels = [f"{self.redis_prefix}:candle:{self.strategy_id}"]
+        if self.redis_prefix != "qt":
+            channels.append(f"qt:candle:{self.strategy_id}")
+        for ch in channels:
+            ps.subscribe(ch)
+            self._log(f"订阅K线通道 {ch}")
+
+    def _accept_symbol(self, sym: str) -> bool:
+        if not sym:
+            return False
+        if not self.symbols:
+            return True
+        return sym in self.symbols
+
+    def _handle_payload(self, payload: dict):
+        kind = str(payload.get("type", "candle") or "candle").lower()
+        if kind == "history":
+            sym = payload.get("symbol") or ""
+            if not self._accept_symbol(sym):
+                return None
+            for candle in payload.get("candles", []) or []:
+                c = {
+                    "open": float(candle.get("open", 0) or 0),
+                    "high": float(candle.get("high", 0) or 0),
+                    "low": float(candle.get("low", 0) or 0),
+                    "close": float(candle.get("close", 0) or 0),
+                    "vol": float(candle.get("volume", 0) or candle.get("vol", 0) or 0),
+                    "ts": candle.get("timestamp") or candle.get("ts") or 0,
+                }
+                self._push_candle(sym, c)
+            return None
+
+        sym = payload.get("symbol") or payload.get("s") or ""
+        if not self._accept_symbol(sym):
+            return None
+        c = {
+            "open": float(payload.get("open", 0) or 0),
+            "high": float(payload.get("high", 0) or 0),
+            "low": float(payload.get("low", 0) or 0),
+            "close": float(payload.get("close", 0) or 0),
+            "vol": float(payload.get("volume", 0) or payload.get("vol", 0) or 0),
+            "ts": payload.get("timestamp") or payload.get("ts") or 0,
+        }
+        self._push_candle(sym, c)
+        return sym
 
     def run(self):
         try:
@@ -483,13 +587,12 @@ class MemeSignalEngineV3:
         if r is None:
             raise last_err or RuntimeError("Redis connect failed")
         ps = r.pubsub()
-        for sym in self.symbols:
-            ch1 = f"{self.redis_prefix}:candle:{self.strategy_id}:{sym}"
-            ps.psubscribe(ch1)
-            if self.redis_prefix != "qt":
-                ps.psubscribe(f"qt:candle:{self.strategy_id}:{sym}")
+        self._subscribe_candles(ps)
         self._emit_ready(r)
-        self._log("Ready published")
+        self._start_heartbeat(r)
+        self._log(
+            f"策略已就绪 strategy_id={self.strategy_id} boot_id={self.boot_id} symbols={len(self.symbols)} leverage={self.leverage}"
+        )
         while True:
             msg = ps.get_message(timeout=1.0)
             if not msg:
@@ -503,23 +606,18 @@ class MemeSignalEngineV3:
                 payload = json.loads(data)
             except Exception:
                 continue
-            sym = payload.get("symbol") or payload.get("s") or ""
+            sym = self._handle_payload(payload)
             if not sym:
                 continue
-            c = {
-                "open": float(payload.get("open", 0) or 0),
-                "high": float(payload.get("high", 0) or 0),
-                "low": float(payload.get("low", 0) or 0),
-                "close": float(payload.get("close", 0) or 0),
-                "vol": float(payload.get("volume", 0) or payload.get("vol", 0) or 0),
-                "ts": payload.get("timestamp") or payload.get("ts") or 0,
-            }
-            self._push_candle(sym, c)
             if self.cooldown_sec > 0 and time.time() - self.last_signal_at < self.cooldown_sec:
                 continue
             sig = self._compute(sym, self.candles.get(sym, []))
             if not sig:
                 continue
+            if self.log_trace:
+                self._log(
+                    f"生成信号 symbol={sig['symbol']} side={sig['side']} entry={sig['entry']:.8f} tp={sig['tp']:.8f} sl={sig['sl']:.8f} conf={sig['confidence']:.4f}"
+                )
             self._emit_signal(r, sig)
             self.last_signal_at = time.time()
 
@@ -585,11 +683,19 @@ class MemeSignalEngineV3:
 
 if __name__ == "__main__":
     import os
+    import sys
 
     cfg = {}
-    if os.environ.get("STRATEGY_CONFIG_JSON"):
+    if len(sys.argv) >= 2 and str(sys.argv[1]).strip():
         try:
-            cfg = json.loads(os.environ.get("STRATEGY_CONFIG_JSON"))
+            cfg = json.loads(sys.argv[1])
         except Exception:
             cfg = {}
+    if os.environ.get("STRATEGY_CONFIG_JSON"):
+        try:
+            env_cfg = json.loads(os.environ.get("STRATEGY_CONFIG_JSON"))
+            if isinstance(env_cfg, dict):
+                cfg.update(env_cfg)
+        except Exception:
+            pass
     MemeSignalEngineV3(cfg).run()
