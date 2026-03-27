@@ -76,7 +76,7 @@ func resolveStrategyPath(p string) (string, error) {
 	return "", fmt.Errorf("invalid strategy path: %s", p)
 }
 
-func loadLatestDiskStrategyCode(inst *StrategyInstance, row *models.StrategyInstance) (string, bool) {
+func loadLatestDiskStrategySource(inst *StrategyInstance, row *models.StrategyInstance) (string, string, bool) {
 	candidates := make([]string, 0, 2)
 	names := make([]string, 0, 3)
 	if row != nil {
@@ -118,6 +118,7 @@ func loadLatestDiskStrategyCode(inst *StrategyInstance, row *models.StrategyInst
 	}
 
 	seen := map[string]struct{}{}
+	bestPath := ""
 	bestCode := ""
 	bestAt := time.Time{}
 	for _, p := range candidates {
@@ -146,14 +147,15 @@ func loadLatestDiskStrategyCode(inst *StrategyInstance, row *models.StrategyInst
 			continue
 		}
 		if bestCode == "" || info.ModTime().After(bestAt) {
+			bestPath = abs
 			bestCode = code
 			bestAt = info.ModTime()
 		}
 	}
 	if bestCode != "" {
-		return bestCode, true
+		return bestPath, bestCode, true
 	}
-	return "", false
+	return "", "", false
 }
 
 func parseSymbolsValue(v interface{}) []string {
@@ -605,12 +607,14 @@ func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, er
 	}
 
 	code := strings.TrimSpace(row.Template.Code)
-	if disk, ok := loadLatestDiskStrategyCode(inst, &row); ok {
-		if disk != code && row.Template.ID > 0 {
+	sourcePath := strings.TrimSpace(row.Template.Path)
+	if diskPath, diskCode, ok := loadLatestDiskStrategySource(inst, &row); ok {
+		sourcePath = diskPath
+		if diskCode != code && row.Template.ID > 0 {
 			_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
-				Updates(map[string]interface{}{"code": disk, "updated_at": time.Now()}).Error
+				Updates(map[string]interface{}{"code": diskCode, "path": diskPath, "updated_at": time.Now()}).Error
 		}
-		code = disk
+		code = diskCode
 	}
 	if code == "" {
 		return resolveStrategyPath(inst.Path)
@@ -629,7 +633,10 @@ func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, er
 		return "", err
 	}
 
-	absPath := filepath.Join(runtimeDir, inst.ID+".py")
+	if prev := strings.TrimSpace(inst.RuntimePath); prev != "" && prev != inst.Path && strings.Contains(filepath.ToSlash(prev), "/_runtime/") {
+		_ = os.Remove(prev)
+	}
+	absPath := filepath.Join(runtimeDir, fmt.Sprintf("%s_%d.py", inst.ID, time.Now().UnixMilli()))
 	runtimeCode := "import os\nimport sys\nsys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), \"..\")))\n\n" + miniRedisRuntimeShim() + "\n" + code + "\n"
 	if err := os.WriteFile(absPath, []byte(runtimeCode), 0o644); err != nil {
 		return "", err
@@ -639,6 +646,10 @@ func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, er
 	inst.RuntimePath = absPath
 	inst.RuntimeGenerated = true
 	inst.RuntimeKeep = keep
+	if sourcePath == "" {
+		sourcePath = "db_template_code"
+	}
+	emitStrategyLog(inst, "info", fmt.Sprintf("已生成运行脚本 source=%s runtime=%s", sourcePath, absPath))
 	return absPath, nil
 }
 
@@ -662,12 +673,12 @@ func (m *Manager) prepareBacktestStrategyFile(inst *StrategyInstance, backtestID
 	}
 
 	code := strings.TrimSpace(row.Template.Code)
-	if disk, ok := loadLatestDiskStrategyCode(inst, &row); ok {
-		if disk != code && row.Template.ID > 0 {
+	if diskPath, diskCode, ok := loadLatestDiskStrategySource(inst, &row); ok {
+		if diskCode != code && row.Template.ID > 0 {
 			_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
-				Updates(map[string]interface{}{"code": disk, "updated_at": time.Now()}).Error
+				Updates(map[string]interface{}{"code": diskCode, "path": diskPath, "updated_at": time.Now()}).Error
 		}
-		code = disk
+		code = diskCode
 	}
 	if code == "" {
 		absPath, err := resolveStrategyPath(inst.Path)
