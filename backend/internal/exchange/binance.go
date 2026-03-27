@@ -1882,26 +1882,37 @@ func (b *BinanceExchange) USDMPositionAmt(ownerID uint, symbol string) (float64,
 	return positionAmt, entryPrice, markPrice, nil
 }
 
-func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID string, symbol string, takeProfit float64, stopLoss float64) error {
+type USDMAlgoOrder struct {
+	Kind           string
+	AlgoID         int64
+	ClientAlgoID   string
+	Symbol         string
+	Side           string
+	Type           string
+	TriggerPrice   string
+	ExecutionPrice string
+}
+
+func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID string, symbol string, takeProfit float64, stopLoss float64) ([]USDMAlgoOrder, error) {
 	if b.market != "usdm" {
-		return fmt.Errorf("tp/sl supported only for usdm")
+		return nil, fmt.Errorf("tp/sl supported only for usdm")
 	}
 	cred, err := b.getCred(ownerID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	filters, err := b.getFilters(symbol)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	positionAmt, entryPrice, markPrice, err := b.USDMPositionAmt(ownerID, symbol)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if positionAmt == 0 {
-		return fmt.Errorf("no open position for symbol")
+		return nil, fmt.Errorf("no open position for symbol")
 	}
 
 	sym := binanceSymbol(symbol)
@@ -1915,6 +1926,7 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 	}
 
 	var firstErr error
+	created := make([]USDMAlgoOrder, 0, 2)
 	place := func(kind string, orderType string, stopPrice float64) {
 		if stopPrice <= 0 {
 			return
@@ -1934,9 +1946,31 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		adj := roundDownPrice(stopPrice, filters.TickSize)
 		params.Set("triggerPrice", formatByStep(adj, filters.TickSize))
 		params.Set("price", formatByStep(adj, filters.TickSize))
-		_, _, e := b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/algoOrder", params)
+		body, _, e := b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/algoOrder", params)
 		if e != nil && firstErr == nil {
 			firstErr = e
+			return
+		}
+		var resp struct {
+			AlgoID       int64  `json:"algoId"`
+			ClientAlgoID string `json:"clientAlgoId"`
+			Symbol       string `json:"symbol"`
+			Side         string `json:"side"`
+			Type         string `json:"type"`
+			TriggerPrice string `json:"triggerPrice"`
+			Price        string `json:"price"`
+		}
+		if err := json.Unmarshal(body, &resp); err == nil {
+			created = append(created, USDMAlgoOrder{
+				Kind:           kind,
+				AlgoID:         resp.AlgoID,
+				ClientAlgoID:   resp.ClientAlgoID,
+				Symbol:         resp.Symbol,
+				Side:           resp.Side,
+				Type:           resp.Type,
+				TriggerPrice:   resp.TriggerPrice,
+				ExecutionPrice: resp.Price,
+			})
 		}
 	}
 
@@ -1948,19 +1982,19 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		if takeProfit > 0 {
 			adj := roundDownPrice(takeProfit, filters.TickSize)
 			if closeSide == "SELL" && adj <= ref {
-				return fmt.Errorf("tp would immediately trigger")
+				return nil, fmt.Errorf("tp would immediately trigger")
 			}
 			if closeSide == "BUY" && adj >= ref {
-				return fmt.Errorf("tp would immediately trigger")
+				return nil, fmt.Errorf("tp would immediately trigger")
 			}
 		}
 		if stopLoss > 0 {
 			adj := roundDownPrice(stopLoss, filters.TickSize)
 			if closeSide == "SELL" && adj >= ref {
-				return fmt.Errorf("sl would immediately trigger")
+				return nil, fmt.Errorf("sl would immediately trigger")
 			}
 			if closeSide == "BUY" && adj <= ref {
-				return fmt.Errorf("sl would immediately trigger")
+				return nil, fmt.Errorf("sl would immediately trigger")
 			}
 		}
 	}
@@ -1970,7 +2004,7 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 	if stopLoss > 0 {
 		place("sl", "STOP", stopLoss)
 	}
-	return firstErr
+	return created, firstErr
 }
 
 func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle)) (func(), error) {

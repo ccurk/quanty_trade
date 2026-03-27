@@ -256,6 +256,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			"avg_price":         order.Price,
 			"updated_at":        time.Now(),
 		})
+	emitStrategyLog(inst, "info", fmt.Sprintf("Order placed symbol=%s side=%s status=%s order_id=%s client_order_id=%s qty=%v price=%v", symbol, normalizedSide, strings.ToLower(order.Status), order.ID, order.ClientOrderID, order.Amount, order.Price))
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
 
 	if strings.ToLower(order.Status) == "filled" {
@@ -324,9 +325,18 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 							}
 						}
 					}
-					lastErr = bx.PlaceUSDMTPStopOrders(inst.OwnerID, baseClientOrderID, symbol, takeProfit, stopLoss)
+					created, e := bx.PlaceUSDMTPStopOrders(inst.OwnerID, baseClientOrderID, symbol, takeProfit, stopLoss)
+					lastErr = e
 					if lastErr == nil {
-						emitStrategyLog(inst, "info", fmt.Sprintf("已设置止盈止损 symbol=%s tp=%v sl=%v", symbol, takeProfit, stopLoss))
+						if len(created) == 0 {
+							emitStrategyLog(inst, "info", fmt.Sprintf("已设置止盈止损 symbol=%s tp=%v sl=%v", symbol, takeProfit, stopLoss))
+						} else {
+							refs := make([]string, 0, len(created))
+							for _, ref := range created {
+								refs = append(refs, fmt.Sprintf("%s algo_id=%d client_algo_id=%s trigger=%s price=%s", ref.Kind, ref.AlgoID, ref.ClientAlgoID, ref.TriggerPrice, ref.ExecutionPrice))
+							}
+							emitStrategyLog(inst, "info", fmt.Sprintf("已设置止盈止损 symbol=%s tp=%v sl=%v %s", symbol, takeProfit, stopLoss, strings.Join(refs, " | ")))
+						}
 						return
 					}
 					break
