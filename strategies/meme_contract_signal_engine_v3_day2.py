@@ -9,6 +9,8 @@ try:
 except Exception:
     pass
 
+from redis_compat import RedisCompat
+
 
 class Config:
     MAX_PRICE = 5.0
@@ -474,13 +476,13 @@ class MemeSignalEngineV3:
         if self.redis_prefix != "qt":
             r.publish(f"qt:signal:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
 
-    def _publish_state(self, r: MiniRedis, msg: dict):
+    def _publish_state(self, r, msg: dict):
         ch = f"{self.redis_prefix}:state:{self.strategy_id}"
         r.publish(ch, json.dumps(msg, ensure_ascii=False))
         if self.redis_prefix != "qt":
             r.publish(f"qt:state:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
 
-    def _emit_ready(self, r: MiniRedis):
+    def _emit_ready(self, r):
         msg = {
             "type": "ready",
             "strategy_id": self.strategy_id,
@@ -490,7 +492,7 @@ class MemeSignalEngineV3:
         }
         self._publish_state(r, msg)
 
-    def _emit_heartbeat(self, r: MiniRedis):
+    def _emit_heartbeat(self, r):
         msg = {
             "type": "heartbeat",
             "strategy_id": self.strategy_id,
@@ -506,7 +508,7 @@ class MemeSignalEngineV3:
         except Exception:
             pass
 
-    def _start_heartbeat(self, r: MiniRedis):
+    def _start_heartbeat(self, r):
         interval = max(2, self.heartbeat_sec)
 
         def loop():
@@ -584,7 +586,7 @@ class MemeSignalEngineV3:
         for h, p in candidates:
             try:
                 self._log(f"Connecting Redis host={h} port={p} db={self.redis_db} prefix={self.redis_prefix}")
-                r = MiniRedis(h, p, self.redis_password, self.redis_db).connect()
+                r = RedisCompat(h, p, self.redis_password, self.redis_db).connect()
                 self._log("Redis connected")
                 break
             except Exception as e:
@@ -593,16 +595,14 @@ class MemeSignalEngineV3:
                 time.sleep(0.5)
         if r is None:
             raise last_err or RuntimeError("Redis connect failed")
-        receiver = r
-        sender = MiniRedis(self.redis_host, self.redis_port, self.redis_password, self.redis_db).connect()
-        self._subscribe_candles(receiver)
-        self._emit_ready(sender)
-        self._start_heartbeat(sender)
+        self._subscribe_candles(r)
+        self._emit_ready(r)
+        self._start_heartbeat(r)
         self._log(
             f"策略已就绪 strategy_id={self.strategy_id} boot_id={self.boot_id} symbols={len(self.symbols)} leverage={self.leverage}"
         )
         while True:
-            msg = receiver.read_pubsub_message()
+            msg = r.read_message(timeout=1.0)
             if not msg:
                 continue
             data = msg.get("data")
@@ -624,7 +624,7 @@ class MemeSignalEngineV3:
                 self._log(
                     f"生成信号 symbol={sig['symbol']} side={sig['side']} entry={sig['entry']:.8f} tp={sig['tp']:.8f} sl={sig['sl']:.8f} conf={sig['confidence']:.4f}"
                 )
-            self._emit_signal(sender, sig)
+            self._emit_signal(r, sig)
             self.last_signal_at = time.time()
 
     def _base_send_log(self, text: str):

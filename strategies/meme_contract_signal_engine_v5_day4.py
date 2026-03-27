@@ -14,6 +14,8 @@ try:
 except Exception:
     pass
 
+from redis_compat import RedisCompat
+
 
 class Config:
     MAX_PRICE = 5.0
@@ -894,9 +896,8 @@ class MemeSignalEngineV5:
         if not self.symbols:
             raise RuntimeError("symbols required")
 
-        receiver = MiniRedis(self.redis_host, self.redis_port, self.redis_password, self.redis_db).connect()
-        sender = MiniRedis(self.redis_host, self.redis_port, self.redis_password, self.redis_db).connect()
-        self._subscribe_candles(receiver)
+        redis_conn = RedisCompat(self.redis_host, self.redis_port, self.redis_password, self.redis_db).connect()
+        self._subscribe_candles(redis_conn)
         ready_msg = {
             "type": "ready",
             "strategy_id": self.strategy_id,
@@ -904,17 +905,17 @@ class MemeSignalEngineV5:
             "boot_id": self.boot_id,
             "created_at": _now_iso(),
         }
-        sender.publish(self._state_ch(), json.dumps(ready_msg, ensure_ascii=False))
+        redis_conn.publish(self._state_ch(), json.dumps(ready_msg, ensure_ascii=False))
         if self.redis_prefix != "qt":
-            sender.publish(f"qt:state:{self.strategy_id}", json.dumps(ready_msg, ensure_ascii=False))
-        threading.Thread(target=self._heartbeat_loop, args=(sender,), daemon=True).start()
+            redis_conn.publish(f"qt:state:{self.strategy_id}", json.dumps(ready_msg, ensure_ascii=False))
+        threading.Thread(target=self._heartbeat_loop, args=(redis_conn,), daemon=True).start()
         self._log(
             f"策略已就绪 strategy_id={self.strategy_id} boot_id={self.boot_id} "
             f"symbols={len(self.symbols)} total_capital={self.total_capital} base_trade={self.base_trade_usdt}"
         )
 
         while True:
-            msg = receiver.read_pubsub_message()
+            msg = redis_conn.read_message(timeout=1.0)
             if not msg:
                 continue
             data = msg.get("data")
@@ -937,7 +938,7 @@ class MemeSignalEngineV5:
                 if self.log_trace and result.filter_reason:
                     self._log(f"跳过信号 symbol={symbol} reason={result.filter_reason}")
                 continue
-            self._emit_signal(sender, result)
+            self._emit_signal(redis_conn, result)
             self.last_signal_at[symbol] = now
 
 
