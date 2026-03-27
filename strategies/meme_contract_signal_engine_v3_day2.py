@@ -474,24 +474,31 @@ class MemeSignalEngineV3:
         if self.redis_prefix != "qt":
             r.publish(f"qt:signal:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
 
-    def _publish_state(self, r: MiniRedis, typ: str):
-        msg = {
-            "type": typ,
-            "strategy_id": self.strategy_id,
-            "owner_id": self.owner_id,
-            "boot_id": self.boot_id,
-            "created_at": self._now_iso(),
-        }
+    def _publish_state(self, r: MiniRedis, msg: dict):
         ch = f"{self.redis_prefix}:state:{self.strategy_id}"
         r.publish(ch, json.dumps(msg, ensure_ascii=False))
         if self.redis_prefix != "qt":
             r.publish(f"qt:state:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
 
     def _emit_ready(self, r: MiniRedis):
-        self._publish_state(r, "ready")
+        msg = {
+            "type": "ready",
+            "strategy_id": self.strategy_id,
+            "owner_id": self.owner_id,
+            "boot_id": self.boot_id,
+            "created_at": self._now_iso(),
+        }
+        self._publish_state(r, msg)
 
     def _emit_heartbeat(self, r: MiniRedis):
-        self._publish_state(r, "heartbeat")
+        msg = {
+            "type": "heartbeat",
+            "strategy_id": self.strategy_id,
+            "owner_id": self.owner_id,
+            "boot_id": self.boot_id,
+            "created_at": self._now_iso(),
+        }
+        self._publish_state(r, msg)
 
     def _log(self, text: str):
         try:
@@ -698,4 +705,5 @@ if __name__ == "__main__":
                 cfg.update(env_cfg)
         except Exception:
             pass
-    MemeSignalEngineV3(cfg).run()
+    strategy = MemeSignalEngineV3(cfg)
+    strategy.run()
