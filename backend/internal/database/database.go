@@ -7,6 +7,7 @@ import (
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
+	"strings"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
@@ -66,7 +67,8 @@ func InitDB() {
 	if adminUsername == "" {
 		adminUsername = "admin"
 	}
-	adminPassword := c.Admin.Password
+	adminUsername = strings.TrimSpace(adminUsername)
+	adminPassword := strings.TrimSpace(c.Admin.Password)
 
 	var admin models.User
 	if err := DB.Where("username = ?", adminUsername).First(&admin).Error; err != nil {

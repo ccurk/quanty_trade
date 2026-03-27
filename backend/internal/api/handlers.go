@@ -51,6 +51,12 @@ func Register(c *gin.Context) {
 		return
 	}
 
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username is required"})
+		return
+	}
+
 	// Check if user already exists
 	var existingUser models.User
 	if err := database.DB.Where("username = ?", req.Username).First(&existingUser).Error; err == nil {
@@ -88,6 +94,11 @@ func Login(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+		return
+	}
 
 	var user models.User
 	if err := database.DB.Where("username = ?", req.Username).First(&user).Error; err != nil {
@@ -122,6 +133,11 @@ func CreateUser(c *gin.Context) {
 	var req CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username is required"})
 		return
 	}
 

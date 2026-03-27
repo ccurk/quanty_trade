@@ -112,7 +112,11 @@ func upsertDailyPnL(uid uint, day string, start time.Time, end time.Time) error 
 
 	now := time.Now()
 	var existing models.DailyPnL
-	if err := database.DB.Where("owner_id = ? AND day = ?", uid, day).First(&existing).Error; err == nil && existing.ID > 0 {
+	findTx := database.DB.Where("owner_id = ? AND day = ?", uid, day).Limit(1).Find(&existing)
+	if findTx.Error != nil {
+		return findTx.Error
+	}
+	if findTx.RowsAffected > 0 && existing.ID > 0 {
 		return database.DB.Model(&models.DailyPnL{}).Where("id = ?", existing.ID).Updates(map[string]interface{}{
 			"start_time":        start,
 			"end_time":          end,

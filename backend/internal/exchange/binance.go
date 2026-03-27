@@ -616,6 +616,20 @@ func binanceAPIError(body []byte) (int, string, bool) {
 	return parsed.Code, strings.TrimSpace(parsed.Msg), true
 }
 
+func formatBinanceAPIError(code int, msg string) error {
+	lowerMsg := strings.ToLower(strings.TrimSpace(msg))
+	if strings.Contains(lowerMsg, "restricted location") || strings.Contains(lowerMsg, "service unavailable from a restricted location") {
+		return fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q} (当前服务器或出口 IP 位于 Binance 限制地区，接口请求会被直接拒绝；请切换到 Binance 允许地区的网络/代理，或改用其他交易所)", code, msg)
+	}
+	if code == -4411 {
+		return fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q} (需要在币安签署 TradFi-Perps 合约后才能使用 USDM fapi 下单)", code, msg)
+	}
+	if code == -4120 {
+		return fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q} (币安已将 USDM 条件单迁移到 Algo Order 接口，需要使用 /fapi/v1/algoOrder)", code, msg)
+	}
+	return fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q}", code, msg)
+}
+
 func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, method, path string, params url.Values) ([]byte, int, error) {
 	if params == nil {
 		params = url.Values{}
@@ -663,12 +677,6 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
 		if code, msg, ok := binanceAPIError(body); ok {
-			if code == -4411 {
-				return body, resp.StatusCode, fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q} (需要在币安签署 TradFi-Perps 合约后才能使用 USDM fapi 下单)", code, msg)
-			}
-			if code == -4120 {
-				return body, resp.StatusCode, fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q} (币安已将 USDM 条件单迁移到 Algo Order 接口，需要使用 /fapi/v1/algoOrder)", code, msg)
-			}
 			// 429 handling: set ban window using Retry-After or body.retryAfter
 			if resp.StatusCode == 429 || code == 429 || code == -1003 {
 				retryAfter := int64(0)
@@ -695,7 +703,7 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 					b.requestBanUntil = time.Now().Add(2 * time.Minute)
 				}
 			}
-			return body, resp.StatusCode, fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q}", code, msg)
+			return body, resp.StatusCode, formatBinanceAPIError(code, msg)
 		}
 		return body, resp.StatusCode, fmt.Errorf("binance api error: %s", string(body))
 	}
@@ -755,7 +763,7 @@ func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params
 					b.requestBanUntil = time.Now().Add(2 * time.Minute)
 				}
 			}
-			return body, resp.StatusCode, fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q}", code, msg)
+			return body, resp.StatusCode, formatBinanceAPIError(code, msg)
 		}
 		return body, resp.StatusCode, fmt.Errorf("binance api error: %s", string(body))
 	}
