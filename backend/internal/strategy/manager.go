@@ -216,9 +216,10 @@ func clampOrderAmount(inst *StrategyInstance, requested float64) float64 {
 type StrategyStatus string
 
 const (
-	StatusRunning StrategyStatus = "running"
-	StatusStopped StrategyStatus = "stopped"
-	StatusError   StrategyStatus = "error"
+	StatusStarting StrategyStatus = "starting"
+	StatusRunning  StrategyStatus = "running"
+	StatusStopped  StrategyStatus = "stopped"
+	StatusError    StrategyStatus = "error"
 )
 
 type StrategyInstance struct {
@@ -302,6 +303,8 @@ type Manager struct {
 	quickCloseAt map[string]time.Time
 
 	orderCh chan orderReq
+	startCh chan string
+	stopCh  chan stopReq
 }
 
 func (m *Manager) ReleaseOpenSlot(strategyID string) {
@@ -441,6 +444,8 @@ func NewManager(hub *ws.Hub, ex exchange.Exchange) *Manager {
 		signalBatchWait: 500 * time.Millisecond,
 		quickCloseAt:    make(map[string]time.Time),
 		orderCh:         make(chan orderReq, 256),
+		startCh:         make(chan string, 128),
+		stopCh:          make(chan stopReq, 128),
 	}
 }
 
@@ -455,8 +460,15 @@ type orderReq struct {
 	signalID   string
 }
 
+type stopReq struct {
+	id    string
+	force bool
+}
+
 func (m *Manager) StartWorkers() {
 	go m.runOrderWorker()
+	go m.runStartWorker()
+	go m.runStopWorker()
 }
 
 func (m *Manager) runOrderWorker() {
@@ -675,49 +687,6 @@ func (m *Manager) AddStrategy(id, name, path string, ownerID uint, config map[st
 	}
 	m.instances[id] = inst
 	return inst
-}
-
-// StartStrategy starts the python process for a strategy instance.
-//
-// Process protocol:
-// - Backend sends JSON lines to stdin: {"type":"candle","data":{...}}
-// - Strategy sends JSON lines to stdout:
-//   - {"type":"log","data":"..."}
-//   - {"type":"order","data":{"symbol":"BTC/USDT","side":"buy","amount":0.01,"price":0}}
-//
-// Side effects:
-// - Starts market data subscription if config contains "symbol"
-// - Starts User Data Stream for exchanges that support it (Binance)
-func (m *Manager) StartStrategy(id string) error {
-	inst, err := m.getStartableStrategy(id)
-	if err != nil {
-		return err
-	}
-	if inst == nil {
-		return nil
-	}
-	plan, err := m.buildStrategyStartPlan(inst)
-	if err != nil {
-		return err
-	}
-	if plan == nil {
-		return nil
-	}
-	proc, err := m.startStrategyProcess(inst, plan)
-	if err != nil {
-		return err
-	}
-	if proc == nil {
-		return nil
-	}
-	m.activateStartedStrategy(inst, plan, proc)
-	m.attachRedisIO(inst, plan.redisBus, plan.logTrace)
-	m.syncStrategyDebugConfig(inst)
-	m.attachUserDataStream(inst)
-	_ = m.attachMarketData(inst, plan.redisBus, plan.feedSymbols, plan.runCfg)
-	go inst.readStdout()
-	go inst.readStderr(proc.stderr)
-	return nil
 }
 
 func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, error) {
@@ -1001,77 +970,6 @@ func (inst *StrategyInstance) readStderr(stderr io.ReadCloser) {
 		flush()
 	}
 	flush()
-}
-
-// StopStrategy stops a running python strategy process.
-func (m *Manager) StopStrategy(id string, force bool) error {
-	m.mu.RLock()
-	inst, ok := m.instances[id]
-	m.mu.RUnlock()
-
-	if !ok {
-		return fmt.Errorf("strategy %s not found", id)
-	}
-
-	if !force {
-		var openCount int64
-		database.DB.Model(&models.StrategyPosition{}).
-			Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
-			Count(&openCount)
-		if openCount > 0 {
-			return fmt.Errorf("strategy has open positions; close positions before stopping")
-		}
-		if bx, ok := m.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
-			syms := parseSymbolsValue(inst.Config["symbols"])
-			if len(syms) == 0 {
-				if sym, ok := inst.Config["symbol"].(string); ok && strings.TrimSpace(sym) != "" {
-					syms = []string{strings.TrimSpace(sym)}
-				}
-			}
-			if len(syms) > 0 {
-				exPos, err := bx.FetchPositions(inst.OwnerID, "active")
-				if err == nil {
-					want := map[string]struct{}{}
-					for _, s := range syms {
-						want[exchange.NormalizeSymbol(s)] = struct{}{}
-					}
-					for _, p := range exPos {
-						if _, ok := want[exchange.NormalizeSymbol(p.Symbol)]; ok && p.Amount > 0 {
-							return fmt.Errorf("strategy has open positions on exchange; close positions before stopping")
-						}
-					}
-				}
-			}
-		}
-	}
-
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-
-	if inst.Status != StatusRunning {
-		return nil
-	}
-	inst.stopping = true
-
-	if inst.redisCancel != nil {
-		inst.redisCancel()
-		inst.redisCancel = nil
-	}
-	if len(inst.candleStops) > 0 {
-		for _, stop := range inst.candleStops {
-			if stop != nil {
-				stop()
-			}
-		}
-		inst.candleStops = nil
-	}
-
-	if err := inst.cmd.Process.Kill(); err != nil {
-		return err
-	}
-
-	inst.Status = StatusStopped
-	return nil
 }
 
 func (m *Manager) historySyncLoop(ctx context.Context, inst *StrategyInstance, redisBus *bus.RedisBus) {
@@ -1414,133 +1312,14 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	}
 
 	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
-		lev := int(getNumber(inst.Config["leverage"]))
-		if lev <= 0 {
-			lev = 1
-		}
-		mode := strings.ToLower(strings.TrimSpace(getString(inst.Config["order_amount_mode"])))
-		if mode == "" {
-			mode = "notional"
-		}
-		minNotional := getNumber(inst.Config["min_order_notional"])
-		if minNotional <= 0 {
-			minNotional = 5
-		}
-
-		getPx := func() (float64, error) {
-			if price > 0 {
-				return price, nil
-			}
-			inst.mu.Lock()
-			px := 0.0
-			if inst.lastCandleClose != nil {
-				px = inst.lastCandleClose[symbol]
-			}
-			inst.mu.Unlock()
-			if px > 0 {
-				return px, nil
-			}
-			return bx.LastPrice(symbol)
-		}
-
-		px, err := getPx()
-		if err != nil || px <= 0 {
-			emitStrategyLog(inst, "error", fmt.Sprintf("Skip order: 获取价格失败 symbol=%s err=%v", symbol, err))
+		resolvedAmount, err := resolveUSDMOrderAmount(inst, bx, symbol, amount, price)
+		if err != nil {
 			return
 		}
-		avail := 0.0
-		if v, err := bx.USDMAvailableUSDT(inst.OwnerID); err == nil && v > 0 {
-			avail = v
-		}
-		desiredNotional := amount * px
-		if mode == "percent_balance" {
-			pct := getNumber(inst.Config["order_amount_pct"])
-			if pct <= 0 {
-				pct = amount / 100
-			}
-			if pct > 1 {
-				pct = 1
-			}
-			initial := avail * pct
-			maxInit := getNumber(inst.Config["max_initial_margin_usdt"])
-			if maxInit > 0 && initial > maxInit {
-				initial = maxInit
-			}
-			if initial <= 0 {
-				emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: percent_balance computed initial margin <=0 symbol=%s", symbol))
-				return
-			}
-			desiredNotional = initial * float64(lev)
-		} else if mode == "notional" {
-			desiredNotional = amount
-		}
-		if desiredNotional < minNotional {
-			desiredNotional = minNotional
-		}
-		levChosen := lev
-		finalNotional := 0.0
-		for l := lev; l >= 1; l-- {
-			availCap := 0.0
-			if avail > 0 {
-				availCap = avail * float64(l) * 0.95
-			}
-			remCap := 0.0
-			if capN, err := bx.USDMMaxNotionalForLeverage(inst.OwnerID, symbol, l); err == nil && capN > 0 {
-				if posAmt, _, markPx, e2 := bx.USDMPositionAmt(inst.OwnerID, symbol); e2 == nil && markPx > 0 && posAmt != 0 {
-					curN := math.Abs(posAmt) * markPx
-					rem := capN - curN
-					if rem > 0 {
-						remCap = rem * 0.98
-					} else {
-						remCap = 0
-					}
-				} else {
-					remCap = capN * 0.98
-				}
-			}
-			maxNotional := 0.0
-			if availCap > 0 && remCap > 0 {
-				if availCap < remCap {
-					maxNotional = availCap
-				} else {
-					maxNotional = remCap
-				}
-			} else if availCap > 0 {
-				maxNotional = availCap
-			} else if remCap > 0 {
-				maxNotional = remCap
-			}
-			if maxNotional <= 0 {
-				continue
-			}
-			if maxNotional >= desiredNotional {
-				levChosen = l
-				finalNotional = desiredNotional
-				break
-			}
-			if maxNotional >= minNotional {
-				levChosen = l
-				finalNotional = maxNotional
-				break
-			}
-		}
-		if finalNotional <= 0 {
-			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: leverage bracket remaining cap insufficient symbol=%s desired=%0.4f min=%0.4f lev=%d", symbol, desiredNotional, minNotional, lev))
+		if resolvedAmount <= 0 {
 			return
 		}
-		if levChosen != lev {
-			_ = bx.SetLeverage(inst.OwnerID, symbol, levChosen)
-			emitStrategyLog(inst, "info", fmt.Sprintf("Auto adjust leverage due to bracket cap symbol=%s lev=%d->%d", symbol, lev, levChosen))
-		}
-		amount = finalNotional / px
-		amount = clampOrderAmount(inst, amount)
-		if amount <= 0 {
-			return
-		}
-		if amount*px < minNotional {
-			emitStrategyLog(inst, "info", fmt.Sprintf("Skip order: notional too small symbol=%s notional=%0.4f min_notional=%0.2f", symbol, amount*px, minNotional))
-			return
-		}
+		amount = resolvedAmount
 	}
 
 	maxPos := 1
@@ -1927,98 +1706,11 @@ func (m *Manager) closePositionForInstance(inst *StrategyInstance, symbol string
 	}
 
 	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
-		order, _, _, err := bx.ClosePositionOrder(sym, inst.OwnerID)
-		if err != nil {
-			return err
-		}
-		if order == nil {
-			return nil
-		}
-		database.DB.Create(&models.StrategyOrder{
-			StrategyID:      inst.ID,
-			StrategyName:    inst.Name,
-			OwnerID:         inst.OwnerID,
-			Exchange:        bx.GetName(),
-			Symbol:          sym,
-			Side:            strings.ToLower(order.Side),
-			OrderType:       "market",
-			ClientOrderID:   order.ClientOrderID,
-			ExchangeOrderID: order.ID,
-			Status:          strings.ToLower(order.Status),
-			RequestedQty:    order.Amount,
-			Price:           0,
-			ExecutedQty:     order.Amount,
-			AvgPrice:        order.Price,
-			RequestedAt:     time.Now(),
-			UpdatedAt:       time.Now(),
-		})
-		inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
-		if strings.ToLower(order.Status) == "filled" {
-			applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, 0, 0, order.Timestamp)
-		}
-		go func(ownerID uint, symbol string) {
-			deadline := time.Now().Add(45 * time.Second)
-			ticker := time.NewTicker(1 * time.Second)
-			defer ticker.Stop()
-			for time.Now().Before(deadline) {
-				amt, _, _, e := bx.USDMPositionAmt(ownerID, symbol)
-				if e == nil && amt == 0 {
-					_ = bx.CancelUSDMAlgoOpenOrders(ownerID, symbol)
-					_ = bx.CancelPrePositionOpenOrders(ownerID, symbol)
-					return
-				}
-				<-ticker.C
-			}
-		}(inst.OwnerID, sym)
-		return nil
-	}
-
-	var pos models.StrategyPosition
-	if err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, sym, "open").
-		Order("open_time desc").
-		First(&pos).Error; err != nil {
-		return nil
-	}
-	if pos.Amount <= 0 {
-		return nil
-	}
-	clientOrderID := models.GenerateUUID()
-	database.DB.Create(&models.StrategyOrder{
-		StrategyID:    inst.ID,
-		StrategyName:  inst.Name,
-		OwnerID:       inst.OwnerID,
-		Exchange:      inst.exchange.GetName(),
-		Symbol:        sym,
-		Side:          "sell",
-		OrderType:     "market",
-		ClientOrderID: clientOrderID,
-		Status:        "requested",
-		RequestedQty:  pos.Amount,
-		Price:         0,
-		RequestedAt:   time.Now(),
-		UpdatedAt:     time.Now(),
-	})
-	order, err := inst.exchange.PlaceOrder(inst.OwnerID, clientOrderID, sym, "sell", pos.Amount, 0)
-	if err != nil {
-		database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
-			Updates(map[string]interface{}{"status": "failed", "updated_at": time.Now()})
-		return err
-	}
-	database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
-		Updates(map[string]interface{}{
-			"exchange_order_id": order.ID,
-			"status":            order.Status,
-			"executed_qty":      order.Amount,
-			"avg_price":         order.Price,
-			"updated_at":        time.Now(),
-		})
-	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
-	if strings.ToLower(order.Status) == "filled" {
-		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, "sell", order.Amount, order.Price, 0, 0, order.Timestamp)
+		return m.closeUSDMPosition(inst, bx, sym)
 	}
 	_ = reason
 	_ = signalID
-	return nil
+	return m.closeSpotPosition(inst, sym)
 }
 
 func (m *Manager) RemoveStrategy(id string) error {
