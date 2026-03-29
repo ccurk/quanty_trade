@@ -363,6 +363,7 @@ type StrategyInstance struct {
 	candleRxCount   map[string]int
 	lastCandleClose map[string]float64
 	lastCandleAt    map[string]time.Time
+	tpslCancel      map[string]context.CancelFunc
 }
 
 // Manager manages lifecycle of all strategy instances and coordinates exchange access.
@@ -400,6 +401,19 @@ func (m *Manager) ReleaseOpenSlot(strategyID string) {
 		return
 	}
 	_, _ = rb.ReleaseOpenSlot(context.Background(), strategyID)
+}
+
+func (m *Manager) StopPositionTPStopMonitor(strategyID string, symbol string) {
+	if m == nil || strings.TrimSpace(strategyID) == "" || strings.TrimSpace(symbol) == "" {
+		return
+	}
+	m.mu.RLock()
+	inst := m.instances[strategyID]
+	m.mu.RUnlock()
+	if inst == nil {
+		return
+	}
+	m.stopPositionTPStopMonitor(inst, symbol)
 }
 
 func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {

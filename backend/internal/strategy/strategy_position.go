@@ -409,10 +409,11 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 						} else {
 							refs := make([]string, 0, len(created))
 							for _, ref := range created {
-								refs = append(refs, fmt.Sprintf("%s algo_id=%d client_algo_id=%s trigger=%s price=%s", ref.Kind, ref.AlgoID, ref.ClientAlgoID, ref.TriggerPrice, ref.ExecutionPrice))
+								refs = append(refs, fmt.Sprintf("%s order_id=%d client_order_id=%s trigger=%s price=%s", ref.Kind, ref.AlgoID, ref.ClientAlgoID, ref.TriggerPrice, ref.ExecutionPrice))
 							}
 							emitStrategyLog(inst, "info", fmt.Sprintf("已设置止盈止损 symbol=%s tp=%v sl=%v %s", symbol, takeProfit, stopLoss, strings.Join(refs, " | ")))
 						}
+						m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
 						return
 					}
 					break
@@ -443,6 +444,41 @@ func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, t
 	if sym == "" {
 		return
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	inst.mu.Lock()
+	if inst.tpslCancel == nil {
+		inst.tpslCancel = map[string]context.CancelFunc{}
+	}
+	if old, ok := inst.tpslCancel[sym]; ok && old != nil {
+		old()
+	}
+	inst.tpslCancel[sym] = cancel
+	inst.mu.Unlock()
+	go m.runPositionTPStopMonitor(ctx, inst, sym, takeProfit, stopLoss, signalID)
+}
+
+func (m *Manager) stopPositionTPStopMonitor(inst *StrategyInstance, symbol string) {
+	if inst == nil {
+		return
+	}
+	sym := strings.TrimSpace(symbol)
+	if sym == "" {
+		return
+	}
+	inst.mu.Lock()
+	cancel := context.CancelFunc(nil)
+	if inst.tpslCancel != nil {
+		cancel = inst.tpslCancel[sym]
+		delete(inst.tpslCancel, sym)
+	}
+	inst.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (m *Manager) runPositionTPStopMonitor(ctx context.Context, inst *StrategyInstance, sym string, takeProfit float64, stopLoss float64, signalID string) {
+	defer m.stopPositionTPStopMonitor(inst, sym)
 	isShort := false
 	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
 		if amt, entryPx, _, levUsed, err := bx.USDMPositionInfo(inst.OwnerID, sym); err == nil {
@@ -483,7 +519,12 @@ func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, t
 	}
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 		inst.mu.Lock()
 		px := 0.0
 		if inst.lastCandleClose != nil {
@@ -531,6 +572,8 @@ func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, t
 							reason = "roi_sl"
 						}
 					}
+				} else if err == nil && amt == 0 {
+					return
 				}
 			}
 		}

@@ -426,6 +426,9 @@ func ClosePosition(c *gin.Context) {
 			First(&existing).Error == nil
 
 		instRows := loadUserStrategyInstances(uid)
+		if hasExisting && existing.StrategyID != "" && existing.StrategyID != "manual" {
+			stratMgr.StopPositionTPStopMonitor(existing.StrategyID, symbol)
+		}
 		_ = bx.CancelUSDMAllSymbolOrders(uid, symbol)
 		order, entryPrice, signedAmt, err := bx.ClosePositionOrder(symbol, uid)
 		if err != nil {

@@ -243,6 +243,7 @@ func resolveHungerMode(inst *StrategyInstance) (bool, time.Duration, float64, fl
 }
 
 func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.BinanceExchange, sym string) error {
+	m.stopPositionTPStopMonitor(inst, sym)
 	if err := bx.CancelUSDMAllSymbolOrders(inst.OwnerID, sym); err != nil {
 		emitStrategyLog(inst, "error", fmt.Sprintf("平仓前撤销该交易对全部委托失败 symbol=%s err=%v", sym, err))
 	}
@@ -302,6 +303,7 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 }
 
 func (m *Manager) closeSpotPosition(inst *StrategyInstance, sym string) error {
+	m.stopPositionTPStopMonitor(inst, sym)
 	var pos models.StrategyPosition
 	if err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, sym, "open").
 		Order("open_time desc").
