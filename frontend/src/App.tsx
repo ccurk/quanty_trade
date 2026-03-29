@@ -47,6 +47,7 @@ interface MarketSymbol {
 }
 
 interface Position {
+  strategy_id: string;
   symbol: string;
   direction?: string;
   amount: number;
@@ -1538,7 +1539,10 @@ const App: React.FC = () => {
                   ).map((p, i) => (
                     <tr key={i} className={`transition ${isDarkMode ? 'hover:bg-gray-800/30' : 'hover:bg-gray-50'}`}>
                       <td className="px-4 md:px-6 py-4 font-bold">{p.symbol}</td>
-                      <td className="px-4 md:px-6 py-4 text-sm text-blue-400 font-medium">{p.strategy_name}</td>
+                      <td className="px-4 md:px-6 py-4 text-sm text-blue-400 font-medium">
+                        <div>{p.strategy_name || '--'}</div>
+                        <div className="text-[10px] text-gray-500 font-mono">{p.strategy_id || '--'}</div>
+                      </td>
                       <td className="px-4 md:px-6 py-4 text-sm text-gray-500">{p.exchange_name}</td>
                       <td className="px-4 md:px-6 py-4 text-sm font-bold">
                         {p.direction === 'short' ? <span className="text-red-400">开空</span> : (p.direction === 'long' ? <span className="text-green-400">开多</span> : '--')}

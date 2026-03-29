@@ -159,6 +159,22 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		openSymbols[key] = struct{}{}
 		openCount++
 	}
+	var pendingRows []models.StrategyOrder
+	pendingCutoff := time.Now().Add(-2 * time.Minute)
+	_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND requested_at >= ? AND status IN ?", inst.OwnerID, inst.ID, pendingCutoff, []string{"requested", "new", "partially_filled"}).
+		Order("requested_at desc").
+		Find(&pendingRows).Error
+	for _, ord := range pendingRows {
+		key := exchange.NormalizeSymbol(ord.Symbol)
+		if key == "" {
+			continue
+		}
+		if _, ok := openSymbols[key]; ok {
+			continue
+		}
+		openSymbols[key] = struct{}{}
+		openCount++
+	}
 	if inst.exchange != nil {
 		if ps, err := inst.exchange.FetchPositions(inst.OwnerID, "active"); err == nil {
 			for _, p := range ps {

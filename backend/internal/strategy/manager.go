@@ -428,13 +428,17 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 		}
 
 		for ownerID, insts := range byOwner {
-			activeSymbols := map[string]struct{}{}
+			activePositions := map[string]exchange.Position{}
 			if ps, err := ex.FetchPositions(ownerID, "active"); err == nil {
 				for _, p := range ps {
 					if math.Abs(p.Amount) <= 0 {
 						continue
 					}
-					activeSymbols[exchange.NormalizeSymbol(p.Symbol)] = struct{}{}
+					key := exchange.NormalizeSymbol(p.Symbol)
+					if key == "" {
+						continue
+					}
+					activePositions[key] = p
 				}
 			} else {
 				logger.Errorf("[REDIS OPEN COUNT] fetch positions failed owner=%d err=%v", ownerID, err)
@@ -447,14 +451,32 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 				continue
 			}
 
+			var recentOrders []models.StrategyOrder
+			_ = database.DB.Where("owner_id = ?", ownerID).Order("requested_at desc").Limit(500).Find(&recentOrders).Error
+			latestOrderBySymbol := map[string]models.StrategyOrder{}
+			for _, ord := range recentOrders {
+				symKey := exchange.NormalizeSymbol(ord.Symbol)
+				if symKey == "" {
+					continue
+				}
+				if _, ok := latestOrderBySymbol[symKey]; ok {
+					continue
+				}
+				if strings.TrimSpace(ord.StrategyID) == "" {
+					continue
+				}
+				latestOrderBySymbol[symKey] = ord
+			}
+
 			countByStrategy := map[string]int64{}
+			countedSymbols := map[string]struct{}{}
 			now := time.Now()
 			for _, row := range openRows {
 				symKey := exchange.NormalizeSymbol(row.Symbol)
 				if symKey == "" {
 					continue
 				}
-				if _, ok := activeSymbols[symKey]; !ok {
+				if _, ok := activePositions[symKey]; !ok {
 					updates := map[string]interface{}{
 						"amount":     0,
 						"status":     "closed",
@@ -472,7 +494,51 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 				}
 				if strings.TrimSpace(row.StrategyID) != "" {
 					countByStrategy[row.StrategyID]++
+					countedSymbols[symKey] = struct{}{}
 				}
+			}
+
+			for symKey, pos := range activePositions {
+				if _, ok := countedSymbols[symKey]; ok {
+					continue
+				}
+				ord, ok := latestOrderBySymbol[symKey]
+				if !ok || strings.TrimSpace(ord.StrategyID) == "" {
+					continue
+				}
+				countByStrategy[ord.StrategyID]++
+				countedSymbols[symKey] = struct{}{}
+				_ = database.DB.Create(&models.StrategyPosition{
+					StrategyID:   ord.StrategyID,
+					StrategyName: ord.StrategyName,
+					OwnerID:      ownerID,
+					Exchange:     pos.ExchangeName,
+					Symbol:       pos.Symbol,
+					Amount:       pos.Amount,
+					AvgPrice:     pos.Price,
+					Status:       "open",
+					OpenTime:     pos.OpenTime,
+					UpdatedAt:    now,
+				}).Error
+			}
+
+			pendingCutoff := now.Add(-2 * time.Minute)
+			for symKey, ord := range latestOrderBySymbol {
+				if _, ok := countedSymbols[symKey]; ok {
+					continue
+				}
+				if strings.TrimSpace(ord.StrategyID) == "" {
+					continue
+				}
+				st := strings.ToLower(strings.TrimSpace(ord.Status))
+				if st != "requested" && st != "new" && st != "partially_filled" {
+					continue
+				}
+				if ord.RequestedAt.Before(pendingCutoff) {
+					continue
+				}
+				countByStrategy[ord.StrategyID]++
+				countedSymbols[symKey] = struct{}{}
 			}
 			for _, inst := range insts {
 				_ = rb.SetOpenCount(ctx, inst.ID, countByStrategy[inst.ID], 6*time.Hour)

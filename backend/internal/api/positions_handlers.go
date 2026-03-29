@@ -214,11 +214,14 @@ func ListPositions(c *gin.Context) {
 			for _, p := range exPos {
 				key := strings.ToUpper(p.Symbol)
 				if info, ok := bySymbol[key]; ok {
+					p.StrategyID = info.StrategyID
 					p.StrategyName = info.StrategyName
 					if strings.TrimSpace(p.StrategyName) == "" {
 						if si := findStrategyInstanceForSymbol(instRows, p.Symbol); si != nil {
+							p.StrategyID = si.ID
 							p.StrategyName = si.Name
 						} else if meta, ok := orderMeta[key]; ok {
+							p.StrategyID = meta.StrategyID
 							p.StrategyName = meta.StrategyName
 						}
 					}
@@ -270,6 +273,7 @@ func ListPositions(c *gin.Context) {
 							UpdatedAt:    now,
 						}
 						_ = database.DB.Create(&pos).Error
+						p.StrategyID = strategyID
 						p.StrategyName = strategyName
 						p.TakeProfit = tp
 						p.StopLoss = sl
@@ -338,6 +342,7 @@ func ListPositions(c *gin.Context) {
 			realizedRet = (p.RealizedPnL / p.RealizedNotional) * 100
 		}
 		pos := exchange.Position{
+			StrategyID:         p.StrategyID,
 			Symbol:             p.Symbol,
 			Direction:          "long",
 			Amount:             p.Amount,

@@ -113,16 +113,40 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	}
 	inst.orderMu.Unlock()
 
-	database.DB.Model(&models.StrategyPosition{}).
-		Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
-		Count(&strategyOpenCount)
-	var sameStrategySymbolCount int64
-	database.DB.Model(&models.StrategyPosition{}).
-		Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").
-		Count(&sameStrategySymbolCount)
-	if sameStrategySymbolCount > 0 {
-		accountSymbolOpen = true
+	var openRows []models.StrategyPosition
+	_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").Find(&openRows).Error
+	openSymbols := map[string]struct{}{}
+	for _, row := range openRows {
+		key := exchange.NormalizeSymbol(row.Symbol)
+		if key == "" {
+			continue
+		}
+		openSymbols[key] = struct{}{}
+		if key == exSymbolKey {
+			accountSymbolOpen = true
+		}
 	}
+	strategyOpenCount = int64(len(openSymbols))
+	var pendingOrders []models.StrategyOrder
+	pendingCutoff := time.Now().Add(-2 * time.Minute)
+	_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND requested_at >= ? AND status IN ?", inst.OwnerID, inst.ID, pendingCutoff, []string{"requested", "new", "partially_filled"}).
+		Order("requested_at desc").
+		Find(&pendingOrders).Error
+	pendingSymbols := map[string]struct{}{}
+	for _, ord := range pendingOrders {
+		key := exchange.NormalizeSymbol(ord.Symbol)
+		if key == "" {
+			continue
+		}
+		if _, ok := openSymbols[key]; ok {
+			continue
+		}
+		pendingSymbols[key] = struct{}{}
+		if key == exSymbolKey {
+			accountSymbolOpen = true
+		}
+	}
+	strategyOpenCount += int64(len(pendingSymbols))
 	if ps, err := inst.exchange.FetchPositions(inst.OwnerID, "active"); err == nil {
 		for _, p := range ps {
 			if math.Abs(p.Amount) <= 0 {

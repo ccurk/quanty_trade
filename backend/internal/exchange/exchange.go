@@ -40,6 +40,7 @@ type Order struct {
 }
 
 type Position struct {
+	StrategyID string `json:"strategy_id"`
 	// Symbol is the display symbol (e.g. BTC/USDT).
 	Symbol string `json:"symbol"`
 	// Direction is long/short for futures or long for spot.
