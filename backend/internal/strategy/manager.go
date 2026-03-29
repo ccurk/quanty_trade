@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -405,41 +406,89 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 	if m == nil {
 		return
 	}
-
-	m.mu.RLock()
-	rb := m.redisBus
-	snap := make([]*StrategyInstance, 0, len(m.instances))
-	for _, inst := range m.instances {
-		snap = append(snap, inst)
-	}
-	m.mu.RUnlock()
-	if rb == nil {
-		return
-	}
-
-	byOwner := map[uint][]*StrategyInstance{}
-	for _, inst := range snap {
-		if inst == nil || inst.OwnerID == 0 || strings.TrimSpace(inst.ID) == "" {
-			continue
+	syncOnce := func() {
+		m.mu.RLock()
+		rb := m.redisBus
+		ex := m.exchange
+		snap := make([]*StrategyInstance, 0, len(m.instances))
+		for _, inst := range m.instances {
+			snap = append(snap, inst)
 		}
-		byOwner[inst.OwnerID] = append(byOwner[inst.OwnerID], inst)
-	}
-
-	for ownerID, insts := range byOwner {
-		var openRows []models.StrategyPosition
-		if err := database.DB.Where("owner_id = ? AND status = ?", ownerID, "open").Find(&openRows).Error; err != nil {
-			logger.Errorf("[REDIS OPEN COUNT] sync failed owner=%d err=%v", ownerID, err)
-			continue
+		m.mu.RUnlock()
+		if rb == nil || ex == nil {
+			return
 		}
-		countByStrategy := map[string]int64{}
-		for _, row := range openRows {
-			if strings.TrimSpace(row.StrategyID) == "" {
+
+		byOwner := map[uint][]*StrategyInstance{}
+		for _, inst := range snap {
+			if inst == nil || inst.OwnerID == 0 || strings.TrimSpace(inst.ID) == "" {
 				continue
 			}
-			countByStrategy[row.StrategyID]++
+			byOwner[inst.OwnerID] = append(byOwner[inst.OwnerID], inst)
 		}
-		for _, inst := range insts {
-			_ = rb.SetOpenCount(ctx, inst.ID, countByStrategy[inst.ID], 6*time.Hour)
+
+		for ownerID, insts := range byOwner {
+			activeSymbols := map[string]struct{}{}
+			if ps, err := ex.FetchPositions(ownerID, "active"); err == nil {
+				for _, p := range ps {
+					if math.Abs(p.Amount) <= 0 {
+						continue
+					}
+					activeSymbols[exchange.NormalizeSymbol(p.Symbol)] = struct{}{}
+				}
+			} else {
+				logger.Errorf("[REDIS OPEN COUNT] fetch positions failed owner=%d err=%v", ownerID, err)
+				continue
+			}
+
+			var openRows []models.StrategyPosition
+			if err := database.DB.Where("owner_id = ? AND status = ?", ownerID, "open").Find(&openRows).Error; err != nil {
+				logger.Errorf("[REDIS OPEN COUNT] load open rows failed owner=%d err=%v", ownerID, err)
+				continue
+			}
+
+			countByStrategy := map[string]int64{}
+			now := time.Now()
+			for _, row := range openRows {
+				symKey := exchange.NormalizeSymbol(row.Symbol)
+				if symKey == "" {
+					continue
+				}
+				if _, ok := activeSymbols[symKey]; !ok {
+					updates := map[string]interface{}{
+						"amount":     0,
+						"status":     "closed",
+						"updated_at": now,
+					}
+					if row.CloseTime.IsZero() {
+						updates["close_time"] = now
+					}
+					_ = database.DB.Model(&models.StrategyPosition{}).Where("id = ?", row.ID).Updates(updates).Error
+					if strings.TrimSpace(row.StrategyID) != "" {
+						_, _ = rb.ReleaseOpenSlot(ctx, row.StrategyID)
+					}
+					logger.Infof("[REDIS OPEN COUNT] auto close stale open position owner=%d strategy=%s symbol=%s", ownerID, row.StrategyID, row.Symbol)
+					continue
+				}
+				if strings.TrimSpace(row.StrategyID) != "" {
+					countByStrategy[row.StrategyID]++
+				}
+			}
+			for _, inst := range insts {
+				_ = rb.SetOpenCount(ctx, inst.ID, countByStrategy[inst.ID], 6*time.Hour)
+			}
+		}
+	}
+
+	syncOnce()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncOnce()
 		}
 	}
 }
