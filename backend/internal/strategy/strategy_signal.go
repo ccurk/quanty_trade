@@ -144,8 +144,8 @@ func (m *Manager) processSignalBatch(strategyID string) {
 	emitStrategyLog(inst, "info", fmt.Sprintf("同批信号排序完成，共%d个候选：%s", len(cands), strings.Join(preview, "，")))
 
 	maxPos := 1
-	if v, ok := inst.Config["max_concurrent_positions"].(float64); ok && int(v) > 0 {
-		maxPos = int(v)
+	if v := int(getNumber(inst.Config["max_concurrent_positions"])); v > 0 {
+		maxPos = v
 	}
 	openCount := 0
 	openSymbols := map[string]struct{}{}
