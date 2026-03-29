@@ -187,11 +187,16 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 条件无效，适配度=%0.4f", sig.Symbol, c.rr))
 			continue
 		}
-		if m.tryPlaceCandidate(inst, sig.Symbol, c.side, c.amount, sig.TakeProfit, sig.StopLoss, strings.TrimSpace(sig.SignalID)) {
+		res := m.tryPlaceCandidate(inst, sig.Symbol, c.side, c.amount, sig.TakeProfit, sig.StopLoss, strings.TrimSpace(sig.SignalID))
+		if res == candidatePlaceFilled || res == candidatePlacePending {
 			selected++
 			selectedSymbols[symKey] = struct{}{}
 			openSymbols[symKey] = struct{}{}
-			emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓成功：%s 方向=%s 适配度=%0.4f，已占用 %d/%d 个仓位", sig.Symbol, c.side, c.rr, openCount+selected, maxPos))
+			if res == candidatePlaceFilled {
+				emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓成功：%s 方向=%s 适配度=%0.4f，当前已占用 %d/%d 个仓位", sig.Symbol, c.side, c.rr, openCount+selected, maxPos))
+			} else {
+				emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓请求已提交：%s 方向=%s 适配度=%0.4f，已预留 %d/%d 个仓位，等待成交确认", sig.Symbol, c.side, c.rr, openCount+selected, maxPos))
+			}
 			continue
 		}
 		emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓失败：%s 方向=%s 适配度=%0.4f", sig.Symbol, c.side, c.rr))
@@ -207,9 +212,17 @@ func (m *Manager) processSignalBatch(strategyID string) {
 	}
 }
 
-func (m *Manager) tryPlaceCandidate(inst *StrategyInstance, symbol string, side string, amount float64, tp float64, sl float64, signalID string) bool {
+type candidatePlaceResult string
+
+const (
+	candidatePlaceFailed  candidatePlaceResult = "failed"
+	candidatePlacePending candidatePlaceResult = "pending"
+	candidatePlaceFilled  candidatePlaceResult = "filled"
+)
+
+func (m *Manager) tryPlaceCandidate(inst *StrategyInstance, symbol string, side string, amount float64, tp float64, sl float64, signalID string) candidatePlaceResult {
 	if inst == nil {
-		return false
+		return candidatePlaceFailed
 	}
 	m.enqueueOrderForInstance(inst, symbol, side, amount, 0, tp, sl, signalID)
 	deadline := time.Now().Add(2 * time.Second)
@@ -220,16 +233,19 @@ func (m *Manager) tryPlaceCandidate(inst *StrategyInstance, symbol string, side 
 			First(&ord).Error
 		if err == nil && ord.ID > 0 {
 			st := strings.ToLower(strings.TrimSpace(ord.Status))
-			if st == "filled" || st == "new" || st == "requested" {
-				return true
+			if st == "filled" {
+				return candidatePlaceFilled
+			}
+			if st == "new" || st == "requested" {
+				return candidatePlacePending
 			}
 			if st == "failed" || st == "rejected" {
-				return false
+				return candidatePlaceFailed
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return false
+	return candidatePlaceFailed
 }
 
 func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage) {
