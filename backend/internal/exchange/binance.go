@@ -1504,6 +1504,20 @@ func (b *BinanceExchange) USDMPositionInfo(ownerID uint, symbol string) (float64
 	return bestAmt, bestEntry, bestMark, bestLev, nil
 }
 
+func (b *BinanceExchange) usdmPositionSideMode(cred binanceCred) (bool, error) {
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/positionSide/dual", nil)
+	if err != nil {
+		return false, err
+	}
+	var resp struct {
+		DualSidePosition bool `json:"dualSidePosition"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false, err
+	}
+	return resp.DualSidePosition, nil
+}
+
 func (b *BinanceExchange) ClosePosition(symbol string, ownerID uint) error {
 	cred, err := b.getCred(ownerID)
 	if err != nil {
@@ -1626,6 +1640,18 @@ func (b *BinanceExchange) ClosePositionOrder(symbol string, ownerID uint) (*Orde
 	if positionAmt < 0 {
 		side = "BUY"
 	}
+	dualSideMode, err := b.usdmPositionSideMode(cred)
+	if err != nil {
+		return nil, entryPrice, 0, err
+	}
+	positionSide := "BOTH"
+	if dualSideMode {
+		if positionAmt < 0 {
+			positionSide = "SHORT"
+		} else {
+			positionSide = "LONG"
+		}
+	}
 
 	adjQty := roundDownToStep(qty, filters.StepSize)
 	if filters.MinQty > 0 && adjQty < filters.MinQty {
@@ -1637,7 +1663,10 @@ func (b *BinanceExchange) ClosePositionOrder(symbol string, ownerID uint) (*Orde
 	params.Set("symbol", target)
 	params.Set("side", side)
 	params.Set("type", "MARKET")
-	params.Set("reduceOnly", "true")
+	params.Set("positionSide", positionSide)
+	if !dualSideMode {
+		params.Set("reduceOnly", "true")
+	}
 	params.Set("newClientOrderId", clientOrderID)
 	params.Set("quantity", formatByStep(adjQty, filters.StepSize))
 
@@ -2117,11 +2146,23 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 	if positionAmt == 0 {
 		return nil, fmt.Errorf("no open position for symbol")
 	}
+	dualSideMode, err := b.usdmPositionSideMode(cred)
+	if err != nil {
+		return nil, err
+	}
 
 	sym := binanceSymbol(symbol)
 	closeSide := "SELL"
 	if positionAmt < 0 {
 		closeSide = "BUY"
+	}
+	positionSide := "BOTH"
+	if dualSideMode {
+		if positionAmt < 0 {
+			positionSide = "SHORT"
+		} else {
+			positionSide = "LONG"
+		}
 	}
 	closeQty := roundDownToStep(math.Abs(positionAmt), filters.StepSize)
 	if filters.MinQty > 0 && closeQty < filters.MinQty {
@@ -2138,11 +2179,13 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		params.Set("algoType", "CONDITIONAL")
 		params.Set("symbol", sym)
 		params.Set("side", closeSide)
-		params.Set("positionSide", "BOTH")
+		params.Set("positionSide", positionSide)
 		params.Set("timeInForce", "GTC")
 		params.Set("workingType", "MARK_PRICE")
 		params.Set("priceProtect", "TRUE")
-		params.Set("reduceOnly", "true")
+		if !dualSideMode {
+			params.Set("reduceOnly", "true")
+		}
 		params.Set("orderType", orderType)
 		clientID := normalizeNewClientOrderID(kind + "_" + baseClientOrderID)
 		params.Set("clientAlgoId", clientID)
@@ -2168,6 +2211,7 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		orderParams := url.Values{}
 		orderParams.Set("symbol", sym)
 		orderParams.Set("side", closeSide)
+		orderParams.Set("positionSide", positionSide)
 		orderParams.Set("type", func() string {
 			if orderType == "TAKE_PROFIT" {
 				return "TAKE_PROFIT_MARKET"
