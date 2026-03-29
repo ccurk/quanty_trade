@@ -61,6 +61,13 @@ docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 
 mkdir -p "${STRATEGIES_DIR}"
 
+find "${STRATEGIES_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+SEED_CONTAINER="${CONTAINER_NAME}-seed-$$"
+docker create --name "${SEED_CONTAINER}" "${BACKEND_IMAGE}:${BACKEND_VERSION}" >/dev/null
+docker cp "${SEED_CONTAINER}:/app/strategies/." "${STRATEGIES_DIR}/"
+docker rm -f "${SEED_CONTAINER}" >/dev/null 2>&1 || true
+
 docker run -d \
   --name "${CONTAINER_NAME}" \
   --restart always \
