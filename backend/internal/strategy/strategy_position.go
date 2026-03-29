@@ -339,6 +339,14 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 			entryPx := 0.0
 			levUsed := 0.0
 			for i := 0; i < 120; i++ {
+				amt, px, _, lev, posErr := bx.USDMPositionInfo(inst.OwnerID, symbol)
+				if posErr == nil && amt != 0 {
+					positionReady = true
+					positionAmt = amt
+					entryPx = px
+					levUsed = lev
+				}
+
 				var ord models.StrategyOrder
 				err := database.DB.Where("owner_id = ? AND strategy_id = ? AND client_order_id = ?", inst.OwnerID, inst.ID, baseClientOrderID).
 					Order("requested_at desc").
@@ -348,18 +356,12 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 					if st == "filled" {
 						positionReady = true
 					}
-					if st == "failed" || st == "rejected" || st == "canceled" || st == "expired" {
+					if !positionReady && (st == "failed" || st == "rejected" || st == "canceled" || st == "expired") {
 						emitStrategyLog(inst, "info", fmt.Sprintf("开仓单未成交完成，跳过设置交易所止盈止损 symbol=%s status=%s client_order_id=%s", symbol, st, baseClientOrderID))
 						return
 					}
 				}
-				amt, px, _, lev, posErr := bx.USDMPositionInfo(inst.OwnerID, symbol)
-				if posErr == nil && amt != 0 {
-					positionReady = true
-					positionAmt = amt
-					entryPx = px
-					levUsed = lev
-				}
+
 				if positionReady && positionAmt != 0 && entryPx > 0 {
 					var lastErr error
 					var pos models.StrategyPosition

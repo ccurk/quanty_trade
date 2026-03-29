@@ -1485,16 +1485,23 @@ func (b *BinanceExchange) USDMPositionInfo(ownerID uint, symbol string) (float64
 		return 0, 0, 0, 0, err
 	}
 	target := binanceSymbol(symbol)
+	var bestAmt, bestEntry, bestMark, bestLev float64
 	for _, p := range raw {
 		if strings.EqualFold(p.Symbol, target) {
-			positionAmt, _ := strconv.ParseFloat(p.PositionAmt, 64)
-			entryPrice, _ := strconv.ParseFloat(p.EntryPrice, 64)
-			markPrice, _ := strconv.ParseFloat(p.MarkPrice, 64)
+			amt, _ := strconv.ParseFloat(p.PositionAmt, 64)
+			entry, _ := strconv.ParseFloat(p.EntryPrice, 64)
+			mark, _ := strconv.ParseFloat(p.MarkPrice, 64)
 			lev, _ := strconv.ParseFloat(p.Leverage, 64)
-			return positionAmt, entryPrice, markPrice, lev, nil
+			if amt != 0 {
+				return amt, entry, mark, lev, nil
+			}
+			bestAmt = amt
+			bestEntry = entry
+			bestMark = mark
+			bestLev = lev
 		}
 	}
-	return 0, 0, 0, 0, nil
+	return bestAmt, bestEntry, bestMark, bestLev, nil
 }
 
 func (b *BinanceExchange) ClosePosition(symbol string, ownerID uint) error {
@@ -1597,10 +1604,17 @@ func (b *BinanceExchange) ClosePositionOrder(symbol string, ownerID uint) (*Orde
 	var updateTime int64
 	for _, p := range raw {
 		if strings.EqualFold(p.Symbol, target) {
-			positionAmt, _ = strconv.ParseFloat(p.PositionAmt, 64)
+			amt, _ := strconv.ParseFloat(p.PositionAmt, 64)
+			if amt != 0 {
+				positionAmt = amt
+				entryPrice, _ = strconv.ParseFloat(p.EntryPrice, 64)
+				updateTime = p.UpdateTime
+				break
+			}
+			// Keep 0 as fallback if no active position is found
+			positionAmt = amt
 			entryPrice, _ = strconv.ParseFloat(p.EntryPrice, 64)
 			updateTime = p.UpdateTime
-			break
 		}
 	}
 	if positionAmt == 0 {
@@ -2056,10 +2070,16 @@ func (b *BinanceExchange) USDMPositionAmt(ownerID uint, symbol string) (float64,
 	var markPrice float64
 	for _, p := range raw {
 		if strings.EqualFold(p.Symbol, target) {
-			positionAmt, _ = strconv.ParseFloat(p.PositionAmt, 64)
+			amt, _ := strconv.ParseFloat(p.PositionAmt, 64)
+			if amt != 0 {
+				positionAmt = amt
+				entryPrice, _ = strconv.ParseFloat(p.EntryPrice, 64)
+				markPrice, _ = strconv.ParseFloat(p.MarkPrice, 64)
+				break
+			}
+			positionAmt = amt
 			entryPrice, _ = strconv.ParseFloat(p.EntryPrice, 64)
 			markPrice, _ = strconv.ParseFloat(p.MarkPrice, 64)
-			break
 		}
 	}
 	return positionAmt, entryPrice, markPrice, nil
