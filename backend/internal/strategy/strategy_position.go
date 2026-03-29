@@ -365,6 +365,8 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 							Symbol:       symbol,
 							Amount:       math.Abs(amt),
 							AvgPrice:     entryPx,
+							TakeProfit:   takeProfit,
+							StopLoss:     stopLoss,
 							Status:       "open",
 							OpenTime:     now,
 							UpdatedAt:    now,
@@ -404,6 +406,9 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 					created, e := bx.PlaceUSDMTPStopOrders(inst.OwnerID, baseClientOrderID, symbol, takeProfit, stopLoss)
 					lastErr = e
 					if lastErr == nil {
+						_ = database.DB.Model(&models.StrategyPosition{}).
+							Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").
+							Updates(map[string]interface{}{"take_profit": takeProfit, "stop_loss": stopLoss, "updated_at": time.Now()}).Error
 						if len(created) == 0 {
 							emitStrategyLog(inst, "info", fmt.Sprintf("已设置止盈止损 symbol=%s tp=%v sl=%v", symbol, takeProfit, stopLoss))
 						} else {
