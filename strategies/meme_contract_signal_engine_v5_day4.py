@@ -767,6 +767,11 @@ class MemeSignalEngineV5:
         )
         self.candles = {}
         self.last_signal_at = {}
+        self.last_log_at = {}
+        self.message_count = 0
+        self.history_count = {}
+        self.realtime_count = {}
+        self.heartbeat_count = 0
 
     def _parse_symbols(self, raw):
         if isinstance(raw, (list, tuple, set)):
@@ -791,6 +796,13 @@ class MemeSignalEngineV5:
         except Exception:
             pass
 
+    def _throttled_log(self, key, text, interval_sec=30):
+        now = time.time()
+        last = self.last_log_at.get(key, 0.0)
+        if now - last >= interval_sec:
+            self.last_log_at[key] = now
+            self._log(text)
+
     def _publish_state(self, r, typ):
         msg = {
             "type": typ,
@@ -802,12 +814,19 @@ class MemeSignalEngineV5:
         r.publish(self._state_ch(), json.dumps(msg, ensure_ascii=False))
         if self.redis_prefix != "qt":
             r.publish(f"qt:state:{self.strategy_id}", json.dumps(msg, ensure_ascii=False))
+        if typ == "ready":
+            self._log(f"状态已发布 type=ready ch={self._state_ch()} boot_id={self.boot_id}")
 
     def _heartbeat_loop(self, r):
         interval = max(2, _i(self.healthcheck.get("interval_sec", 5), 5))
         while True:
             try:
                 self._publish_state(r, "heartbeat")
+                self.heartbeat_count += 1
+                if self.heartbeat_count == 1 or self.heartbeat_count % 6 == 0:
+                    self._log(
+                        f"心跳已发布 count={self.heartbeat_count} interval={interval}s ch={self._state_ch()} boot_id={self.boot_id}"
+                    )
             except Exception as e:
                 self._log(f"心跳发送失败 err={e}")
             time.sleep(interval)
@@ -863,14 +882,23 @@ class MemeSignalEngineV5:
         if kind == "history":
             symbol = str(payload.get("symbol") or "").strip()
             if symbol and (not self.symbols or symbol in self.symbols):
+                candles = payload.get("candles", []) or []
+                self.history_count[symbol] = self.history_count.get(symbol, 0) + len(candles)
+                self._log(
+                    f"收到历史K线 symbol={symbol} batch={len(candles)} total={self.history_count[symbol]}"
+                )
                 for c in payload.get("candles", []) or []:
                     self._handle_payload(c)
+            elif symbol:
+                self._throttled_log(f"history_skip:{symbol}", f"忽略历史K线 symbol={symbol} reason=不在订阅列表", 60)
             return None
 
         symbol = str(payload.get("symbol") or payload.get("s") or "").strip()
         if not symbol:
+            self._throttled_log("payload_no_symbol", f"收到无symbol消息 payload_keys={sorted(list(payload.keys()))[:10]}", 30)
             return None
         if self.symbols and symbol not in self.symbols:
+            self._throttled_log(f"symbol_skip:{symbol}", f"忽略实时K线 symbol={symbol} reason=不在订阅列表", 60)
             return None
         candle = {
             "symbol": symbol,
@@ -882,8 +910,15 @@ class MemeSignalEngineV5:
             "ts": payload.get("timestamp") or payload.get("ts") or 0,
         }
         if candle["close"] <= 0:
+            self._throttled_log(f"invalid_candle:{symbol}", f"忽略无效K线 symbol={symbol} close={candle['close']}", 30)
             return None
         self._push_candle(symbol, candle)
+        self.realtime_count[symbol] = self.realtime_count.get(symbol, 0) + 1
+        count = self.realtime_count[symbol]
+        if count == 1 or count in (5, 20) or count % 100 == 0:
+            self._log(
+                f"收到实时K线 symbol={symbol} count={count} close={candle['close']:.8f} ts={candle['ts']} bars={len(self.candles.get(symbol, []))}"
+            )
         return symbol
 
     def run(self):
@@ -896,7 +931,17 @@ class MemeSignalEngineV5:
         if not self.symbols:
             raise RuntimeError("symbols required")
 
+        self._log(
+            f"策略启动 strategy_id={self.strategy_id} owner_id={self.owner_id} redis={self.redis_host}:{self.redis_port}/{self.redis_db} "
+            f"prefix={self.redis_prefix} symbols={','.join(self.symbols)} cooldown={self.cooldown_sec}s"
+        )
+        self._log(
+            f"策略参数 total_capital={self.total_capital} base_trade={self.base_trade_usdt} "
+            f"tp={self.take_profit_pct:.4f} sl={self.stop_loss_pct:.4f} "
+            f"kelly_wr={self.kelly_params.win_rate:.2f} avg_win={self.kelly_params.avg_win_pct:.4f} avg_loss={self.kelly_params.avg_loss_pct:.4f}"
+        )
         redis_conn = RedisCompat(self.redis_host, self.redis_port, self.redis_password, self.redis_db).connect()
+        self._log(f"Redis连接成功 mode={getattr(redis_conn, 'mode', 'unknown')} addr={self.redis_host}:{self.redis_port}")
         self._subscribe_candles(redis_conn)
         ready_msg = {
             "type": "ready",
@@ -917,13 +962,29 @@ class MemeSignalEngineV5:
         while True:
             msg = redis_conn.read_message(timeout=1.0)
             if not msg:
+                self._throttled_log(
+                    "idle_wait",
+                    "等待Redis消息中 state/signal正常，尚未收到可处理的新K线",
+                    30,
+                )
                 continue
+            self.message_count += 1
+            if self.message_count == 1 or self.message_count % 100 == 0:
+                self._log(
+                    f"收到Redis消息 count={self.message_count} channel={msg.get('channel', '')}"
+                )
             data = msg.get("data")
             if not data:
+                self._throttled_log("empty_data", f"忽略空Redis消息 channel={msg.get('channel', '')}", 30)
                 continue
             try:
                 payload = json.loads(data)
-            except Exception:
+            except Exception as e:
+                self._throttled_log(
+                    "json_decode_error",
+                    f"消息解析失败 channel={msg.get('channel', '')} err={e}",
+                    30,
+                )
                 continue
             symbol = self._handle_payload(payload)
             if not symbol:
@@ -932,12 +993,27 @@ class MemeSignalEngineV5:
             now = time.time()
             last_at = self.last_signal_at.get(symbol, 0.0)
             if self.cooldown_sec > 0 and now - last_at < self.cooldown_sec:
+                remain = int(max(0, self.cooldown_sec - (now - last_at)))
+                self._throttled_log(
+                    f"cooldown:{symbol}",
+                    f"冷却中 symbol={symbol} remain={remain}s last_signal_at={int(last_at)}",
+                    20,
+                )
                 continue
             result = analyze_signal(symbol, candles, self._funding_rate(), self._ls_ratio(), self.kelly_params)
             if not result.passed_filter or result.direction is None:
-                if self.log_trace and result.filter_reason:
-                    self._log(f"跳过信号 symbol={symbol} reason={result.filter_reason}")
+                reason = result.filter_reason or f"无方向 confidence={result.confidence:.4f}"
+                self._throttled_log(
+                    f"skip:{symbol}",
+                    f"跳过信号 symbol={symbol} reason={reason} bars={len(candles)} conf={result.confidence:.4f} "
+                    f"rsi={result.rsi:.2f} ema={result.ema_trend} cvd={result.cvd_trend} obv={result.obv_trend}",
+                    20 if self.log_trace else 60,
+                )
                 continue
+            self._log(
+                f"满足开仓条件 symbol={symbol} dir={result.direction} conf={result.confidence:.4f} "
+                f"bars={len(candles)} funding={result.funding_rate:.6f} ls={result.ls_ratio:.4f}"
+            )
             self._emit_signal(redis_conn, result)
             self.last_signal_at[symbol] = now
 
