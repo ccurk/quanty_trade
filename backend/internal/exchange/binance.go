@@ -1791,6 +1791,106 @@ func (b *BinanceExchange) CancelUSDMAllSymbolOrders(ownerID uint, symbol string)
 	return firstErr
 }
 
+func (b *BinanceExchange) ListUSDMAlgoOpenOrders(ownerID uint, symbol string) ([]USDMAlgoOrder, error) {
+	if b.market != "usdm" {
+		return nil, nil
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return nil, err
+	}
+	params := url.Values{}
+	params.Set("symbol", binanceSymbol(symbol))
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/algoOpenOrders", params)
+	if err != nil {
+		return nil, err
+	}
+	var orders []struct {
+		AlgoID       int64  `json:"algoId"`
+		ClientAlgoID string `json:"clientAlgoId"`
+		Symbol       string `json:"symbol"`
+		Side         string `json:"side"`
+		Type         string `json:"orderType"`
+		TriggerPrice string `json:"triggerPrice"`
+		Price        string `json:"price"`
+	}
+	if err := json.Unmarshal(body, &orders); err != nil {
+		return nil, err
+	}
+	out := make([]USDMAlgoOrder, 0, len(orders))
+	for _, o := range orders {
+		out = append(out, USDMAlgoOrder{
+			AlgoID:         o.AlgoID,
+			ClientAlgoID:   o.ClientAlgoID,
+			Symbol:         o.Symbol,
+			Side:           o.Side,
+			Type:           o.Type,
+			TriggerPrice:   o.TriggerPrice,
+			ExecutionPrice: o.Price,
+		})
+	}
+	return out, nil
+}
+
+func isUSDMTPSLType(v string) bool {
+	t := strings.ToUpper(strings.TrimSpace(v))
+	return strings.Contains(t, "TAKE_PROFIT") || strings.Contains(t, "STOP")
+}
+
+func (b *BinanceExchange) ListUSDMTPSLOpenOrders(ownerID uint, symbol string) ([]USDMAlgoOrder, error) {
+	if b.market != "usdm" {
+		return nil, nil
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return nil, err
+	}
+	params := url.Values{}
+	params.Set("symbol", binanceSymbol(symbol))
+	created := make([]USDMAlgoOrder, 0, 4)
+
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/openOrders", params)
+	if err == nil {
+		var orders []struct {
+			OrderID       int64  `json:"orderId"`
+			ClientOrderID string `json:"clientOrderId"`
+			Symbol        string `json:"symbol"`
+			Side          string `json:"side"`
+			Type          string `json:"type"`
+			OrigType      string `json:"origType"`
+			StopPrice     string `json:"stopPrice"`
+			Price         string `json:"price"`
+		}
+		if err := json.Unmarshal(body, &orders); err == nil {
+			for _, o := range orders {
+				typ := o.OrigType
+				if strings.TrimSpace(typ) == "" {
+					typ = o.Type
+				}
+				if !isUSDMTPSLType(typ) {
+					continue
+				}
+				created = append(created, USDMAlgoOrder{
+					AlgoID:         o.OrderID,
+					ClientAlgoID:   o.ClientOrderID,
+					Symbol:         o.Symbol,
+					Side:           o.Side,
+					Type:           typ,
+					TriggerPrice:   o.StopPrice,
+					ExecutionPrice: o.Price,
+				})
+			}
+		}
+	}
+
+	algoOrders, algoErr := b.ListUSDMAlgoOpenOrders(ownerID, symbol)
+	if algoErr != nil && err != nil {
+		return nil, algoErr
+	}
+	created = append(created, algoOrders...)
+	return created, nil
+}
+
 func (b *BinanceExchange) CancelUSDMAlgoOpenOrders(ownerID uint, symbol string) error {
 	if b.market != "usdm" {
 		return nil
@@ -1799,17 +1899,8 @@ func (b *BinanceExchange) CancelUSDMAlgoOpenOrders(ownerID uint, symbol string) 
 	if err != nil {
 		return err
 	}
-	params := url.Values{}
-	params.Set("symbol", binanceSymbol(symbol))
-	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/algoOpenOrders", params)
+	orders, err := b.ListUSDMAlgoOpenOrders(ownerID, symbol)
 	if err != nil {
-		return err
-	}
-	var orders []struct {
-		AlgoID       int64  `json:"algoId"`
-		ClientAlgoID string `json:"clientAlgoId"`
-	}
-	if err := json.Unmarshal(body, &orders); err != nil {
 		return err
 	}
 	var firstErr error
@@ -2012,31 +2103,90 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		if execPrice <= 0 {
 			execPrice = adj
 		}
-		params.Set("triggerPrice", formatByStep(adj, filters.TickSize))
-		params.Set("price", formatByStep(execPrice, filters.TickSize))
-		body, _, e := b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/algoOrder", params)
-		if e != nil && firstErr == nil {
-			firstErr = e
+		orderParams := url.Values{}
+		orderParams.Set("symbol", sym)
+		orderParams.Set("side", closeSide)
+		orderParams.Set("type", func() string {
+			if orderType == "TAKE_PROFIT" {
+				return "TAKE_PROFIT_MARKET"
+			}
+			return "STOP_MARKET"
+		}())
+		orderParams.Set("stopPrice", formatByStep(adj, filters.TickSize))
+		orderParams.Set("closePosition", "true")
+		orderParams.Set("workingType", "MARK_PRICE")
+		orderParams.Set("priceProtect", "TRUE")
+		orderParams.Set("newClientOrderId", clientID)
+		body, _, e := b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/order", orderParams)
+		useAlgoFallback := false
+		if e != nil {
+			msg := e.Error()
+			if strings.Contains(msg, "\"code\":-4120") || strings.Contains(msg, "Algo Order API") || strings.Contains(msg, "algoOrder") {
+				useAlgoFallback = true
+			} else if firstErr == nil {
+				firstErr = e
+				return
+			} else {
+				return
+			}
+		}
+		if useAlgoFallback {
+			params.Set("triggerPrice", formatByStep(adj, filters.TickSize))
+			params.Set("price", formatByStep(execPrice, filters.TickSize))
+			body, _, e = b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/algoOrder", params)
+			if e != nil {
+				if firstErr == nil {
+					firstErr = e
+				}
+				return
+			}
+			var resp struct {
+				AlgoID       int64  `json:"algoId"`
+				ClientAlgoID string `json:"clientAlgoId"`
+				Symbol       string `json:"symbol"`
+				Side         string `json:"side"`
+				Type         string `json:"orderType"`
+				TriggerPrice string `json:"triggerPrice"`
+				Price        string `json:"price"`
+			}
+			if err := json.Unmarshal(body, &resp); err == nil {
+				created = append(created, USDMAlgoOrder{
+					Kind:           kind,
+					AlgoID:         resp.AlgoID,
+					ClientAlgoID:   resp.ClientAlgoID,
+					Symbol:         resp.Symbol,
+					Side:           resp.Side,
+					Type:           resp.Type,
+					TriggerPrice:   resp.TriggerPrice,
+					ExecutionPrice: resp.Price,
+				})
+			}
 			return
 		}
 		var resp struct {
-			AlgoID       int64  `json:"algoId"`
-			ClientAlgoID string `json:"clientAlgoId"`
-			Symbol       string `json:"symbol"`
-			Side         string `json:"side"`
-			Type         string `json:"orderType"`
-			TriggerPrice string `json:"triggerPrice"`
-			Price        string `json:"price"`
+			OrderID       int64  `json:"orderId"`
+			ClientOrderID string `json:"clientOrderId"`
+			Symbol        string `json:"symbol"`
+			Side          string `json:"side"`
+			Type          string `json:"type"`
+			OrigType      string `json:"origType"`
+			StopPrice     string `json:"stopPrice"`
+			Price         string `json:"price"`
 		}
 		if err := json.Unmarshal(body, &resp); err == nil {
 			created = append(created, USDMAlgoOrder{
-				Kind:           kind,
-				AlgoID:         resp.AlgoID,
-				ClientAlgoID:   resp.ClientAlgoID,
-				Symbol:         resp.Symbol,
-				Side:           resp.Side,
-				Type:           resp.Type,
-				TriggerPrice:   resp.TriggerPrice,
+				Kind:         kind,
+				AlgoID:       resp.OrderID,
+				ClientAlgoID: resp.ClientOrderID,
+				Symbol:       resp.Symbol,
+				Side:         resp.Side,
+				Type: func() string {
+					if strings.TrimSpace(resp.OrigType) != "" {
+						return resp.OrigType
+					}
+					return resp.Type
+				}(),
+				TriggerPrice:   resp.StopPrice,
 				ExecutionPrice: resp.Price,
 			})
 		}
