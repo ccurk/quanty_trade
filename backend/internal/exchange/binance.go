@@ -1970,6 +1970,10 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 	if positionAmt < 0 {
 		closeSide = "BUY"
 	}
+	closeQty := roundDownToStep(math.Abs(positionAmt), filters.StepSize)
+	if filters.MinQty > 0 && closeQty < filters.MinQty {
+		closeQty = filters.MinQty
+	}
 
 	var firstErr error
 	created := make([]USDMAlgoOrder, 0, 2)
@@ -1978,46 +1982,61 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 			return
 		}
 		params := url.Values{}
+		params.Set("algoType", "CONDITIONAL")
 		params.Set("symbol", sym)
 		params.Set("side", closeSide)
 		params.Set("positionSide", "BOTH")
+		params.Set("timeInForce", "GTC")
 		params.Set("workingType", "MARK_PRICE")
 		params.Set("priceProtect", "TRUE")
-		params.Set("closePosition", "true")
-		params.Set("type", orderType)
+		params.Set("reduceOnly", "true")
+		params.Set("orderType", orderType)
 		clientID := normalizeNewClientOrderID(kind + "_" + baseClientOrderID)
-		params.Set("newClientOrderId", clientID)
+		params.Set("clientAlgoId", clientID)
+		params.Set("quantity", formatByStep(closeQty, filters.StepSize))
 		adj := roundDownPrice(stopPrice, filters.TickSize)
-		params.Set("stopPrice", formatByStep(adj, filters.TickSize))
-		body, _, e := b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/order", params)
+		execPrice := adj
+		if orderType == "STOP" {
+			if closeSide == "BUY" {
+				execPrice = roundDownPrice(stopPrice*(1+0.003), filters.TickSize)
+			} else {
+				execPrice = roundDownPrice(stopPrice*(1-0.003), filters.TickSize)
+			}
+		} else if orderType == "TAKE_PROFIT" {
+			if closeSide == "BUY" {
+				execPrice = roundDownPrice(stopPrice*(1+0.001), filters.TickSize)
+			} else {
+				execPrice = roundDownPrice(stopPrice*(1-0.001), filters.TickSize)
+			}
+		}
+		if execPrice <= 0 {
+			execPrice = adj
+		}
+		params.Set("triggerPrice", formatByStep(adj, filters.TickSize))
+		params.Set("price", formatByStep(execPrice, filters.TickSize))
+		body, _, e := b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/algoOrder", params)
 		if e != nil && firstErr == nil {
 			firstErr = e
 			return
 		}
 		var resp struct {
-			OrderID       int64  `json:"orderId"`
-			ClientOrderID string `json:"clientOrderId"`
-			Symbol        string `json:"symbol"`
-			Side          string `json:"side"`
-			Type          string `json:"type"`
-			OrigType      string `json:"origType"`
-			StopPrice     string `json:"stopPrice"`
-			Price         string `json:"price"`
+			AlgoID       int64  `json:"algoId"`
+			ClientAlgoID string `json:"clientAlgoId"`
+			Symbol       string `json:"symbol"`
+			Side         string `json:"side"`
+			Type         string `json:"orderType"`
+			TriggerPrice string `json:"triggerPrice"`
+			Price        string `json:"price"`
 		}
 		if err := json.Unmarshal(body, &resp); err == nil {
 			created = append(created, USDMAlgoOrder{
-				Kind:         kind,
-				AlgoID:       resp.OrderID,
-				ClientAlgoID: resp.ClientOrderID,
-				Symbol:       resp.Symbol,
-				Side:         resp.Side,
-				Type: func() string {
-					if strings.TrimSpace(resp.OrigType) != "" {
-						return resp.OrigType
-					}
-					return resp.Type
-				}(),
-				TriggerPrice:   resp.StopPrice,
+				Kind:           kind,
+				AlgoID:         resp.AlgoID,
+				ClientAlgoID:   resp.ClientAlgoID,
+				Symbol:         resp.Symbol,
+				Side:           resp.Side,
+				Type:           resp.Type,
+				TriggerPrice:   resp.TriggerPrice,
 				ExecutionPrice: resp.Price,
 			})
 		}
@@ -2048,10 +2067,10 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		}
 	}
 	if takeProfit > 0 {
-		place("tp", "TAKE_PROFIT_MARKET", takeProfit)
+		place("tp", "TAKE_PROFIT", takeProfit)
 	}
 	if stopLoss > 0 {
-		place("sl", "STOP_MARKET", stopLoss)
+		place("sl", "STOP", stopLoss)
 	}
 	return created, firstErr
 }

@@ -320,6 +320,9 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 	if inst == nil {
 		return
 	}
+	_ = database.DB.Model(&models.StrategyPosition{}).
+		Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").
+		Updates(map[string]interface{}{"take_profit": takeProfit, "stop_loss": stopLoss, "updated_at": time.Now()}).Error
 	useExchange := true
 	if v, ok := inst.Config["use_exchange_tpsl"]; ok {
 		useExchange = getBool(v)
@@ -583,7 +586,11 @@ func (m *Manager) runPositionTPStopMonitor(ctx context.Context, inst *StrategyIn
 			}
 		}
 		if hit {
-			_ = m.closePositionForInstance(inst, sym, reason, signalID)
+			if err := m.closePositionForInstance(inst, sym, reason, signalID); err != nil {
+				emitStrategyLog(inst, "error", fmt.Sprintf("本地止盈止损触发但平仓失败 symbol=%s reason=%s err=%v", sym, reason, err))
+				continue
+			}
+			emitStrategyLog(inst, "info", fmt.Sprintf("本地止盈止损触发并平仓 symbol=%s reason=%s", sym, reason))
 			return
 		}
 	}

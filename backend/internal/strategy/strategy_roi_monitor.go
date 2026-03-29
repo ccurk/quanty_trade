@@ -91,7 +91,9 @@ func (m *Manager) roiGuardTick() {
 				continue
 			}
 			emitStrategyLog(inst, "info", fmt.Sprintf("ROI巡检触发：symbol=%s roi=%0.4f%% pnl=%0.4f tp=%0.2f%% sl=%0.2f%%，自动平仓", r.Symbol, roi, unpnl, tpPct, slPct))
-			_ = m.closePositionForInstance(inst, r.Symbol, reason, "")
+			if err := m.closePositionForInstance(inst, r.Symbol, reason, ""); err != nil {
+				emitStrategyLog(inst, "error", fmt.Sprintf("ROI巡检触发但平仓失败 symbol=%s reason=%s err=%v", r.Symbol, reason, err))
+			}
 		}
 	}
 }
