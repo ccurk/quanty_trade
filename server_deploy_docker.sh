@@ -24,6 +24,21 @@ DB_USER="REPLACE_DB_USER"
 DB_PASS="REPLACE_DB_PASS"
 DB_NAME="quanty_trade"
 
+REDIS_ENABLED="true"
+REDIS_ADDR="REPLACE_REDIS_ADDR"
+REDIS_PASSWORD=""
+REDIS_DB="0"
+REDIS_PREFIX="qt"
+
+EXCHANGE="binance"
+BINANCE_MARKET="usdm"
+BINANCE_API_KEY="REPLACE_BINANCE_API_KEY"
+BINANCE_API_SECRET="REPLACE_BINANCE_API_SECRET"
+
+TELEGRAM_ENABLED="true"
+TELEGRAM_BOT_TOKEN=""
+TELEGRAM_POLL_TIMEOUT_SECONDS="30"
+
 docker version >/dev/null
 
 if [ "$COMPONENT" != "backend" ] && [ "$COMPONENT" != "frontend" ] && [ "$COMPONENT" != "all" ]; then
@@ -48,6 +63,16 @@ if [ "$COMPONENT" = "backend" ] || [ "$COMPONENT" = "all" ]; then
       exit 1
     fi
   fi
+  if [ "$EXCHANGE" = "binance" ]; then
+    if [ "$BINANCE_API_KEY" = "REPLACE_BINANCE_API_KEY" ] || [ "$BINANCE_API_SECRET" = "REPLACE_BINANCE_API_SECRET" ]; then
+      echo "请先在脚本顶部填写币安配置：BINANCE_API_KEY BINANCE_API_SECRET"
+      exit 1
+    fi
+  fi
+  if [ "$REDIS_ENABLED" = "true" ] && [ "$REDIS_ADDR" = "REPLACE_REDIS_ADDR" ]; then
+    echo "请先在脚本顶部填写 Redis 配置：REDIS_ADDR"
+    exit 1
+  fi
   if [ "$BACKEND_VERSION" = "REPLACE_BACKEND_TAG" ] || [ -z "$BACKEND_VERSION" ]; then
     echo "请先在脚本顶部填写 BACKEND_VERSION（后端镜像 tag）"
     exit 1
@@ -68,6 +93,18 @@ if [ "$COMPONENT" = "backend" ] || [ "$COMPONENT" = "all" ]; then
     -e DB_HOST="${DB_HOST}" \
     -e DB_PORT="${DB_PORT}" \
     -e DB_NAME="${DB_NAME}" \
+    -e REDIS_ENABLED="${REDIS_ENABLED}" \
+    -e REDIS_ADDR="${REDIS_ADDR}" \
+    -e REDIS_PASSWORD="${REDIS_PASSWORD}" \
+    -e REDIS_DB="${REDIS_DB}" \
+    -e REDIS_PREFIX="${REDIS_PREFIX}" \
+    -e EXCHANGE="${EXCHANGE}" \
+    -e BINANCE_MARKET="${BINANCE_MARKET}" \
+    -e BINANCE_API_KEY="${BINANCE_API_KEY}" \
+    -e BINANCE_API_SECRET="${BINANCE_API_SECRET}" \
+    -e TELEGRAM_ENABLED="${TELEGRAM_ENABLED}" \
+    -e TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
+    -e TELEGRAM_POLL_TIMEOUT_SECONDS="${TELEGRAM_POLL_TIMEOUT_SECONDS}" \
     "${BACKEND_IMAGE}:${BACKEND_VERSION}" >/dev/null
 fi
 

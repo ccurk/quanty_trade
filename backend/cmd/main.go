@@ -80,6 +80,7 @@ func main() {
 		_ = os.Setenv("no_proxy", v)
 	}
 	initLogging()
+	logger.Infof("Runtime config db_type=%s db_host=%s db_name=%s exchange=%s binance_market=%s redis_enabled=%t redis_addr=%s telegram_enabled=%t", conf.C().DB.Type, conf.C().DB.Host, conf.C().DB.Name, conf.C().Exchange.Name, conf.C().Exchange.Binance.Market, conf.C().Redis.Enabled, conf.C().Redis.Addr, conf.C().Telegram.Enabled)
 
 	// Initialize Database
 	database.InitDB()

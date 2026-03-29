@@ -60,7 +60,12 @@ type telegramUser struct {
 func Start(ctx context.Context, mgr *strategy.Manager) *Service {
 	cfg := conf.C().Telegram
 	token := strings.TrimSpace(cfg.BotToken)
-	if !cfg.Enabled || token == "" {
+	if !cfg.Enabled {
+		logger.Infof("telegram disabled")
+		return nil
+	}
+	if token == "" {
+		logger.Errorf("telegram enabled but bot token is empty")
 		return nil
 	}
 	pollTimeout := cfg.PollTimeoutSeconds
@@ -77,6 +82,7 @@ func Start(ctx context.Context, mgr *strategy.Manager) *Service {
 	if mgr != nil {
 		mgr.SetNotifier(svc)
 	}
+	logger.Infof("telegram service started poll_timeout=%d", pollTimeout)
 	go svc.run(ctx)
 	return svc
 }
