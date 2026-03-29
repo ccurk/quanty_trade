@@ -304,6 +304,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	effectiveTakeProfit, effectiveStopLoss := resolveTPSLFromROI(inst, normalizedSide, order.Price, takeProfit, stopLoss)
 	emitStrategyLog(inst, "info", fmt.Sprintf("开仓下单成功 symbol=%s side=%s status=%s order_id=%s client_order_id=%s qty=%v price=%v", symbol, normalizedSide, strings.ToLower(order.Status), order.ID, order.ClientOrderID, order.Amount, order.Price))
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
+	m.notifyTradeOpened(inst, symbol, normalizedSide, order.Amount, order.Price, effectiveTakeProfit, effectiveStopLoss, strings.ToLower(order.Status))
 
 	if effectiveTakeProfit > 0 || effectiveStopLoss > 0 {
 		m.monitorPositionTPStop(inst, symbol, effectiveTakeProfit, effectiveStopLoss, signalID)

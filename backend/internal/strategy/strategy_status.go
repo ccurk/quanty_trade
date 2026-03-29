@@ -26,4 +26,12 @@ func (m *Manager) setStrategyStatus(inst *StrategyInstance, status StrategyStatu
 			"status":      status,
 		})
 	}
+	if m != nil {
+		m.mu.RLock()
+		notifier := m.notifier
+		m.mu.RUnlock()
+		if notifier != nil {
+			notifier.NotifyStrategyStatus(inst.OwnerID, inst.ID, inst.Name, string(status))
+		}
+	}
 }

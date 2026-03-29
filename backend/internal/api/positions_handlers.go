@@ -553,6 +553,7 @@ func ClosePosition(c *gin.Context) {
 				<-ticker.C
 			}
 		}(uid, symbol)
+		stratMgr.NotifyExternalTradeClosed(uid, strategyID, strategyName, bx.GetName(), symbol, strings.ToLower(order.Side), qty, exitPrice, strings.ToLower(order.Status), "manual_close")
 
 		c.JSON(http.StatusOK, gin.H{"status": "success"})
 		return
@@ -597,6 +598,7 @@ func ClosePosition(c *gin.Context) {
 			"status":            order.Status,
 			"updated_at":        time.Now(),
 		})
+	stratMgr.NotifyExternalTradeClosed(uid, pos.StrategyID, pos.StrategyName, pos.Exchange, pos.Symbol, "sell", order.Amount, order.Price, strings.ToLower(order.Status), "manual_close")
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }

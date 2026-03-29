@@ -10,6 +10,7 @@ import (
 	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/logger"
 	"quanty_trade/internal/strategy"
+	"quanty_trade/internal/telegram"
 	"quanty_trade/internal/ws"
 )
 
@@ -42,6 +43,7 @@ func BuildStrategyManager(ctx context.Context, hub *ws.Hub) *strategy.Manager {
 
 func StartBackgroundJobs(ctx context.Context, mgr *strategy.Manager) {
 	api.SetManager(mgr)
+	telegram.Start(ctx, mgr)
 	api.StartDashboardSnapshotJob(ctx)
 	api.StartDailyPnLJob(ctx)
 }

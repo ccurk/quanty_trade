@@ -280,6 +280,7 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 		UpdatedAt:       time.Now(),
 	})
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
+	m.notifyTradeClosed(inst, sym, strings.ToLower(order.Side), order.Amount, order.Price, strings.ToLower(order.Status), "strategy_close")
 	if strings.ToLower(order.Status) == "filled" {
 		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, 0, 0, order.Timestamp)
 	}
@@ -352,6 +353,7 @@ func (m *Manager) closeSpotPosition(inst *StrategyInstance, sym string) error {
 			"updated_at":        time.Now(),
 		})
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
+	m.notifyTradeClosed(inst, sym, "sell", order.Amount, order.Price, strings.ToLower(order.Status), "strategy_close")
 	if strings.ToLower(order.Status) == "filled" {
 		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, "sell", order.Amount, order.Price, 0, 0, order.Timestamp)
 	}

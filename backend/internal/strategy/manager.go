@@ -385,6 +385,8 @@ type Manager struct {
 	quickCloseMu sync.Mutex
 	quickCloseAt map[string]time.Time
 
+	notifier RuntimeNotifier
+
 	orderCh chan orderReq
 	startCh chan string
 	stopCh  chan stopReq
