@@ -278,8 +278,10 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, effectiveTakeProfit, effectiveStopLoss, order.Timestamp)
 	}
 
-	if effectiveTakeProfit > 0 || effectiveStopLoss > 0 {
+	if (effectiveTakeProfit > 0 || effectiveStopLoss > 0) && strings.ToLower(order.Status) == "filled" {
 		go m.tryPlaceExchangeTPStop(inst, symbol, effectiveTakeProfit, effectiveStopLoss, clientOrderID, signalID)
+	} else if effectiveTakeProfit > 0 || effectiveStopLoss > 0 {
+		emitStrategyLog(inst, "info", fmt.Sprintf("开仓单未成交，暂不设置交易所止盈止损 symbol=%s status=%s client_order_id=%s", symbol, strings.ToLower(order.Status), order.ClientOrderID))
 	}
 }
 
@@ -293,6 +295,29 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 	}
 	if useExchange {
 		if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+			orderFilled := false
+			for i := 0; i < 30; i++ {
+				var ord models.StrategyOrder
+				err := database.DB.Where("owner_id = ? AND strategy_id = ? AND client_order_id = ?", inst.OwnerID, inst.ID, baseClientOrderID).
+					Order("requested_at desc").
+					First(&ord).Error
+				if err == nil {
+					st := strings.ToLower(strings.TrimSpace(ord.Status))
+					if st == "filled" {
+						orderFilled = true
+						break
+					}
+					if st == "failed" || st == "rejected" || st == "canceled" || st == "expired" {
+						emitStrategyLog(inst, "info", fmt.Sprintf("开仓单未成交完成，跳过设置交易所止盈止损 symbol=%s status=%s client_order_id=%s", symbol, st, baseClientOrderID))
+						return
+					}
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
+			if !orderFilled {
+				emitStrategyLog(inst, "info", fmt.Sprintf("开仓单在等待期内未成交，暂不设置交易所止盈止损 symbol=%s client_order_id=%s", symbol, baseClientOrderID))
+				return
+			}
 			var lastErr error
 			for i := 0; i < 30; i++ {
 				amt, entryPx, _, levUsed, err := bx.USDMPositionInfo(inst.OwnerID, symbol)
