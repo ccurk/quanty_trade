@@ -112,6 +112,11 @@ func (m *Manager) startStrategyNow(id string) error {
 	m.syncStrategyDebugConfig(inst)
 	m.attachUserDataStream(inst)
 	_ = m.attachMarketData(inst, plan.redisBus, plan.feedSymbols, plan.runCfg)
+	maxPos := 1
+	if v := int(getNumber(inst.Config["max_concurrent_positions"])); v > 0 {
+		maxPos = v
+	}
+	emitStrategyLog(inst, "info", fmt.Sprintf("策略启动完成：max_concurrent_positions=%d symbols=%v", maxPos, plan.feedSymbols))
 	go inst.readStdout()
 	go inst.readStderr(proc.stderr)
 	return nil
