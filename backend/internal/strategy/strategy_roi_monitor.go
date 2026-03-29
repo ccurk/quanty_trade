@@ -21,6 +21,7 @@ func (m *Manager) StartROIGuardMonitor(ctx context.Context) {
 }
 
 func (m *Manager) runROIGuardMonitor(ctx context.Context) {
+	m.roiGuardTick()
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -75,10 +76,46 @@ func (m *Manager) roiGuardTick() {
 			}
 			roi := pos.ReturnRate
 			unpnl := pos.UnrealizedPnL
+			currentPrice := pos.CurrentPrice
+			if currentPrice <= 0 {
+				currentPrice = pos.Price
+			}
+			side := "buy"
+			if strings.EqualFold(pos.Direction, "short") {
+				side = "sell"
+			}
 			tpPct := getNumber(inst.Config["take_profit_pct"]) * 100
 			slPct := getNumber(inst.Config["stop_loss_pct"]) * 100
+			tp := r.TakeProfit
+			sl := r.StopLoss
+			if tp <= 0 || sl <= 0 {
+				rtp, rsl := resolveTPSLFromROI(inst, side, pos.Price, tp, sl)
+				if tp <= 0 {
+					tp = rtp
+				}
+				if sl <= 0 {
+					sl = rsl
+				}
+			}
 			reason := ""
-			if tpPct > 0 && roi >= tpPct {
+			if currentPrice > 0 {
+				if side == "buy" {
+					if tp > 0 && currentPrice >= tp {
+						reason = "guard_tp"
+					}
+					if reason == "" && sl > 0 && currentPrice <= sl {
+						reason = "guard_sl"
+					}
+				} else {
+					if tp > 0 && currentPrice <= tp {
+						reason = "guard_tp"
+					}
+					if reason == "" && sl > 0 && currentPrice >= sl {
+						reason = "guard_sl"
+					}
+				}
+			}
+			if reason == "" && tpPct > 0 && roi >= tpPct {
 				reason = "guard_roi_tp"
 			}
 			if reason == "" && slPct > 0 && roi <= -slPct {
@@ -90,9 +127,9 @@ func (m *Manager) roiGuardTick() {
 			if !m.tryMarkQuickClose(uid, strings.ToUpper(r.Symbol), now) {
 				continue
 			}
-			emitStrategyLog(inst, "info", fmt.Sprintf("ROI巡检触发：symbol=%s roi=%0.4f%% pnl=%0.4f tp=%0.2f%% sl=%0.2f%%，自动平仓", r.Symbol, roi, unpnl, tpPct, slPct))
+			emitStrategyLog(inst, "info", fmt.Sprintf("全局仓位守护触发：symbol=%s price=%0.8f roi=%0.4f%% pnl=%0.4f tp=%0.8f sl=%0.8f tp_pct=%0.2f%% sl_pct=%0.2f%% reason=%s，自动平仓", r.Symbol, currentPrice, roi, unpnl, tp, sl, tpPct, slPct, reason))
 			if err := m.closePositionForInstance(inst, r.Symbol, reason, ""); err != nil {
-				emitStrategyLog(inst, "error", fmt.Sprintf("ROI巡检触发但平仓失败 symbol=%s reason=%s err=%v", r.Symbol, reason, err))
+				emitStrategyLog(inst, "error", fmt.Sprintf("全局仓位守护触发但平仓失败 symbol=%s reason=%s err=%v", r.Symbol, reason, err))
 			}
 		}
 	}

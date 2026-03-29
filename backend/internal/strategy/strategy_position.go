@@ -305,6 +305,10 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	emitStrategyLog(inst, "info", fmt.Sprintf("开仓下单成功 symbol=%s side=%s status=%s order_id=%s client_order_id=%s qty=%v price=%v", symbol, normalizedSide, strings.ToLower(order.Status), order.ID, order.ClientOrderID, order.Amount, order.Price))
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
 
+	if effectiveTakeProfit > 0 || effectiveStopLoss > 0 {
+		m.monitorPositionTPStop(inst, symbol, effectiveTakeProfit, effectiveStopLoss, signalID)
+	}
+
 	if strings.ToLower(order.Status) == "filled" {
 		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, effectiveTakeProfit, effectiveStopLoss, order.Timestamp)
 	}
@@ -491,10 +495,14 @@ func (m *Manager) stopPositionTPStopMonitor(inst *StrategyInstance, symbol strin
 func (m *Manager) runPositionTPStopMonitor(ctx context.Context, inst *StrategyInstance, sym string, takeProfit float64, stopLoss float64, signalID string) {
 	defer m.stopPositionTPStopMonitor(inst, sym)
 	isShort := false
+	seenPosition := false
 	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
 		if amt, entryPx, _, levUsed, err := bx.USDMPositionInfo(inst.OwnerID, sym); err == nil {
 			if amt < 0 {
 				isShort = true
+			}
+			if amt != 0 && entryPx > 0 {
+				seenPosition = true
 			}
 			side := "buy"
 			if isShort {
@@ -568,6 +576,7 @@ func (m *Manager) runPositionTPStopMonitor(ctx context.Context, inst *StrategyIn
 		if !hit {
 			if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
 				if amt, entryPx, markPx, levUsed, err := bx.USDMPositionInfo(inst.OwnerID, sym); err == nil && entryPx > 0 && levUsed > 0 && amt != 0 {
+					seenPosition = true
 					pnl := (markPx - entryPx) * amt
 					initial := (math.Abs(amt) * entryPx) / levUsed
 					if initial > 0 {
@@ -583,7 +592,7 @@ func (m *Manager) runPositionTPStopMonitor(ctx context.Context, inst *StrategyIn
 							reason = "roi_sl"
 						}
 					}
-				} else if err == nil && amt == 0 {
+				} else if err == nil && amt == 0 && seenPosition {
 					return
 				}
 			}
