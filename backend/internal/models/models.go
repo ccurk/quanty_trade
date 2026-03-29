@@ -298,3 +298,20 @@ type DailyPnL struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+type TelegramSubscriber struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	ChatID    int64     `gorm:"uniqueIndex" json:"chat_id"`
+	Username  string    `json:"username"`
+	FirstName string    `json:"first_name"`
+	Enabled   bool      `gorm:"default:true" json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type TelegramBotState struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	LastUpdateID int64     `json:"last_update_id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}

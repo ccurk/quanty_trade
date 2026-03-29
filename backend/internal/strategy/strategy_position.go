@@ -309,10 +309,11 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, effectiveTakeProfit, effectiveStopLoss, order.Timestamp)
 	}
 
-	if (effectiveTakeProfit > 0 || effectiveStopLoss > 0) && strings.ToLower(order.Status) == "filled" {
+	if effectiveTakeProfit > 0 || effectiveStopLoss > 0 {
+		if strings.ToLower(order.Status) != "filled" {
+			emitStrategyLog(inst, "info", fmt.Sprintf("开仓单初始状态未成交，继续等待成交后补设交易所止盈止损 symbol=%s status=%s client_order_id=%s", symbol, strings.ToLower(order.Status), order.ClientOrderID))
+		}
 		go m.tryPlaceExchangeTPStop(inst, symbol, effectiveTakeProfit, effectiveStopLoss, clientOrderID, signalID)
-	} else if effectiveTakeProfit > 0 || effectiveStopLoss > 0 {
-		emitStrategyLog(inst, "info", fmt.Sprintf("开仓单未成交，暂不设置交易所止盈止损 symbol=%s status=%s client_order_id=%s", symbol, strings.ToLower(order.Status), order.ClientOrderID))
 	}
 }
 
@@ -329,8 +330,11 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 	}
 	if useExchange {
 		if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
-			orderFilled := false
-			for i := 0; i < 30; i++ {
+			positionReady := false
+			positionAmt := 0.0
+			entryPx := 0.0
+			levUsed := 0.0
+			for i := 0; i < 120; i++ {
 				var ord models.StrategyOrder
 				err := database.DB.Where("owner_id = ? AND strategy_id = ? AND client_order_id = ?", inst.OwnerID, inst.ID, baseClientOrderID).
 					Order("requested_at desc").
@@ -338,24 +342,22 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 				if err == nil {
 					st := strings.ToLower(strings.TrimSpace(ord.Status))
 					if st == "filled" {
-						orderFilled = true
-						break
+						positionReady = true
 					}
 					if st == "failed" || st == "rejected" || st == "canceled" || st == "expired" {
 						emitStrategyLog(inst, "info", fmt.Sprintf("开仓单未成交完成，跳过设置交易所止盈止损 symbol=%s status=%s client_order_id=%s", symbol, st, baseClientOrderID))
 						return
 					}
 				}
-				time.Sleep(500 * time.Millisecond)
-			}
-			if !orderFilled {
-				emitStrategyLog(inst, "info", fmt.Sprintf("开仓单在等待期内未成交，暂不设置交易所止盈止损 symbol=%s client_order_id=%s", symbol, baseClientOrderID))
-				return
-			}
-			var lastErr error
-			for i := 0; i < 30; i++ {
-				amt, entryPx, _, levUsed, err := bx.USDMPositionInfo(inst.OwnerID, symbol)
-				if err == nil && amt != 0 {
+				amt, px, _, lev, posErr := bx.USDMPositionInfo(inst.OwnerID, symbol)
+				if posErr == nil && amt != 0 {
+					positionReady = true
+					positionAmt = amt
+					entryPx = px
+					levUsed = lev
+				}
+				if positionReady && positionAmt != 0 && entryPx > 0 {
+					var lastErr error
 					var pos models.StrategyPosition
 					errDB := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").First(&pos).Error
 					if errDB != nil || pos.Amount <= 0 {
@@ -366,7 +368,7 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 							OwnerID:      inst.OwnerID,
 							Exchange:     bx.GetName(),
 							Symbol:       symbol,
-							Amount:       math.Abs(amt),
+							Amount:       math.Abs(positionAmt),
 							AvgPrice:     entryPx,
 							TakeProfit:   takeProfit,
 							StopLoss:     stopLoss,
@@ -377,7 +379,7 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 						_ = database.DB.Create(&newPos).Error
 					}
 					side := "buy"
-					if amt < 0 {
+					if positionAmt < 0 {
 						side = "sell"
 					}
 					takeProfit, stopLoss = resolveTPSLFromROI(inst, side, entryPx, takeProfit, stopLoss)
@@ -388,7 +390,7 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 						if levUsed <= 0 {
 							levUsed = 1
 						}
-						if amt > 0 {
+						if positionAmt > 0 {
 							minSL := entryPx * (1 - 0.3/levUsed)
 							maxSL := entryPx
 							if stopLoss < minSL {
@@ -424,19 +426,20 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 						m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
 						return
 					}
-					break
+					level := "error"
+					if lastErr != nil {
+						msg := lastErr.Error()
+						if strings.Contains(msg, "\"code\":-2021") || strings.Contains(msg, "immediately trigger") {
+							level = "info"
+						}
+					}
+					emitStrategyLog(inst, level, fmt.Sprintf("设置止盈止损失败，回退为本地监控 symbol=%s tp=%v sl=%v err=%v", symbol, takeProfit, stopLoss, lastErr))
+					m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
+					return
 				}
-				lastErr = err
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(1 * time.Second)
 			}
-			level := "error"
-			if lastErr != nil {
-				msg := lastErr.Error()
-				if strings.Contains(msg, "\"code\":-2021") || strings.Contains(msg, "immediately trigger") {
-					level = "info"
-				}
-			}
-			emitStrategyLog(inst, level, fmt.Sprintf("设置止盈止损失败，回退为本地监控 symbol=%s tp=%v sl=%v err=%v", symbol, takeProfit, stopLoss, lastErr))
+			emitStrategyLog(inst, "info", fmt.Sprintf("开仓单在等待期内未形成有效持仓，回退为本地监控止盈止损 symbol=%s client_order_id=%s", symbol, baseClientOrderID))
 			m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
 			return
 		}

@@ -20,6 +20,7 @@ type Config struct {
 	Security SecurityConfig `yaml:"security"`
 	Exchange ExchangeConfig `yaml:"exchange"`
 	Redis    RedisConfig    `yaml:"redis"`
+	Telegram TelegramConfig `yaml:"telegram"`
 }
 
 type ServerConfig struct {
@@ -70,6 +71,12 @@ type RedisConfig struct {
 	Password string `yaml:"password"`
 	DB       int    `yaml:"db"`
 	Prefix   string `yaml:"prefix"`
+}
+
+type TelegramConfig struct {
+	Enabled            bool   `yaml:"enabled"`
+	BotToken           string `yaml:"bot_token"`
+	PollTimeoutSeconds int    `yaml:"poll_timeout_seconds"`
 }
 
 type BinanceConfig struct {
@@ -139,6 +146,11 @@ func defaultConfig() Config {
 			Password: "",
 			DB:       0,
 			Prefix:   "qt",
+		},
+		Telegram: TelegramConfig{
+			Enabled:            false,
+			BotToken:           "",
+			PollTimeoutSeconds: 30,
 		},
 	}
 }
@@ -441,6 +453,17 @@ func applyEnvOverrides(c *Config) {
 	}
 	if v := strings.TrimSpace(os.Getenv("REDIS_PREFIX")); v != "" {
 		c.Redis.Prefix = v
+	}
+	if v := strings.TrimSpace(os.Getenv("TELEGRAM_ENABLED")); v != "" {
+		c.Telegram.Enabled = strings.ToLower(v) == "true"
+	}
+	if v := strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")); v != "" {
+		c.Telegram.BotToken = v
+	}
+	if v := strings.TrimSpace(os.Getenv("TELEGRAM_POLL_TIMEOUT_SECONDS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.Telegram.PollTimeoutSeconds = n
+		}
 	}
 }
 

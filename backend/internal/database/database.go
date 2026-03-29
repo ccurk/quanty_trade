@@ -102,6 +102,8 @@ func InitDB() {
 		&models.StrategyOrder{},
 		&models.StrategyPosition{},
 		&models.DailyPnL{},
+		&models.TelegramSubscriber{},
+		&models.TelegramBotState{},
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)
