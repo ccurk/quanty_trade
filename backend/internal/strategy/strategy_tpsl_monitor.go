@@ -122,6 +122,7 @@ func (m *Manager) tpslGuardTick() {
 				emitStrategyLog(inst, "error", fmt.Sprintf("补设交易所止盈止损失败 symbol=%s tp=%v sl=%v err=%v", row.Symbol, tp, sl, err))
 				continue
 			}
+			m.storeLinkedTPSLOrders(inst, row.ID, row.Symbol, baseClientOrderID, created)
 			refs := make([]string, 0, len(created))
 			for _, ref := range created {
 				refs = append(refs, fmt.Sprintf("%s order_id=%d client_order_id=%s trigger=%s price=%s", ref.Kind, ref.AlgoID, ref.ClientAlgoID, ref.TriggerPrice, ref.ExecutionPrice))

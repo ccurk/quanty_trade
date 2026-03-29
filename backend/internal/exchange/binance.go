@@ -1876,6 +1876,48 @@ func (b *BinanceExchange) CancelUSDMAllSymbolOrdersDetailed(ownerID uint, symbol
 	return summary, firstErr
 }
 
+func (b *BinanceExchange) CancelUSDMOrderByRef(ownerID uint, symbol string, orderID string, clientOrderID string) error {
+	if b.market != "usdm" {
+		return nil
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return err
+	}
+	q := url.Values{}
+	q.Set("symbol", binanceSymbol(symbol))
+	if strings.TrimSpace(orderID) != "" {
+		q.Set("orderId", strings.TrimSpace(orderID))
+	} else if strings.TrimSpace(clientOrderID) != "" {
+		q.Set("origClientOrderId", strings.TrimSpace(clientOrderID))
+	} else {
+		return fmt.Errorf("missing order reference")
+	}
+	_, _, err = b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/order", q)
+	return err
+}
+
+func (b *BinanceExchange) CancelUSDMAlgoOrderByRef(ownerID uint, symbol string, algoID string, clientAlgoID string) error {
+	if b.market != "usdm" {
+		return nil
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return err
+	}
+	q := url.Values{}
+	q.Set("symbol", binanceSymbol(symbol))
+	if strings.TrimSpace(algoID) != "" {
+		q.Set("algoId", strings.TrimSpace(algoID))
+	} else if strings.TrimSpace(clientAlgoID) != "" {
+		q.Set("clientAlgoId", strings.TrimSpace(clientAlgoID))
+	} else {
+		return fmt.Errorf("missing algo order reference")
+	}
+	_, _, err = b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/algoOrder", q)
+	return err
+}
+
 func (b *BinanceExchange) ListUSDMAlgoOpenOrders(ownerID uint, symbol string) ([]USDMAlgoOrder, error) {
 	if b.market != "usdm" {
 		return nil, nil
@@ -1912,6 +1954,7 @@ func (b *BinanceExchange) ListUSDMAlgoOpenOrders(ownerID uint, symbol string) ([
 			Type:           o.Type,
 			TriggerPrice:   o.TriggerPrice,
 			ExecutionPrice: o.Price,
+			IsAlgo:         true,
 		})
 	}
 	return out, nil
@@ -2123,6 +2166,7 @@ type USDMAlgoOrder struct {
 	Type           string
 	TriggerPrice   string
 	ExecutionPrice string
+	IsAlgo         bool
 }
 
 func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID string, symbol string, takeProfit float64, stopLoss float64) ([]USDMAlgoOrder, error) {
@@ -2266,6 +2310,7 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 					Type:           resp.Type,
 					TriggerPrice:   resp.TriggerPrice,
 					ExecutionPrice: resp.Price,
+					IsAlgo:         true,
 				})
 			}
 			return
@@ -2295,6 +2340,7 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 				}(),
 				TriggerPrice:   resp.StopPrice,
 				ExecutionPrice: resp.Price,
+				IsAlgo:         false,
 			})
 		}
 	}

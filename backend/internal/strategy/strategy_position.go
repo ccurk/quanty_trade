@@ -222,6 +222,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		Exchange:     inst.exchange.GetName(),
 		Symbol:       symbol,
 		Side:         normalizedSide,
+		Purpose:      "entry",
 		OrderType: func() string {
 			if price > 0 {
 				return "limit"
@@ -418,9 +419,16 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 					created, e := bx.PlaceUSDMTPStopOrders(inst.OwnerID, baseClientOrderID, symbol, takeProfit, stopLoss)
 					lastErr = e
 					if lastErr == nil {
+						var pos models.StrategyPosition
+						_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").
+							Order("updated_at desc, id desc").
+							First(&pos).Error
 						_ = database.DB.Model(&models.StrategyPosition{}).
 							Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").
 							Updates(map[string]interface{}{"take_profit": takeProfit, "stop_loss": stopLoss, "updated_at": time.Now()}).Error
+						if pos.ID > 0 {
+							m.storeLinkedTPSLOrders(inst, pos.ID, symbol, baseClientOrderID, created)
+						}
 						if len(created) == 0 {
 							emitStrategyLog(inst, "info", fmt.Sprintf("已设置止盈止损 symbol=%s tp=%v sl=%v", symbol, takeProfit, stopLoss))
 						} else {
@@ -493,6 +501,156 @@ func (m *Manager) stopPositionTPStopMonitor(inst *StrategyInstance, symbol strin
 	if cancel != nil {
 		cancel()
 	}
+}
+
+func isLinkedTPSLTerminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "filled", "canceled", "cancelled", "expired", "failed", "rejected", "superseded":
+		return true
+	default:
+		return false
+	}
+}
+
+func tpslPurposeFromRef(ref exchange.USDMAlgoOrder) string {
+	switch strings.ToLower(strings.TrimSpace(ref.Kind)) {
+	case "tp":
+		return "take_profit"
+	case "sl":
+		return "stop_loss"
+	}
+	typ := strings.ToUpper(strings.TrimSpace(ref.Type))
+	if strings.Contains(typ, "TAKE_PROFIT") {
+		return "take_profit"
+	}
+	if strings.Contains(typ, "STOP") {
+		return "stop_loss"
+	}
+	return "tpsl"
+}
+
+func (m *Manager) storeLinkedTPSLOrders(inst *StrategyInstance, positionID uint, symbol string, parentClientOrderID string, created []exchange.USDMAlgoOrder) {
+	if inst == nil || database.DB == nil || positionID == 0 || len(created) == 0 {
+		return
+	}
+	now := time.Now()
+	_ = database.DB.Model(&models.StrategyOrder{}).
+		Where("position_id = ? AND purpose IN ? AND status NOT IN ?", positionID, []string{"take_profit", "stop_loss", "tpsl"}, []string{"filled", "canceled", "cancelled", "expired", "failed", "rejected", "superseded"}).
+		Updates(map[string]interface{}{"status": "superseded", "updated_at": now}).Error
+
+	for _, ref := range created {
+		triggerPrice := 0.0
+		if strings.TrimSpace(ref.TriggerPrice) != "" {
+			fmt.Sscanf(strings.TrimSpace(ref.TriggerPrice), "%f", &triggerPrice)
+		}
+		clientOrderID := strings.TrimSpace(ref.ClientAlgoID)
+		if clientOrderID == "" {
+			clientOrderID = models.GenerateUUID()
+		}
+		row := models.StrategyOrder{
+			PositionID:          positionID,
+			StrategyID:          inst.ID,
+			StrategyName:        inst.Name,
+			OwnerID:             inst.OwnerID,
+			Exchange:            inst.exchange.GetName(),
+			Symbol:              symbol,
+			Side:                strings.ToLower(strings.TrimSpace(ref.Side)),
+			Purpose:             tpslPurposeFromRef(ref),
+			OrderType:           strings.ToLower(strings.TrimSpace(ref.Type)),
+			ParentClientOrderID: strings.TrimSpace(parentClientOrderID),
+			ClientOrderID:       clientOrderID,
+			ExchangeOrderID:     strings.TrimSpace(fmt.Sprint(ref.AlgoID)),
+			IsAlgo:              ref.IsAlgo,
+			TriggerPrice:        triggerPrice,
+			Status:              "open",
+			RequestedQty:        0,
+			Price:               0,
+			ExecutedQty:         0,
+			AvgPrice:            0,
+			RequestedAt:         now,
+			UpdatedAt:           now,
+		}
+		var existing models.StrategyOrder
+		if err := database.DB.Where("client_order_id = ?", clientOrderID).First(&existing).Error; err == nil {
+			_ = database.DB.Model(&existing).Updates(map[string]interface{}{
+				"position_id":            positionID,
+				"strategy_id":            inst.ID,
+				"strategy_name":          inst.Name,
+				"owner_id":               inst.OwnerID,
+				"exchange":               inst.exchange.GetName(),
+				"symbol":                 symbol,
+				"side":                   row.Side,
+				"purpose":                row.Purpose,
+				"order_type":             row.OrderType,
+				"parent_client_order_id": row.ParentClientOrderID,
+				"exchange_order_id":      row.ExchangeOrderID,
+				"is_algo":                row.IsAlgo,
+				"trigger_price":          row.TriggerPrice,
+				"status":                 "open",
+				"updated_at":             now,
+			}).Error
+			continue
+		}
+		_ = database.DB.Create(&row).Error
+	}
+}
+
+func (m *Manager) cancelLinkedTPSLOrders(ownerID uint, strategyID string, symbol string) (int, int, error) {
+	if database.DB == nil {
+		return 0, 0, nil
+	}
+	bx, ok := m.exchange.(*exchange.BinanceExchange)
+	if !ok || bx.Market() != "usdm" {
+		return 0, 0, nil
+	}
+
+	var pos models.StrategyPosition
+	posQuery := database.DB.Where("owner_id = ? AND symbol = ?", ownerID, symbol)
+	if strings.TrimSpace(strategyID) != "" {
+		posQuery = posQuery.Where("strategy_id = ?", strategyID)
+	}
+	if err := posQuery.Order("CASE WHEN status = 'open' THEN 0 ELSE 1 END, updated_at desc, id desc").First(&pos).Error; err != nil {
+		return 0, 0, nil
+	}
+
+	var rows []models.StrategyOrder
+	if err := database.DB.Where("position_id = ? AND purpose IN ?", pos.ID, []string{"take_profit", "stop_loss", "tpsl"}).
+		Order("id desc").
+		Find(&rows).Error; err != nil {
+		return 0, 0, err
+	}
+	found := 0
+	canceled := 0
+	var firstErr error
+	now := time.Now()
+	for _, row := range rows {
+		if isLinkedTPSLTerminal(row.Status) {
+			continue
+		}
+		found++
+		var err error
+		if row.IsAlgo {
+			err = bx.CancelUSDMAlgoOrderByRef(ownerID, symbol, row.ExchangeOrderID, row.ClientOrderID)
+		} else {
+			err = bx.CancelUSDMOrderByRef(ownerID, symbol, row.ExchangeOrderID, row.ClientOrderID)
+		}
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			_ = database.DB.Model(&models.StrategyOrder{}).Where("id = ?", row.ID).
+				Updates(map[string]interface{}{"status": "cancel_failed", "updated_at": now}).Error
+			continue
+		}
+		canceled++
+		_ = database.DB.Model(&models.StrategyOrder{}).Where("id = ?", row.ID).
+			Updates(map[string]interface{}{"status": "canceled", "updated_at": now}).Error
+	}
+	return found, canceled, firstErr
+}
+
+func (m *Manager) CancelLinkedTPSLOrders(ownerID uint, strategyID string, symbol string) (int, int, error) {
+	return m.cancelLinkedTPSLOrders(ownerID, strategyID, symbol)
 }
 
 func (m *Manager) runPositionTPStopMonitor(ctx context.Context, inst *StrategyInstance, sym string, takeProfit float64, stopLoss float64, signalID string) {

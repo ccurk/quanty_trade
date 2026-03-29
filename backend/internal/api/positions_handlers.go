@@ -429,6 +429,7 @@ func ClosePosition(c *gin.Context) {
 		if hasExisting && existing.StrategyID != "" && existing.StrategyID != "manual" {
 			stratMgr.StopPositionTPStopMonitor(existing.StrategyID, symbol)
 		}
+		_, _, _ = stratMgr.CancelLinkedTPSLOrders(uid, existing.StrategyID, symbol)
 		_, _ = bx.CancelUSDMAllSymbolOrdersDetailed(uid, symbol)
 		order, entryPrice, signedAmt, err := bx.ClosePositionOrder(symbol, uid)
 		if err != nil {
@@ -478,12 +479,14 @@ func ClosePosition(c *gin.Context) {
 
 		now := time.Now()
 		database.DB.Create(&models.StrategyOrder{
+			PositionID:      existing.ID,
 			StrategyID:      strategyID,
 			StrategyName:    strategyName,
 			OwnerID:         uid,
 			Exchange:        bx.GetName(),
 			Symbol:          symbol,
 			Side:            strings.ToLower(order.Side),
+			Purpose:         "close",
 			OrderType:       "market",
 			ClientOrderID:   order.ClientOrderID,
 			ExchangeOrderID: order.ID,
@@ -569,12 +572,14 @@ func ClosePosition(c *gin.Context) {
 
 	clientOrderID := models.GenerateUUID()
 	database.DB.Create(&models.StrategyOrder{
+		PositionID:    pos.ID,
 		StrategyID:    pos.StrategyID,
 		StrategyName:  pos.StrategyName,
 		OwnerID:       uid,
 		Exchange:      pos.Exchange,
 		Symbol:        pos.Symbol,
 		Side:          "sell",
+		Purpose:       "close",
 		OrderType:     "market",
 		ClientOrderID: clientOrderID,
 		Status:        "requested",

@@ -244,6 +244,15 @@ func resolveHungerMode(inst *StrategyInstance) (bool, time.Duration, float64, fl
 
 func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.BinanceExchange, sym string) error {
 	m.stopPositionTPStopMonitor(inst, sym)
+	var pos models.StrategyPosition
+	_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, sym, "open").
+		Order("updated_at desc, id desc").
+		First(&pos).Error
+	if found, canceled, err := m.cancelLinkedTPSLOrders(inst.OwnerID, inst.ID, sym); err != nil {
+		emitStrategyLog(inst, "error", fmt.Sprintf("平仓前撤销关联止盈止损失败 symbol=%s canceled=%d found=%d err=%v", sym, canceled, found, err))
+	} else if found > 0 {
+		emitStrategyLog(inst, "info", fmt.Sprintf("平仓前撤销关联止盈止损完成 symbol=%s canceled=%d found=%d", sym, canceled, found))
+	}
 	if summary, err := bx.CancelUSDMAllSymbolOrdersDetailed(inst.OwnerID, sym); err != nil {
 		emitStrategyLog(inst, "error", fmt.Sprintf("平仓前撤销该交易对全部委托失败 symbol=%s err=%v", sym, err))
 	} else {
@@ -262,12 +271,14 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 		return nil
 	}
 	database.DB.Create(&models.StrategyOrder{
+		PositionID:      pos.ID,
 		StrategyID:      inst.ID,
 		StrategyName:    inst.Name,
 		OwnerID:         inst.OwnerID,
 		Exchange:        bx.GetName(),
 		Symbol:          sym,
 		Side:            strings.ToLower(order.Side),
+		Purpose:         "close",
 		OrderType:       "market",
 		ClientOrderID:   order.ClientOrderID,
 		ExchangeOrderID: order.ID,
@@ -324,12 +335,14 @@ func (m *Manager) closeSpotPosition(inst *StrategyInstance, sym string) error {
 	}
 	clientOrderID := models.GenerateUUID()
 	database.DB.Create(&models.StrategyOrder{
+		PositionID:    pos.ID,
 		StrategyID:    inst.ID,
 		StrategyName:  inst.Name,
 		OwnerID:       inst.OwnerID,
 		Exchange:      inst.exchange.GetName(),
 		Symbol:        sym,
 		Side:          "sell",
+		Purpose:       "close",
 		OrderType:     "market",
 		ClientOrderID: clientOrderID,
 		Status:        "requested",
