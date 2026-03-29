@@ -2186,6 +2186,7 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		if !dualSideMode {
 			params.Set("reduceOnly", "true")
 		}
+		params.Set("type", orderType)
 		params.Set("orderType", orderType)
 		clientID := normalizeNewClientOrderID(kind + "_" + baseClientOrderID)
 		params.Set("clientAlgoId", clientID)
