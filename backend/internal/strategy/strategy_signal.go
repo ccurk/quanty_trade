@@ -199,6 +199,8 @@ func (m *Manager) processSignalBatch(strategyID string) {
 	}
 
 	selected := 0
+	filledCount := 0
+	pendingCount := 0
 	selectedSymbols := map[string]struct{}{}
 	for i := 0; i < len(cands); i++ {
 		if selected >= availableSlots {
@@ -224,8 +226,10 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			selectedSymbols[symKey] = struct{}{}
 			openSymbols[symKey] = struct{}{}
 			if res == candidatePlaceFilled {
+				filledCount++
 				emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓成功：%s 方向=%s 适配度=%0.4f，当前已占用 %d/%d 个仓位", sig.Symbol, c.side, c.rr, openCount+selected, maxPos))
 			} else {
+				pendingCount++
 				emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓请求已提交：%s 方向=%s 适配度=%0.4f，已预留 %d/%d 个仓位，等待成交确认", sig.Symbol, c.side, c.rr, openCount+selected, maxPos))
 			}
 			continue
@@ -237,9 +241,9 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		return
 	}
 	if selected < len(cands) {
-		emitStrategyLog(inst, "info", fmt.Sprintf("本批信号处理完成：成功开仓%d个，剩余候选因仓位或条件限制被跳过", selected))
+		emitStrategyLog(inst, "info", fmt.Sprintf("本批信号处理完成：已成交%d个，请求已提交%d个，剩余候选因仓位或条件限制被跳过", filledCount, pendingCount))
 	} else {
-		emitStrategyLog(inst, "info", fmt.Sprintf("本批信号处理完成：成功开仓%d个", selected))
+		emitStrategyLog(inst, "info", fmt.Sprintf("本批信号处理完成：已成交%d个，请求已提交%d个", filledCount, pendingCount))
 	}
 }
 
@@ -255,11 +259,12 @@ func (m *Manager) tryPlaceCandidate(inst *StrategyInstance, symbol string, side 
 	if inst == nil {
 		return candidatePlaceFailed
 	}
+	requestedAfter := time.Now().Add(-200 * time.Millisecond)
 	m.enqueueOrderForInstance(inst, symbol, side, amount, 0, tp, sl, signalID)
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		var ord models.StrategyOrder
-		err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ?", inst.OwnerID, inst.ID, symbol).
+		err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND requested_at >= ?", inst.OwnerID, inst.ID, symbol, requestedAfter).
 			Order("requested_at desc").
 			First(&ord).Error
 		if err == nil && ord.ID > 0 {
@@ -267,10 +272,10 @@ func (m *Manager) tryPlaceCandidate(inst *StrategyInstance, symbol string, side 
 			if st == "filled" {
 				return candidatePlaceFilled
 			}
-			if st == "new" || st == "requested" {
+			if st == "new" || st == "requested" || st == "partially_filled" {
 				return candidatePlacePending
 			}
-			if st == "failed" || st == "rejected" {
+			if st == "failed" || st == "rejected" || st == "canceled" || st == "expired" {
 				return candidatePlaceFailed
 			}
 		}
