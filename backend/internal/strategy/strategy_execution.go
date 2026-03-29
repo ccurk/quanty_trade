@@ -244,16 +244,20 @@ func resolveHungerMode(inst *StrategyInstance) (bool, time.Duration, float64, fl
 
 func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.BinanceExchange, sym string) error {
 	m.stopPositionTPStopMonitor(inst, sym)
-	if err := bx.CancelUSDMAllSymbolOrders(inst.OwnerID, sym); err != nil {
+	if summary, err := bx.CancelUSDMAllSymbolOrdersDetailed(inst.OwnerID, sym); err != nil {
 		emitStrategyLog(inst, "error", fmt.Sprintf("平仓前撤销该交易对全部委托失败 symbol=%s err=%v", sym, err))
+	} else {
+		emitStrategyLog(inst, "info", fmt.Sprintf("平仓前撤单完成 symbol=%s 普通委托=%d/%d 条件委托=%d/%d", sym, summary.NormalCanceled, summary.NormalFound, summary.AlgoCanceled, summary.AlgoFound))
 	}
 	order, _, _, err := bx.ClosePositionOrder(sym, inst.OwnerID)
 	if err != nil {
 		return err
 	}
 	if order == nil {
-		if err := bx.CancelUSDMAllSymbolOrders(inst.OwnerID, sym); err != nil {
+		if summary, err := bx.CancelUSDMAllSymbolOrdersDetailed(inst.OwnerID, sym); err != nil {
 			emitStrategyLog(inst, "error", fmt.Sprintf("平仓后撤销该交易对全部委托失败 symbol=%s err=%v", sym, err))
+		} else {
+			emitStrategyLog(inst, "info", fmt.Sprintf("平仓后撤单完成 symbol=%s 普通委托=%d/%d 条件委托=%d/%d", sym, summary.NormalCanceled, summary.NormalFound, summary.AlgoCanceled, summary.AlgoFound))
 		}
 		return nil
 	}
@@ -280,8 +284,10 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, 0, 0, order.Timestamp)
 	}
 	go func(ownerID uint, symbol string) {
-		if err := bx.CancelUSDMAllSymbolOrders(ownerID, symbol); err != nil {
+		if summary, err := bx.CancelUSDMAllSymbolOrdersDetailed(ownerID, symbol); err != nil {
 			emitStrategyLog(inst, "error", fmt.Sprintf("平仓后立即撤销该交易对全部委托失败 symbol=%s err=%v", symbol, err))
+		} else {
+			emitStrategyLog(inst, "info", fmt.Sprintf("平仓后立即撤单完成 symbol=%s 普通委托=%d/%d 条件委托=%d/%d", symbol, summary.NormalCanceled, summary.NormalFound, summary.AlgoCanceled, summary.AlgoFound))
 		}
 	}(inst.OwnerID, sym)
 	go func(ownerID uint, symbol string) {
@@ -291,8 +297,10 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 		for time.Now().Before(deadline) {
 			amt, _, _, e := bx.USDMPositionAmt(ownerID, symbol)
 			if e == nil && amt == 0 {
-				if err := bx.CancelUSDMAllSymbolOrders(ownerID, symbol); err != nil {
+				if summary, err := bx.CancelUSDMAllSymbolOrdersDetailed(ownerID, symbol); err != nil {
 					emitStrategyLog(inst, "error", fmt.Sprintf("仓位归零后撤销该交易对全部委托失败 symbol=%s err=%v", symbol, err))
+				} else {
+					emitStrategyLog(inst, "info", fmt.Sprintf("仓位归零后撤单完成 symbol=%s 普通委托=%d/%d 条件委托=%d/%d", symbol, summary.NormalCanceled, summary.NormalFound, summary.AlgoCanceled, summary.AlgoFound))
 				}
 				return
 			}

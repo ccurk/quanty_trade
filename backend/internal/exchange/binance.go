@@ -1752,26 +1752,40 @@ func (b *BinanceExchange) CancelPrePositionOpenOrders(ownerID uint, symbol strin
 	return nil
 }
 
+type USDMCancelSummary struct {
+	NormalFound    int
+	NormalCanceled int
+	AlgoFound      int
+	AlgoCanceled   int
+}
+
 func (b *BinanceExchange) CancelUSDMAllSymbolOrders(ownerID uint, symbol string) error {
+	_, err := b.CancelUSDMAllSymbolOrdersDetailed(ownerID, symbol)
+	return err
+}
+
+func (b *BinanceExchange) CancelUSDMAllSymbolOrdersDetailed(ownerID uint, symbol string) (USDMCancelSummary, error) {
+	summary := USDMCancelSummary{}
 	if b.market != "usdm" {
-		return nil
+		return summary, nil
 	}
 	cred, err := b.getCred(ownerID)
 	if err != nil {
-		return err
+		return summary, err
 	}
 	params := url.Values{}
 	params.Set("symbol", binanceSymbol(symbol))
 	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/openOrders", params)
 	if err != nil {
-		return err
+		return summary, err
 	}
 	var orders []struct {
 		OrderID int64 `json:"orderId"`
 	}
 	if err := json.Unmarshal(body, &orders); err != nil {
-		return err
+		return summary, err
 	}
+	summary.NormalFound = len(orders)
 	var firstErr error
 	for _, o := range orders {
 		if o.OrderID <= 0 {
@@ -1781,14 +1795,42 @@ func (b *BinanceExchange) CancelUSDMAllSymbolOrders(ownerID uint, symbol string)
 		q.Set("symbol", binanceSymbol(symbol))
 		q.Set("orderId", strconv.FormatInt(o.OrderID, 10))
 		_, _, err := b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/order", q)
-		if err != nil && firstErr == nil {
-			firstErr = err
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
+		summary.NormalCanceled++
 	}
-	if err := b.CancelUSDMAlgoOpenOrders(ownerID, symbol); err != nil && firstErr == nil {
-		firstErr = err
+	algoOrders, algoErr := b.ListUSDMAlgoOpenOrders(ownerID, symbol)
+	if algoErr != nil {
+		if firstErr == nil {
+			firstErr = algoErr
+		}
+		return summary, firstErr
 	}
-	return firstErr
+	summary.AlgoFound = len(algoOrders)
+	for _, o := range algoOrders {
+		q := url.Values{}
+		q.Set("symbol", binanceSymbol(symbol))
+		if o.AlgoID > 0 {
+			q.Set("algoId", strconv.FormatInt(o.AlgoID, 10))
+		} else if strings.TrimSpace(o.ClientAlgoID) != "" {
+			q.Set("clientAlgoId", o.ClientAlgoID)
+		} else {
+			continue
+		}
+		_, _, err := b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/algoOrder", q)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		summary.AlgoCanceled++
+	}
+	return summary, firstErr
 }
 
 func (b *BinanceExchange) ListUSDMAlgoOpenOrders(ownerID uint, symbol string) ([]USDMAlgoOrder, error) {
