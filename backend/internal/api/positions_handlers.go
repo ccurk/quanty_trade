@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -24,39 +25,137 @@ type strategyPositionMeta struct {
 	StopLoss     float64
 }
 
+func loadRecentStrategyOrderMeta(ownerID uint) map[string]strategyPositionMeta {
+	bySymbol := map[string]strategyPositionMeta{}
+	var rows []models.StrategyOrder
+	_ = database.DB.Where("owner_id = ?", ownerID).Order("requested_at desc").Limit(500).Find(&rows).Error
+	for _, o := range rows {
+		key := strings.ToUpper(o.Symbol)
+		if key == "" {
+			continue
+		}
+		if _, ok := bySymbol[key]; ok {
+			continue
+		}
+		if strings.TrimSpace(o.StrategyID) == "" || strings.TrimSpace(o.StrategyName) == "" {
+			continue
+		}
+		bySymbol[key] = strategyPositionMeta{
+			StrategyID:   o.StrategyID,
+			StrategyName: o.StrategyName,
+		}
+	}
+	return bySymbol
+}
+
 func loadUserStrategyInstances(ownerID uint) []models.StrategyInstance {
 	var instRows []models.StrategyInstance
 	_ = database.DB.Where("owner_id = ?", ownerID).Order("updated_at desc").Find(&instRows).Error
 	return instRows
 }
 
-func findStrategyForSymbol(instRows []models.StrategyInstance, sym string) (string, string) {
+func findStrategyInstanceForSymbol(instRows []models.StrategyInstance, sym string) *models.StrategyInstance {
 	want := exchange.NormalizeSymbol(sym)
-	for _, si := range instRows {
+	for i := range instRows {
 		var cfg map[string]interface{}
-		if err := json.Unmarshal([]byte(si.Config), &cfg); err != nil {
+		if err := json.Unmarshal([]byte(instRows[i].Config), &cfg); err != nil {
 			continue
 		}
 		if v, ok := cfg["symbol"].(string); ok && exchange.NormalizeSymbol(v) == want {
-			return si.ID, si.Name
+			return &instRows[i]
 		}
 		if raw, ok := cfg["symbols"]; ok {
 			if xs, ok := raw.([]interface{}); ok {
 				for _, it := range xs {
 					if s, ok := it.(string); ok && exchange.NormalizeSymbol(s) == want {
-						return si.ID, si.Name
+						return &instRows[i]
 					}
 				}
 			} else if xs, ok := raw.([]string); ok {
 				for _, s := range xs {
 					if exchange.NormalizeSymbol(s) == want {
-						return si.ID, si.Name
+						return &instRows[i]
 					}
 				}
 			}
 		}
 	}
+	return nil
+}
+
+func findStrategyForSymbol(instRows []models.StrategyInstance, sym string) (string, string) {
+	if si := findStrategyInstanceForSymbol(instRows, sym); si != nil {
+		return si.ID, si.Name
+	}
 	return "", ""
+}
+
+func getConfigNumber(v interface{}) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case json.Number:
+		f, _ := t.Float64()
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(strings.TrimSpace(t), 64)
+		return f
+	}
+	return 0
+}
+
+func deriveTPSLFromStrategyInstance(si *models.StrategyInstance, entryPrice float64, direction string) (float64, float64) {
+	if si == nil || entryPrice <= 0 {
+		return 0, 0
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal([]byte(si.Config), &cfg); err != nil {
+		return 0, 0
+	}
+	lev := int(math.Round(getConfigNumber(cfg["leverage"])))
+	if lev <= 0 {
+		lev = 1
+	}
+	tpPct := getConfigNumber(cfg["take_profit_pct"])
+	slPct := getConfigNumber(cfg["stop_loss_pct"])
+	if tpPct > 1 {
+		tpPct = tpPct / 100
+	}
+	if slPct > 1 {
+		slPct = slPct / 100
+	}
+	if tpPct <= 0 && slPct <= 0 {
+		return 0, 0
+	}
+	dir := strings.ToLower(strings.TrimSpace(direction))
+	if dir == "" {
+		dir = "long"
+	}
+	tp := 0.0
+	sl := 0.0
+	if tpPct > 0 {
+		off := tpPct / float64(lev)
+		if dir == "short" {
+			tp = entryPrice * (1 - off)
+		} else {
+			tp = entryPrice * (1 + off)
+		}
+	}
+	if slPct > 0 {
+		off := slPct / float64(lev)
+		if dir == "short" {
+			sl = entryPrice * (1 + off)
+		} else {
+			sl = entryPrice * (1 - off)
+		}
+	}
+	return tp, sl
 }
 
 func loadOpenStrategyPositionMeta(ownerID uint) map[string]strategyPositionMeta {
@@ -110,11 +209,19 @@ func ListPositions(c *gin.Context) {
 
 			instRows := loadUserStrategyInstances(uid)
 			bySymbol := loadOpenStrategyPositionMeta(uid)
+			orderMeta := loadRecentStrategyOrderMeta(uid)
 			out := make([]exchange.Position, 0, len(exPos))
 			for _, p := range exPos {
 				key := strings.ToUpper(p.Symbol)
 				if info, ok := bySymbol[key]; ok {
 					p.StrategyName = info.StrategyName
+					if strings.TrimSpace(p.StrategyName) == "" {
+						if si := findStrategyInstanceForSymbol(instRows, p.Symbol); si != nil {
+							p.StrategyName = si.Name
+						} else if meta, ok := orderMeta[key]; ok {
+							p.StrategyName = meta.StrategyName
+						}
+					}
 					if !info.OpenTime.IsZero() {
 						p.OpenTime = info.OpenTime
 					}
@@ -123,9 +230,30 @@ func ListPositions(c *gin.Context) {
 					}
 					p.TakeProfit = info.TakeProfit
 					p.StopLoss = info.StopLoss
+					if (p.TakeProfit <= 0 || p.StopLoss <= 0) && p.Price > 0 {
+						if si := findStrategyInstanceForSymbol(instRows, p.Symbol); si != nil {
+							tp, sl := deriveTPSLFromStrategyInstance(si, p.Price, p.Direction)
+							if p.TakeProfit <= 0 && tp > 0 {
+								p.TakeProfit = tp
+							}
+							if p.StopLoss <= 0 && sl > 0 {
+								p.StopLoss = sl
+							}
+						}
+					}
 				} else {
-					strategyID, strategyName := findStrategyForSymbol(instRows, p.Symbol)
-					if strategyID != "" {
+					si := findStrategyInstanceForSymbol(instRows, p.Symbol)
+					if si != nil || orderMeta[key].StrategyID != "" {
+						strategyID := ""
+						strategyName := ""
+						if si != nil {
+							strategyID = si.ID
+							strategyName = si.Name
+						} else {
+							strategyID = orderMeta[key].StrategyID
+							strategyName = orderMeta[key].StrategyName
+						}
+						tp, sl := deriveTPSLFromStrategyInstance(si, p.Price, p.Direction)
 						now := time.Now()
 						pos := models.StrategyPosition{
 							StrategyID:   strategyID,
@@ -135,17 +263,23 @@ func ListPositions(c *gin.Context) {
 							Symbol:       p.Symbol,
 							Amount:       p.Amount,
 							AvgPrice:     p.Price,
+							TakeProfit:   tp,
+							StopLoss:     sl,
 							Status:       "open",
 							OpenTime:     p.OpenTime,
 							UpdatedAt:    now,
 						}
 						_ = database.DB.Create(&pos).Error
 						p.StrategyName = strategyName
+						p.TakeProfit = tp
+						p.StopLoss = sl
 						bySymbol[key] = strategyPositionMeta{
 							StrategyID:   strategyID,
 							StrategyName: strategyName,
 							OpenTime:     pos.OpenTime,
 							AvgPrice:     pos.AvgPrice,
+							TakeProfit:   pos.TakeProfit,
+							StopLoss:     pos.StopLoss,
 						}
 					}
 				}

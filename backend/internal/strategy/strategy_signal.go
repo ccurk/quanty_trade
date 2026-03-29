@@ -149,15 +149,30 @@ func (m *Manager) processSignalBatch(strategyID string) {
 	}
 	openCount := 0
 	openSymbols := map[string]struct{}{}
+	var openRows []models.StrategyPosition
+	_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").Find(&openRows).Error
+	for _, p := range openRows {
+		key := exchange.NormalizeSymbol(p.Symbol)
+		if key == "" {
+			continue
+		}
+		openSymbols[key] = struct{}{}
+		openCount++
+	}
 	if inst.exchange != nil {
 		if ps, err := inst.exchange.FetchPositions(inst.OwnerID, "active"); err == nil {
 			for _, p := range ps {
-				if math.Abs(p.Amount) <= 0 || !isAllowedSymbol(inst, p.Symbol) {
+				if math.Abs(p.Amount) <= 0 {
 					continue
 				}
 				key := exchange.NormalizeSymbol(p.Symbol)
+				if _, ok := openSymbols[key]; ok {
+					continue
+				}
+				if !isAllowedSymbol(inst, p.Symbol) {
+					continue
+				}
 				openSymbols[key] = struct{}{}
-				openCount++
 			}
 		}
 	}

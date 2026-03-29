@@ -408,18 +408,12 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 
 	m.mu.RLock()
 	rb := m.redisBus
-	ex := m.exchange
 	snap := make([]*StrategyInstance, 0, len(m.instances))
 	for _, inst := range m.instances {
 		snap = append(snap, inst)
 	}
 	m.mu.RUnlock()
-	if rb == nil || ex == nil {
-		return
-	}
-
-	bx, ok := ex.(*exchange.BinanceExchange)
-	if !ok || bx.Market() != "usdm" {
+	if rb == nil {
 		return
 	}
 
@@ -432,44 +426,20 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 	}
 
 	for ownerID, insts := range byOwner {
-		ps, err := ex.FetchPositions(ownerID, "active")
-		if err != nil {
+		var openRows []models.StrategyPosition
+		if err := database.DB.Where("owner_id = ? AND status = ?", ownerID, "open").Find(&openRows).Error; err != nil {
 			logger.Errorf("[REDIS OPEN COUNT] sync failed owner=%d err=%v", ownerID, err)
 			continue
 		}
-		openBySymbol := map[string]struct{}{}
-		for _, p := range ps {
-			if p.Amount <= 0 {
+		countByStrategy := map[string]int64{}
+		for _, row := range openRows {
+			if strings.TrimSpace(row.StrategyID) == "" {
 				continue
 			}
-			openBySymbol[exchange.NormalizeSymbol(p.Symbol)] = struct{}{}
+			countByStrategy[row.StrategyID]++
 		}
-
 		for _, inst := range insts {
-			allowed := parseSymbolsValue(inst.Config["symbols"])
-			if len(allowed) == 0 {
-				if sym, ok := inst.Config["symbol"].(string); ok && strings.TrimSpace(sym) != "" {
-					allowed = []string{strings.TrimSpace(sym)}
-				}
-			}
-			n := int64(0)
-			if len(allowed) > 0 {
-				seen := map[string]struct{}{}
-				for _, s := range allowed {
-					k := exchange.NormalizeSymbol(s)
-					if k == "" {
-						continue
-					}
-					if _, ok := seen[k]; ok {
-						continue
-					}
-					seen[k] = struct{}{}
-					if _, ok := openBySymbol[k]; ok {
-						n++
-					}
-				}
-			}
-			_ = rb.SetOpenCount(ctx, inst.ID, n, 6*time.Hour)
+			_ = rb.SetOpenCount(ctx, inst.ID, countByStrategy[inst.ID], 6*time.Hour)
 		}
 	}
 }

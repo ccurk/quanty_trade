@@ -90,8 +90,8 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		inst.mgr.mu.RUnlock()
 	}
 
-	exOpenCount := int64(0)
-	exSymbolOpen := false
+	strategyOpenCount := int64(0)
+	accountSymbolOpen := false
 	exSymbolKey := exchange.NormalizeSymbol(symbol)
 
 	inst.orderMu.Lock()
@@ -113,21 +113,27 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	}
 	inst.orderMu.Unlock()
 
+	database.DB.Model(&models.StrategyPosition{}).
+		Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").
+		Count(&strategyOpenCount)
+	var sameStrategySymbolCount int64
+	database.DB.Model(&models.StrategyPosition{}).
+		Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").
+		Count(&sameStrategySymbolCount)
+	if sameStrategySymbolCount > 0 {
+		accountSymbolOpen = true
+	}
 	if ps, err := inst.exchange.FetchPositions(inst.OwnerID, "active"); err == nil {
 		for _, p := range ps {
 			if math.Abs(p.Amount) <= 0 {
 				continue
 			}
 			if exchange.NormalizeSymbol(p.Symbol) == exSymbolKey {
-				exSymbolOpen = true
+				accountSymbolOpen = true
 			}
-			if !isAllowedSymbol(inst, p.Symbol) {
-				continue
-			}
-			exOpenCount++
 		}
 	}
-	if maxPos > 0 && exOpenCount >= int64(maxPos) {
+	if maxPos > 0 && strategyOpenCount >= int64(maxPos) {
 		inst.orderMu.Lock()
 		if inst.lastSkipLogAt == nil {
 			inst.lastSkipLogAt = map[string]time.Time{}
@@ -139,10 +145,10 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		}
 		inst.lastSkipLogAt[k] = time.Now()
 		inst.orderMu.Unlock()
-		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：交易所当前已持仓%d个，达到最大并发仓位%d strategy=%s symbol=%s", exOpenCount, maxPos, inst.ID, symbol))
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：该策略当前已持仓%d个，达到最大并发仓位%d strategy=%s symbol=%s", strategyOpenCount, maxPos, inst.ID, symbol))
 		return
 	}
-	if exSymbolOpen {
+	if accountSymbolOpen {
 		inst.orderMu.Lock()
 		if inst.lastSkipLogAt == nil {
 			inst.lastSkipLogAt = map[string]time.Time{}
@@ -154,7 +160,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		}
 		inst.lastSkipLogAt[k] = time.Now()
 		inst.orderMu.Unlock()
-		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：该交易对已有持仓 symbol=%s", symbol))
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：该交易对在账户中已有持仓 symbol=%s", symbol))
 		return
 	}
 
@@ -177,7 +183,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			}
 			inst.lastSkipLogAt[k] = time.Now()
 			inst.orderMu.Unlock()
-			emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：达到最大并发仓位 strategy=%s symbol=%s 当前=%d 最大=%d", inst.ID, symbol, exOpenCount, maxPos))
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：达到最大并发仓位 strategy=%s symbol=%s 当前=%d 最大=%d", inst.ID, symbol, strategyOpenCount, maxPos))
 			return
 		}
 		acquiredSlot = true
