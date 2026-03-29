@@ -168,6 +168,24 @@ func (b *RedisBus) ReleaseOpenSlot(ctx context.Context, strategyID string) (int6
 	return releaseOpenSlotScript.Run(ctx, b.client, []string{key}).Int64()
 }
 
+func (b *RedisBus) GetOpenCount(ctx context.Context, strategyID string) (int64, error) {
+	if b == nil || b.client == nil || strings.TrimSpace(strategyID) == "" {
+		return 0, nil
+	}
+	key := b.OpenCountKey(strategyID)
+	n, err := b.client.Get(ctx, key).Int64()
+	if err == redis.Nil {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, nil
+	}
+	return n, nil
+}
+
 func (b *RedisBus) PublishCandle(ctx context.Context, msg CandleMessage) error {
 	ch := b.CandleChannel(msg.StrategyID)
 	if msg.Type == "" {

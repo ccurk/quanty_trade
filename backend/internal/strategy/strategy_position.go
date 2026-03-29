@@ -207,7 +207,8 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			}
 			inst.lastSkipLogAt[k] = time.Now()
 			inst.orderMu.Unlock()
-			emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：达到最大并发仓位 strategy=%s symbol=%s 当前=%d 最大=%d", inst.ID, symbol, strategyOpenCount, maxPos))
+			redisOpenCount, _ := rb.GetOpenCount(context.Background(), inst.ID)
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：达到最大并发仓位 strategy=%s symbol=%s 本地占用=%d Redis占用=%d 最大=%d", inst.ID, symbol, strategyOpenCount, redisOpenCount, maxPos))
 			return
 		}
 		acquiredSlot = true
