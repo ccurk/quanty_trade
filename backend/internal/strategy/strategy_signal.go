@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -151,7 +152,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 	if inst.exchange != nil {
 		if ps, err := inst.exchange.FetchPositions(inst.OwnerID, "active"); err == nil {
 			for _, p := range ps {
-				if p.Amount <= 0 || !isAllowedSymbol(inst, p.Symbol) {
+				if math.Abs(p.Amount) <= 0 || !isAllowedSymbol(inst, p.Symbol) {
 					continue
 				}
 				key := exchange.NormalizeSymbol(p.Symbol)

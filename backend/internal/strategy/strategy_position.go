@@ -127,6 +127,21 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			exOpenCount++
 		}
 	}
+	if maxPos > 0 && exOpenCount >= int64(maxPos) {
+		inst.orderMu.Lock()
+		if inst.lastSkipLogAt == nil {
+			inst.lastSkipLogAt = map[string]time.Time{}
+		}
+		k := "max_pos_exchange"
+		if t, ok := inst.lastSkipLogAt[k]; ok && time.Since(t) < 10*time.Second {
+			inst.orderMu.Unlock()
+			return
+		}
+		inst.lastSkipLogAt[k] = time.Now()
+		inst.orderMu.Unlock()
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：交易所当前已持仓%d个，达到最大并发仓位%d strategy=%s symbol=%s", exOpenCount, maxPos, inst.ID, symbol))
+		return
+	}
 	if exSymbolOpen {
 		inst.orderMu.Lock()
 		if inst.lastSkipLogAt == nil {
@@ -145,7 +160,6 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 
 	acquiredSlot := false
 	if maxPos > 0 && rb != nil {
-		_ = rb.SetOpenCount(context.Background(), inst.ID, exOpenCount, 6*time.Hour)
 		ok, _, err := rb.AcquireOpenSlot(context.Background(), inst.ID, maxPos, 6*time.Hour)
 		if err != nil {
 			emitStrategyLog(inst, "error", fmt.Sprintf("跳过开仓：获取并发仓位锁失败 err=%v", err))

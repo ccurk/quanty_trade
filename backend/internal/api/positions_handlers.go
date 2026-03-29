@@ -287,14 +287,14 @@ func ClosePosition(c *gin.Context) {
 			First(&existing).Error == nil
 
 		instRows := loadUserStrategyInstances(uid)
+		_ = bx.CancelUSDMAllSymbolOrders(uid, symbol)
 		order, entryPrice, signedAmt, err := bx.ClosePositionOrder(symbol, uid)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		if order == nil {
-			_ = bx.CancelUSDMAlgoOpenOrders(uid, symbol)
-			_ = bx.CancelPrePositionOpenOrders(uid, symbol)
+			_ = bx.CancelUSDMAllSymbolOrders(uid, symbol)
 			if hasExisting && existing.StrategyID != "" && existing.StrategyID != "manual" {
 				stratMgr.ReleaseOpenSlot(existing.StrategyID)
 			}
@@ -396,8 +396,7 @@ func ClosePosition(c *gin.Context) {
 			stratMgr.ReleaseOpenSlot(strategyID)
 		}
 		go func(ownerID uint, sym string) {
-			_ = bx.CancelUSDMAlgoOpenOrders(ownerID, sym)
-			_ = bx.CancelPrePositionOpenOrders(ownerID, sym)
+			_ = bx.CancelUSDMAllSymbolOrders(ownerID, sym)
 		}(uid, symbol)
 		go func(ownerID uint, sym string) {
 			deadline := time.Now().Add(45 * time.Second)
@@ -406,8 +405,7 @@ func ClosePosition(c *gin.Context) {
 			for time.Now().Before(deadline) {
 				amt, _, _, e := bx.USDMPositionAmt(ownerID, sym)
 				if e == nil && amt == 0 {
-					_ = bx.CancelUSDMAlgoOpenOrders(ownerID, sym)
-					_ = bx.CancelPrePositionOpenOrders(ownerID, sym)
+					_ = bx.CancelUSDMAllSymbolOrders(ownerID, sym)
 					return
 				}
 				<-ticker.C

@@ -1752,6 +1752,45 @@ func (b *BinanceExchange) CancelPrePositionOpenOrders(ownerID uint, symbol strin
 	return nil
 }
 
+func (b *BinanceExchange) CancelUSDMAllSymbolOrders(ownerID uint, symbol string) error {
+	if b.market != "usdm" {
+		return nil
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return err
+	}
+	params := url.Values{}
+	params.Set("symbol", binanceSymbol(symbol))
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/openOrders", params)
+	if err != nil {
+		return err
+	}
+	var orders []struct {
+		OrderID int64 `json:"orderId"`
+	}
+	if err := json.Unmarshal(body, &orders); err != nil {
+		return err
+	}
+	var firstErr error
+	for _, o := range orders {
+		if o.OrderID <= 0 {
+			continue
+		}
+		q := url.Values{}
+		q.Set("symbol", binanceSymbol(symbol))
+		q.Set("orderId", strconv.FormatInt(o.OrderID, 10))
+		_, _, err := b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/order", q)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if err := b.CancelUSDMAlgoOpenOrders(ownerID, symbol); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
+
 func (b *BinanceExchange) CancelUSDMAlgoOpenOrders(ownerID uint, symbol string) error {
 	if b.market != "usdm" {
 		return nil
