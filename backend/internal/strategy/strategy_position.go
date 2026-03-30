@@ -55,6 +55,10 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	if amount <= 0 {
 		return
 	}
+	if ok, count, limit := canOpenSymbolByConsecutiveLimit(inst, symbol); !ok {
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：%s 已连续开仓%d次，达到限制%d次", symbol, count, limit))
+		return
+	}
 	if !hasEffectiveTPSL(inst, takeProfit, stopLoss) {
 		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：缺少止盈止损，拒绝开仓 symbol=%s side=%s amount=%v tp=%v sl=%v", symbol, normalizedSide, amount, takeProfit, stopLoss))
 		return

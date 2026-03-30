@@ -215,6 +215,10 @@ export function StrategyConfigForm({
           <input type="number" value={config.max_concurrent_positions} onChange={(e) => onChange({ ...config, max_concurrent_positions: Number(e.target.value) })} className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`} />
         </div>
         <div>
+          <label className="block text-sm font-medium text-gray-500 mb-2">单币最多连开</label>
+          <input type="number" value={config.max_consecutive_entries_per_symbol} onChange={(e) => onChange({ ...config, max_consecutive_entries_per_symbol: Number(e.target.value) })} className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`} />
+        </div>
+        <div>
           <label className="block text-sm font-medium text-gray-500 mb-2">每日最多交易</label>
           <input type="number" value={config.max_trades_per_day} onChange={(e) => onChange({ ...config, max_trades_per_day: Number(e.target.value) })} className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`} />
         </div>

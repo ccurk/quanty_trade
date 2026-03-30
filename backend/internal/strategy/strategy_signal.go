@@ -13,6 +13,60 @@ import (
 	"quanty_trade/internal/models"
 )
 
+func maxConsecutiveEntriesPerSymbol(inst *StrategyInstance) int {
+	if inst == nil {
+		return 0
+	}
+	if v := int(getNumber(inst.Config["max_consecutive_entries_per_symbol"])); v > 0 {
+		return v
+	}
+	return 0
+}
+
+func consecutiveEntryCount(inst *StrategyInstance, symbol string) int {
+	if inst == nil || database.DB == nil {
+		return 0
+	}
+	symKey := exchange.NormalizeSymbol(symbol)
+	if symKey == "" {
+		return 0
+	}
+	limit := maxConsecutiveEntriesPerSymbol(inst)
+	if limit <= 0 {
+		return 0
+	}
+	lookback := limit + 20
+	if lookback < 20 {
+		lookback = 20
+	}
+	var rows []models.StrategyOrder
+	_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND purpose = ? AND status IN ?", inst.OwnerID, inst.ID, "entry", []string{"requested", "new", "partially_filled", "filled"}).
+		Order("requested_at desc, id desc").
+		Limit(lookback).
+		Find(&rows).Error
+	count := 0
+	for _, row := range rows {
+		rowSym := exchange.NormalizeSymbol(row.Symbol)
+		if rowSym == "" {
+			continue
+		}
+		if rowSym != symKey {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+func canOpenSymbolByConsecutiveLimit(inst *StrategyInstance, symbol string) (bool, int, int) {
+	limit := maxConsecutiveEntriesPerSymbol(inst)
+	if limit <= 0 {
+		return true, 0, 0
+	}
+	count := consecutiveEntryCount(inst, symbol)
+	return count < limit, count, limit
+}
+
 func (m *Manager) enqueueSignalForSelection(inst *StrategyInstance, s bus.SignalMessage) {
 	if m == nil || inst == nil {
 		return
@@ -214,6 +268,10 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			continue
 		}
 		if _, ok := selectedSymbols[symKey]; ok {
+			continue
+		}
+		if ok, count, limit := canOpenSymbolByConsecutiveLimit(inst, sig.Symbol); !ok {
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 已连续开仓%d次，达到限制%d次", sig.Symbol, count, limit))
 			continue
 		}
 		if c.amount <= 0 || (c.side != "buy" && c.side != "sell") || !c.ok {

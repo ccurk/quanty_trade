@@ -9,6 +9,7 @@ export type StrategyFormConfig = {
   take_profit_pct: number;
   stop_loss_pct: number;
   max_concurrent_positions: number;
+  max_consecutive_entries_per_symbol: number;
   max_trades_per_day: number;
   warmup_bars: number;
   auto_symbols: boolean;
@@ -75,6 +76,7 @@ export const createDefaultStrategyConfig = (): StrategyFormConfig => ({
   take_profit_pct: 30,
   stop_loss_pct: 10,
   max_concurrent_positions: 1,
+  max_consecutive_entries_per_symbol: 0,
   max_trades_per_day: 3,
   warmup_bars: 100,
   auto_symbols: false,
@@ -99,6 +101,7 @@ export const strategyConfigFromExisting = (cfg: Record<string, unknown>): Strate
     take_profit_pct: ratioToPercent(getCfgNumber(cfg, 'take_profit_pct', 0.3), 30),
     stop_loss_pct: ratioToPercent(getCfgNumber(cfg, 'stop_loss_pct', 0.1), 10),
     max_concurrent_positions: getCfgNumber(cfg, 'max_concurrent_positions', 1),
+    max_consecutive_entries_per_symbol: getCfgNumber(cfg, 'max_consecutive_entries_per_symbol', 0),
     max_trades_per_day: getCfgNumber(cfg, 'max_trades_per_day', 3),
     warmup_bars: getCfgNumber(cfg, 'warmup_bars', 100),
     auto_symbols: getCfgBool(cfg, 'auto_symbols', false),
@@ -122,6 +125,7 @@ export const buildStrategyConfigPayload = (cfg: StrategyFormConfig) => ({
   take_profit_pct: (Number(cfg.take_profit_pct) || 0) / 100,
   stop_loss_pct: (Number(cfg.stop_loss_pct) || 0) / 100,
   max_concurrent_positions: Number(cfg.max_concurrent_positions) || 1,
+  max_consecutive_entries_per_symbol: Number(cfg.max_consecutive_entries_per_symbol) || 0,
   max_trades_per_day: Number(cfg.max_trades_per_day) || 0,
   warmup_bars: Number(cfg.warmup_bars) || 0,
   auto_symbols: cfg.auto_symbols,
