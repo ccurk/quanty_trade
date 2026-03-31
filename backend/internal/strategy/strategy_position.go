@@ -81,6 +81,10 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		}
 		amount = resolvedAmount
 	}
+	if amount < 10 {
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：下单数量低于10 symbol=%s side=%s amount=%v", symbol, normalizedSide, amount))
+		return
+	}
 
 	maxPos := 1
 	if v := int(getNumber(inst.Config["max_concurrent_positions"])); v > 0 {
