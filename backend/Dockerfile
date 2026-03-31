@@ -21,8 +21,10 @@ FROM python:3.11-alpine
 
 WORKDIR /app
 
-# Install system dependencies for Go and Python strategies (pandas included)
-RUN apk add --no-cache ca-certificates py3-pandas
+# Install Python runtime dependencies for strategies
+RUN apk add --no-cache ca-certificates
+COPY strategies/requirements.txt /tmp/strategy-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/strategy-requirements.txt
 
 # Copy the binary from builder
 COPY --from=builder /app/main .
