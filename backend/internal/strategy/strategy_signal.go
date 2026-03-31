@@ -13,6 +13,23 @@ import (
 	"quanty_trade/internal/models"
 )
 
+type symbolEntryStats struct {
+	RecentCount      int
+	ConsecutiveCount int
+	LastEntryAt      time.Time
+}
+
+func symbolReentryCooldown(inst *StrategyInstance) time.Duration {
+	if inst == nil {
+		return 0
+	}
+	minutes := int(getNumber(inst.Config["symbol_reentry_cooldown_minutes"]))
+	if minutes <= 0 {
+		return 0
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
 func maxConsecutiveEntriesPerSymbol(inst *StrategyInstance) int {
 	if inst == nil {
 		return 0
@@ -65,6 +82,60 @@ func canOpenSymbolByConsecutiveLimit(inst *StrategyInstance, symbol string) (boo
 	}
 	count := consecutiveEntryCount(inst, symbol)
 	return count < limit, count, limit
+}
+
+func loadRecentEntryStats(inst *StrategyInstance, limit int) map[string]symbolEntryStats {
+	if inst == nil || database.DB == nil {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	var rows []models.StrategyOrder
+	_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND purpose = ? AND status IN ?", inst.OwnerID, inst.ID, "entry", []string{"requested", "new", "partially_filled", "filled"}).
+		Order("requested_at desc, id desc").
+		Limit(limit).
+		Find(&rows).Error
+	stats := make(map[string]symbolEntryStats, len(rows))
+	for idx, row := range rows {
+		symKey := exchange.NormalizeSymbol(row.Symbol)
+		if symKey == "" {
+			continue
+		}
+		item := stats[symKey]
+		item.RecentCount++
+		if idx == 0 {
+			item.LastEntryAt = row.RequestedAt
+		}
+		stats[symKey] = item
+	}
+	prevSym := ""
+	for _, row := range rows {
+		symKey := exchange.NormalizeSymbol(row.Symbol)
+		if symKey == "" {
+			continue
+		}
+		if prevSym != "" && symKey != prevSym {
+			break
+		}
+		item := stats[symKey]
+		item.ConsecutiveCount++
+		stats[symKey] = item
+		prevSym = symKey
+	}
+	return stats
+}
+
+func canOpenSymbolByCooldown(inst *StrategyInstance, symbol string, stats symbolEntryStats) (bool, time.Duration, time.Time) {
+	cooldown := symbolReentryCooldown(inst)
+	if cooldown <= 0 || stats.LastEntryAt.IsZero() {
+		return true, 0, stats.LastEntryAt
+	}
+	elapsed := time.Since(stats.LastEntryAt)
+	if elapsed >= cooldown {
+		return true, 0, stats.LastEntryAt
+	}
+	return false, cooldown - elapsed, stats.LastEntryAt
 }
 
 func (m *Manager) enqueueSignalForSelection(inst *StrategyInstance, s bus.SignalMessage) {
@@ -139,13 +210,18 @@ func (m *Manager) processSignalBatch(strategyID string) {
 
 	pxCache := map[string]float64{}
 	type cand struct {
-		s      bus.SignalMessage
-		rr     float64
-		ok     bool
-		px     float64
-		side   string
-		amount float64
+		s                bus.SignalMessage
+		rr               float64
+		score            float64
+		ok               bool
+		px               float64
+		side             string
+		amount           float64
+		recentCount      int
+		consecutiveCount int
+		lastEntryAt      time.Time
 	}
+	recentStats := loadRecentEntryStats(inst, 30)
 	cands := make([]cand, 0, len(filtered))
 	for _, sig := range filtered {
 		sym := strings.TrimSpace(sig.Symbol)
@@ -184,16 +260,56 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		} else if side == "" {
 			side = "buy"
 		}
-		cands = append(cands, cand{s: sig, rr: rr, ok: ok, px: px, side: side, amount: amount})
+		stats := recentStats[exchange.NormalizeSymbol(sig.Symbol)]
+		penalty := 1.0 + float64(stats.RecentCount)*0.35 + float64(stats.ConsecutiveCount)*0.5
+		score := rr
+		if penalty > 1 {
+			score = rr / penalty
+		}
+		cands = append(cands, cand{
+			s:                sig,
+			rr:               rr,
+			score:            score,
+			ok:               ok,
+			px:               px,
+			side:             side,
+			amount:           amount,
+			recentCount:      stats.RecentCount,
+			consecutiveCount: stats.ConsecutiveCount,
+			lastEntryAt:      stats.LastEntryAt,
+		})
 	}
 	if len(cands) == 0 {
 		return
 	}
 
-	sort.Slice(cands, func(i, j int) bool { return cands[i].rr > cands[j].rr })
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].score != cands[j].score {
+			return cands[i].score > cands[j].score
+		}
+		if cands[i].rr != cands[j].rr {
+			return cands[i].rr > cands[j].rr
+		}
+		if cands[i].consecutiveCount != cands[j].consecutiveCount {
+			return cands[i].consecutiveCount < cands[j].consecutiveCount
+		}
+		if cands[i].recentCount != cands[j].recentCount {
+			return cands[i].recentCount < cands[j].recentCount
+		}
+		if cands[i].lastEntryAt.Equal(cands[j].lastEntryAt) {
+			return cands[i].s.Symbol < cands[j].s.Symbol
+		}
+		if cands[i].lastEntryAt.IsZero() {
+			return true
+		}
+		if cands[j].lastEntryAt.IsZero() {
+			return false
+		}
+		return cands[i].lastEntryAt.Before(cands[j].lastEntryAt)
+	})
 	preview := make([]string, 0, len(cands))
 	for i := 0; i < len(cands) && i < 8; i++ {
-		preview = append(preview, fmt.Sprintf("%s(适配度=%0.4f)", cands[i].s.Symbol, cands[i].rr))
+		preview = append(preview, fmt.Sprintf("%s(适配度=%0.4f,优先级=%0.4f,近期=%d,连开=%d)", cands[i].s.Symbol, cands[i].rr, cands[i].score, cands[i].recentCount, cands[i].consecutiveCount))
 	}
 	emitStrategyLog(inst, "info", fmt.Sprintf("同批信号排序完成，共%d个候选：%s", len(cands), strings.Join(preview, "，")))
 
@@ -268,6 +384,10 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			continue
 		}
 		if _, ok := selectedSymbols[symKey]; ok {
+			continue
+		}
+		if ok, remain, _ := canOpenSymbolByCooldown(inst, sig.Symbol, recentStats[symKey]); !ok {
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 仍在重复开仓冷却期 remaining=%s", sig.Symbol, remain.Truncate(time.Second)))
 			continue
 		}
 		if ok, count, limit := canOpenSymbolByConsecutiveLimit(inst, sig.Symbol); !ok {
