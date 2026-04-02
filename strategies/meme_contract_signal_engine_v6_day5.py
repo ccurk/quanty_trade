@@ -500,16 +500,21 @@ def calc_adx(df: pd.DataFrame, period: int = None) -> tuple[float, float, float]
     atr_s = wilder_smooth(tr_arr, period)
     plus_s = wilder_smooth(plus_dm_arr, period)
     minus_s = wilder_smooth(minus_dm_arr, period)
-    atr_s = np.where(atr_s == 0, 1e-10, atr_s)
-    plus_di = 100 * plus_s / atr_s
-    minus_di = 100 * minus_s / atr_s
+    atr_s = np.nan_to_num(atr_s, nan=0.0, posinf=0.0, neginf=0.0)
+    safe_atr = np.where(atr_s == 0, 1e-10, atr_s)
+    plus_di = np.divide(100 * plus_s, safe_atr, out=np.zeros_like(safe_atr), where=safe_atr != 0)
+    minus_di = np.divide(100 * minus_s, safe_atr, out=np.zeros_like(safe_atr), where=safe_atr != 0)
+    plus_di = np.nan_to_num(plus_di, nan=0.0, posinf=0.0, neginf=0.0)
+    minus_di = np.nan_to_num(minus_di, nan=0.0, posinf=0.0, neginf=0.0)
     di_sum = plus_di + minus_di
-    dx = np.divide(
-        100 * np.abs(plus_di - minus_di),
-        di_sum,
-        out=np.zeros_like(di_sum),
-        where=di_sum != 0,
-    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dx = np.divide(
+            100 * np.abs(plus_di - minus_di),
+            di_sum,
+            out=np.zeros_like(di_sum),
+            where=di_sum != 0,
+        )
+    dx = np.nan_to_num(dx, nan=0.0, posinf=0.0, neginf=0.0)
     adx_arr = np.zeros(n)
     if n > period * 2:
         adx_arr[period * 2] = np.mean(dx[period:period * 2 + 1])
