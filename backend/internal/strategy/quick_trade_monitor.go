@@ -98,7 +98,10 @@ func (m *Manager) quickTradeTick() {
 				continue
 			}
 			emitStrategyLog(inst, "info", fmt.Sprintf("饥饿模式触发：持仓时长=%s symbol=%s roi=%0.4f%% pnl=%0.4f tp=%0.2f%% sl=%0.2f%%，自动平仓", now.Sub(r.OpenTime).Round(time.Second), r.Symbol, roi, unpnl, hungerTPPct*100, hungerSLPct*100))
-			_ = m.closePositionForInstance(inst, r.Symbol, reason, "")
+			if err := m.closePositionForInstance(inst, r.Symbol, reason, ""); err != nil {
+				m.releaseQuickClose(uid, symKey)
+				emitStrategyLog(inst, "error", fmt.Sprintf("饥饿模式触发但平仓失败 symbol=%s reason=%s err=%v", r.Symbol, reason, err))
+			}
 		}
 	}
 }
@@ -118,4 +121,16 @@ func (m *Manager) tryMarkQuickClose(uid uint, symbol string, now time.Time) bool
 	}
 	m.quickCloseAt[key] = now
 	return true
+}
+
+func (m *Manager) releaseQuickClose(uid uint, symbol string) {
+	if m == nil || uid == 0 || symbol == "" {
+		return
+	}
+	m.quickCloseMu.Lock()
+	defer m.quickCloseMu.Unlock()
+	if m.quickCloseAt == nil {
+		return
+	}
+	delete(m.quickCloseAt, fmt.Sprintf("%d:%s", uid, symbol))
 }

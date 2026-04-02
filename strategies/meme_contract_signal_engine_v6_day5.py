@@ -503,7 +503,13 @@ def calc_adx(df: pd.DataFrame, period: int = None) -> tuple[float, float, float]
     atr_s = np.where(atr_s == 0, 1e-10, atr_s)
     plus_di = 100 * plus_s / atr_s
     minus_di = 100 * minus_s / atr_s
-    dx = np.where((plus_di + minus_di) == 0, 0, 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di))
+    di_sum = plus_di + minus_di
+    dx = np.divide(
+        100 * np.abs(plus_di - minus_di),
+        di_sum,
+        out=np.zeros_like(di_sum),
+        where=di_sum != 0,
+    )
     adx_arr = np.zeros(n)
     if n > period * 2:
         adx_arr[period * 2] = np.mean(dx[period:period * 2 + 1])

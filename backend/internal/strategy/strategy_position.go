@@ -754,8 +754,8 @@ func (m *Manager) runPositionTPStopMonitor(ctx context.Context, inst *StrategyIn
 					initial := (math.Abs(amt) * entryPx) / levUsed
 					if initial > 0 {
 						roi := (pnl / initial) * 100
-						slPct := getNumber(inst.Config["stop_loss_pct"]) * 100
-						tpPct := getNumber(inst.Config["take_profit_pct"]) * 100
+						slPct := normalizedTPSLPct(inst, "stop_loss_pct") * 100
+						tpPct := normalizedTPSLPct(inst, "take_profit_pct") * 100
 						if tpPct > 0 && roi >= tpPct {
 							hit = true
 							reason = "roi_tp"

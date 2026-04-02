@@ -22,7 +22,7 @@ func (m *Manager) StartTPSLGuardMonitor(ctx context.Context) {
 
 func (m *Manager) runTPSLGuardMonitor(ctx context.Context) {
 	m.tpslGuardTick()
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
