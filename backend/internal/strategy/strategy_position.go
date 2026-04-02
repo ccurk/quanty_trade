@@ -460,11 +460,21 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 							level = "info"
 						}
 					}
+					if m.atomicTPSLRequired(inst) {
+						emitStrategyLog(inst, level, fmt.Sprintf("设置止盈止损失败，触发事务回滚 symbol=%s tp=%v sl=%v err=%v", symbol, takeProfit, stopLoss, lastErr))
+						_ = m.rollbackAtomicEntry(inst, symbol, baseClientOrderID, signalID, "tpsl_setup_failed", lastErr)
+						return
+					}
 					emitStrategyLog(inst, level, fmt.Sprintf("设置止盈止损失败，回退为本地监控 symbol=%s tp=%v sl=%v err=%v", symbol, takeProfit, stopLoss, lastErr))
 					m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
 					return
 				}
 				time.Sleep(1 * time.Second)
+			}
+			if m.atomicTPSLRequired(inst) {
+				emitStrategyLog(inst, "error", fmt.Sprintf("开仓单在等待期内未形成可绑定止盈止损的有效持仓，触发事务回滚 symbol=%s client_order_id=%s", symbol, baseClientOrderID))
+				_ = m.rollbackAtomicEntry(inst, symbol, baseClientOrderID, signalID, "position_not_ready_for_tpsl", nil)
+				return
 			}
 			emitStrategyLog(inst, "info", fmt.Sprintf("开仓单在等待期内未形成有效持仓，回退为本地监控止盈止损 symbol=%s client_order_id=%s", symbol, baseClientOrderID))
 			m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
@@ -472,6 +482,67 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 		}
 	}
 	m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
+}
+
+func (m *Manager) atomicTPSLRequired(inst *StrategyInstance) bool {
+	if inst == nil {
+		return true
+	}
+	if v, ok := inst.Config["atomic_entry_tpsl"]; ok {
+		return getBool(v)
+	}
+	return true
+}
+
+func (m *Manager) rollbackAtomicEntry(inst *StrategyInstance, symbol string, clientOrderID string, signalID string, reason string, cause error) error {
+	if inst == nil {
+		return fmt.Errorf("nil instance")
+	}
+	sym := strings.TrimSpace(symbol)
+	if sym == "" {
+		return fmt.Errorf("empty symbol")
+	}
+	now := time.Now()
+	updates := map[string]interface{}{
+		"status":     "rolled_back",
+		"updated_at": now,
+	}
+	_ = database.DB.Model(&models.StrategyOrder{}).
+		Where("owner_id = ? AND strategy_id = ? AND client_order_id = ?", inst.OwnerID, inst.ID, clientOrderID).
+		Updates(updates).Error
+
+	if cause != nil {
+		emitStrategyLog(inst, "error", fmt.Sprintf("开仓事务回滚 symbol=%s client_order_id=%s reason=%s err=%v", sym, clientOrderID, reason, cause))
+	} else {
+		emitStrategyLog(inst, "error", fmt.Sprintf("开仓事务回滚 symbol=%s client_order_id=%s reason=%s", sym, clientOrderID, reason))
+	}
+
+	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		cancelErr := bx.CancelUSDMOrderByRef(inst.OwnerID, sym, "", clientOrderID)
+		if cancelErr != nil && !strings.Contains(strings.ToLower(cancelErr.Error()), "unknown order") {
+			emitStrategyLog(inst, "error", fmt.Sprintf("事务回滚撤销主单失败 symbol=%s client_order_id=%s err=%v", sym, clientOrderID, cancelErr))
+		}
+		amt, _, _, posErr := bx.USDMPositionAmt(inst.OwnerID, sym)
+		if posErr == nil && amt != 0 {
+			if err := m.closePositionForInstance(inst, sym, "atomic_rollback_"+reason, signalID); err != nil {
+				emitStrategyLog(inst, "error", fmt.Sprintf("事务回滚平仓失败 symbol=%s client_order_id=%s err=%v", sym, clientOrderID, err))
+				return err
+			}
+			emitStrategyLog(inst, "info", fmt.Sprintf("事务回滚已平仓 symbol=%s client_order_id=%s", sym, clientOrderID))
+			return nil
+		}
+		if posErr != nil {
+			emitStrategyLog(inst, "error", fmt.Sprintf("事务回滚查询仓位失败 symbol=%s client_order_id=%s err=%v", sym, clientOrderID, posErr))
+			return posErr
+		}
+		if m != nil {
+			m.ReleaseOpenSlot(inst.ID)
+		}
+		emitStrategyLog(inst, "info", fmt.Sprintf("事务回滚已撤销主单 symbol=%s client_order_id=%s", sym, clientOrderID))
+		return nil
+	}
+
+	return fmt.Errorf("atomic rollback unsupported for exchange=%s", inst.exchange.GetName())
 }
 
 func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, takeProfit float64, stopLoss float64, signalID string) {

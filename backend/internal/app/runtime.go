@@ -36,6 +36,7 @@ func BuildStrategyManager(ctx context.Context, hub *ws.Hub) *strategy.Manager {
 	go mgr.SyncRedisOpenCountsFromExchange(ctx)
 	mgr.StartQuickTradeMonitor(ctx)
 	mgr.StartROIGuardMonitor(ctx)
+	mgr.StartROISLScanMonitor(ctx)
 	mgr.StartTPSLGuardMonitor(ctx)
 	mgr.StartWorkers()
 	return mgr

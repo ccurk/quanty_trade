@@ -13,10 +13,17 @@ import (
 )
 
 var roiGuardOnce sync.Once
+var roiStopLossScanOnce sync.Once
 
 func (m *Manager) StartROIGuardMonitor(ctx context.Context) {
 	roiGuardOnce.Do(func() {
 		go m.runROIGuardMonitor(ctx)
+	})
+}
+
+func (m *Manager) StartROISLScanMonitor(ctx context.Context) {
+	roiStopLossScanOnce.Do(func() {
+		go m.runROISLScanMonitor(ctx)
 	})
 }
 
@@ -34,7 +41,29 @@ func (m *Manager) runROIGuardMonitor(ctx context.Context) {
 	}
 }
 
+func (m *Manager) runROISLScanMonitor(ctx context.Context) {
+	m.roiStopLossTick()
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.roiStopLossTick()
+		}
+	}
+}
+
 func (m *Manager) roiGuardTick() {
+	m.scanROILimits(false)
+}
+
+func (m *Manager) roiStopLossTick() {
+	m.scanROILimits(true)
+}
+
+func (m *Manager) scanROILimits(stopLossOnly bool) {
 	if m == nil || database.DB == nil {
 		return
 	}
@@ -157,28 +186,34 @@ func (m *Manager) roiGuardTick() {
 				}
 			}
 			reason := ""
-			if currentPrice > 0 {
-				if side == "buy" {
-					if tp > 0 && currentPrice >= tp {
-						reason = "guard_tp"
-					}
-					if reason == "" && sl > 0 && currentPrice <= sl {
-						reason = "guard_sl"
-					}
-				} else {
-					if tp > 0 && currentPrice <= tp {
-						reason = "guard_tp"
-					}
-					if reason == "" && sl > 0 && currentPrice >= sl {
-						reason = "guard_sl"
+			if !stopLossOnly {
+				if currentPrice > 0 {
+					if side == "buy" {
+						if tp > 0 && currentPrice >= tp {
+							reason = "guard_tp"
+						}
+						if reason == "" && sl > 0 && currentPrice <= sl {
+							reason = "guard_sl"
+						}
+					} else {
+						if tp > 0 && currentPrice <= tp {
+							reason = "guard_tp"
+						}
+						if reason == "" && sl > 0 && currentPrice >= sl {
+							reason = "guard_sl"
+						}
 					}
 				}
 			}
-			if reason == "" && tpPct > 0 && roi >= tpPct {
+			if !stopLossOnly && reason == "" && tpPct > 0 && roi >= tpPct {
 				reason = "guard_roi_tp"
 			}
 			if reason == "" && slPct > 0 && roi <= -slPct {
-				reason = "guard_roi_sl"
+				if stopLossOnly {
+					reason = "minute_roi_sl_scan"
+				} else {
+					reason = "guard_roi_sl"
+				}
 			}
 			if reason == "" {
 				continue
@@ -186,10 +221,18 @@ func (m *Manager) roiGuardTick() {
 			if !m.tryMarkQuickClose(uid, strings.ToUpper(r.Symbol), now) {
 				continue
 			}
-			emitStrategyLog(inst, "info", fmt.Sprintf("全局仓位守护触发：symbol=%s price=%0.8f roi=%0.4f%% pnl=%0.4f tp=%0.8f sl=%0.8f tp_pct=%0.2f%% sl_pct=%0.2f%% reason=%s，自动平仓", r.Symbol, currentPrice, roi, unpnl, tp, sl, tpPct, slPct, reason))
+			if stopLossOnly {
+				emitStrategyLog(inst, "info", fmt.Sprintf("定时仓位扫描触发止损收益率平仓：symbol=%s price=%0.8f roi=%0.4f%% pnl=%0.4f sl=%0.8f sl_pct=%0.2f%% reason=%s，自动平仓并撤销止盈止损单", r.Symbol, currentPrice, roi, unpnl, sl, slPct, reason))
+			} else {
+				emitStrategyLog(inst, "info", fmt.Sprintf("全局仓位守护触发：symbol=%s price=%0.8f roi=%0.4f%% pnl=%0.4f tp=%0.8f sl=%0.8f tp_pct=%0.2f%% sl_pct=%0.2f%% reason=%s，自动平仓", r.Symbol, currentPrice, roi, unpnl, tp, sl, tpPct, slPct, reason))
+			}
 			if err := m.closePositionForInstance(inst, r.Symbol, reason, ""); err != nil {
 				m.releaseQuickClose(uid, strings.ToUpper(r.Symbol))
-				emitStrategyLog(inst, "error", fmt.Sprintf("全局仓位守护触发但平仓失败 symbol=%s reason=%s err=%v", r.Symbol, reason, err))
+				if stopLossOnly {
+					emitStrategyLog(inst, "error", fmt.Sprintf("定时仓位扫描触发止损收益率平仓失败 symbol=%s reason=%s err=%v", r.Symbol, reason, err))
+				} else {
+					emitStrategyLog(inst, "error", fmt.Sprintf("全局仓位守护触发但平仓失败 symbol=%s reason=%s err=%v", r.Symbol, reason, err))
+				}
 			}
 		}
 	}
