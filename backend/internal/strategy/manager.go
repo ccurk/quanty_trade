@@ -159,6 +159,16 @@ func loadLatestDiskStrategySource(inst *StrategyInstance, row *models.StrategyIn
 	return "", "", false
 }
 
+func sanitizeStrategyRuntimeCode(code string) string {
+	if strings.TrimSpace(code) == "" {
+		return code
+	}
+	oldDX := "dx = np.where((plus_di + minus_di) == 0, 0, 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di))"
+	newDX := "di_sum = plus_di + minus_di\n    with np.errstate(divide=\"ignore\", invalid=\"ignore\"):\n        dx = np.divide(\n            100 * np.abs(plus_di - minus_di),\n            di_sum,\n            out=np.zeros_like(di_sum),\n            where=di_sum != 0,\n        )\n    dx = np.nan_to_num(dx, nan=0.0, posinf=0.0, neginf=0.0)"
+	code = strings.ReplaceAll(code, oldDX, newDX)
+	return code
+}
+
 func parseSymbolsValue(v interface{}) []string {
 	out := make([]string, 0)
 	switch t := v.(type) {
@@ -738,6 +748,7 @@ func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, er
 		_ = os.Remove(prev)
 	}
 	absPath := filepath.Join(runtimeDir, fmt.Sprintf("%s_%d.py", inst.ID, time.Now().UnixMilli()))
+	code = sanitizeStrategyRuntimeCode(code)
 	runtimeCode := "import os\nimport sys\nsys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), \"..\")))\n\n" + miniRedisRuntimeShim() + "\n" + code + "\n"
 	if err := os.WriteFile(absPath, []byte(runtimeCode), 0o644); err != nil {
 		return "", err
@@ -800,6 +811,7 @@ func (m *Manager) prepareBacktestStrategyFile(inst *StrategyInstance, backtestID
 	}
 
 	tmp := filepath.Join(runtimeDir, fmt.Sprintf("backtest_%d_%s.py", backtestID, inst.ID))
+	code = sanitizeStrategyRuntimeCode(code)
 	runtimeCode := "import os\nimport sys\nsys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), \"..\")))\n\n" + miniRedisRuntimeShim() + "\n" + code + "\n"
 	if err := os.WriteFile(tmp, []byte(runtimeCode), 0o644); err != nil {
 		return "", func() {}, err
