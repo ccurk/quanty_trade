@@ -159,6 +159,13 @@ def _s(v, d=""):
         return d
 
 
+def _parse_ratio(v, d=0.0):
+    x = _f(v, d)
+    if x > 1:
+        x = x / 100.0
+    return max(x, 0.0)
+
+
 def get_decimal_precision(price: float) -> int:
     s = f"{price:.10f}".rstrip("0")
     return len(s.split(".")[1]) if "." in s else 0
@@ -364,6 +371,7 @@ class Config:
     VOL_LOOKBACK_BARS = 200
     COOLDOWN_SEC = 0
     MAX_BARS = 300
+    WARMUP_BARS = 60
 
 
 @dataclass
@@ -525,6 +533,14 @@ def score_confidence_detail(
 
 def analyze_with_detail(snapshot: MarketSnapshot, closes: list[float], highs: list[float], lows: list[float]) -> tuple[SignalResult, dict]:
     price = float(snapshot.price)
+    if price <= 0:
+        return _no_signal(snapshot, "价格无效"), {"reason": "invalid_price"}
+    if price > Config.MAX_PRICE:
+        return _no_signal(snapshot, f"币价${price:.8f}超上限"), {"reason": "max_price"}
+    if get_decimal_precision(price) < Config.MIN_PRECISION:
+        return _no_signal(snapshot, f"精度不足{Config.MIN_PRECISION}位"), {"reason": "min_precision"}
+    if abs(float(snapshot.change_pct_24h)) < Config.MIN_VOLATILITY:
+        return _no_signal(snapshot, f"波动不足{Config.MIN_VOLATILITY:.1f}%"), {"reason": "min_volatility"}
 
     rsi_val = calc_rsi_pd(closes)
     macd_val, macd_sig = calc_macd_pd(closes)
@@ -602,6 +618,14 @@ def _no_signal(snap: MarketSnapshot, reason: str) -> SignalResult:
 
 def analyze(snapshot: MarketSnapshot, closes: list[float], highs: list[float], lows: list[float]) -> SignalResult:
     price = float(snapshot.price)
+    if price <= 0:
+        return _no_signal(snapshot, "价格无效")
+    if price > Config.MAX_PRICE:
+        return _no_signal(snapshot, f"币价${price:.8f}超上限")
+    if get_decimal_precision(price) < Config.MIN_PRECISION:
+        return _no_signal(snapshot, f"精度不足{Config.MIN_PRECISION}位")
+    if abs(float(snapshot.change_pct_24h)) < Config.MIN_VOLATILITY:
+        return _no_signal(snapshot, f"波动不足{Config.MIN_VOLATILITY:.1f}%")
 
     rsi_val = calc_rsi_pd(closes)
     macd_val, macd_sig = calc_macd_pd(closes)
@@ -694,15 +718,19 @@ class Strategy:
         self._load_config()
 
     def _load_config(self):
-        Config.MIN_CONFIDENCE = _f(self.cfg.get("min_confidence"), Config.MIN_CONFIDENCE)
-        Config.TP_RATIO = _f(self.cfg.get("tp_ratio"), Config.TP_RATIO)
-        Config.SL_RATIO = _f(self.cfg.get("sl_ratio"), Config.SL_RATIO)
+        Config.MIN_CONFIDENCE = _parse_ratio(self.cfg.get("min_confidence"), Config.MIN_CONFIDENCE)
+        Config.TP_RATIO = _parse_ratio(self.cfg.get("tp_ratio", self.cfg.get("take_profit_pct")), Config.TP_RATIO)
+        Config.SL_RATIO = _parse_ratio(self.cfg.get("sl_ratio", self.cfg.get("stop_loss_pct")), Config.SL_RATIO)
         Config.ATR_DISCOUNT_THR = _f(self.cfg.get("atr_discount_thr"), Config.ATR_DISCOUNT_THR)
         Config.ATR_DISCOUNT = _f(self.cfg.get("atr_discount"), Config.ATR_DISCOUNT)
         Config.CHANGE_LOOKBACK_BARS = max(2, _i(self.cfg.get("change_lookback_bars"), Config.CHANGE_LOOKBACK_BARS))
         Config.VOL_LOOKBACK_BARS = max(2, _i(self.cfg.get("vol_lookback_bars"), Config.VOL_LOOKBACK_BARS))
-        Config.COOLDOWN_SEC = max(0, _i(self.cfg.get("cooldown_sec"), 0))
+        Config.COOLDOWN_SEC = max(0, _i(self.cfg.get("cooldown_sec"), Config.COOLDOWN_SEC))
         Config.MAX_BARS = max(50, _i(self.cfg.get("max_bars"), Config.MAX_BARS))
+        Config.WARMUP_BARS = max(35, _i(self.cfg.get("warmup_bars"), Config.WARMUP_BARS))
+        Config.MAX_PRICE = max(0.0, _f(self.cfg.get("max_price"), Config.MAX_PRICE))
+        Config.MIN_PRECISION = max(0, _i(self.cfg.get("min_precision"), Config.MIN_PRECISION))
+        Config.MIN_VOLATILITY = max(0.0, _f(self.cfg.get("min_volatility"), Config.MIN_VOLATILITY))
         self.trace = bool(self.cfg.get("log_trace") or self.cfg.get("debug"))
         self.log_rx = bool(self.cfg.get("log_rx", True))
         self.log_decisions = bool(self.cfg.get("log_decisions", True))
@@ -745,7 +773,7 @@ class Strategy:
 
     def _emit_signal(self, symbol: str, direction: str, entry_price: float, tp: float, sl: float, confidence: float):
         side = "buy" if direction == "long" else "sell"
-        amount = _f(self.cfg.get("trade_amount"), 0.01)
+        amount = _f(self.cfg.get("trade_amount", self.cfg.get("base_trade_usdt")), 0.01)
         msg = {
             "strategy_id": self.strategy_id,
             "owner_id": self.owner_id,
@@ -762,7 +790,7 @@ class Strategy:
         self.pub.publish(self._signal_ch(), json.dumps(msg))
         self._log(f"触发开仓信号 sym={symbol} 方向={direction} side={side} 数量={amount} 入场价={entry_price} 止盈={tp} 止损={sl} 置信度={confidence:.4f} 时间={_now()}")
 
-    def _append_bar(self, symbol: str, o: float, h: float, l: float, c: float):
+    def _append_bar(self, symbol: str, h: float, l: float, c: float):
         if symbol not in self.closes:
             return
         self.closes[symbol].append(float(c))
@@ -797,7 +825,6 @@ class Strategy:
         if not symbol or symbol not in self.closes:
             return
 
-        o = _f(msg.get("open"), 0.0)
         h = _f(msg.get("high"), 0.0)
         l = _f(msg.get("low"), 0.0)
         c = _f(msg.get("close"), 0.0)
@@ -808,7 +835,7 @@ class Strategy:
         if l <= 0:
             l = c
 
-        self._append_bar(symbol, o, h, l, c)
+        self._append_bar(symbol, h, l, c)
         self.recv_count[symbol] = int(self.recv_count.get(symbol) or 0) + 1
         n_recv = self.recv_count[symbol]
         if self.log_rx and (self.trace or n_recv % self.log_every == 0):
@@ -819,9 +846,9 @@ class Strategy:
         closes = self.closes[symbol]
         highs = self.highs[symbol]
         lows = self.lows[symbol]
-        if len(closes) < 35:
+        if len(closes) < Config.WARMUP_BARS:
             if self.log_decisions and (self.trace or n_recv % self.log_every == 0):
-                self._log(f"跳过-预热不足 sym={symbol} 当前缓存={len(closes)}/35 时间={_now()}")
+                self._log(f"跳过-预热不足 sym={symbol} 当前缓存={len(closes)}/{Config.WARMUP_BARS} 时间={_now()}")
             return
 
         extra = msg.get("extra") if isinstance(msg.get("extra"), dict) else {}
@@ -863,6 +890,15 @@ class Strategy:
             return
 
         now = time.time()
+        last_ts = float(self.last_signal_ts.get(symbol) or 0.0)
+        last_dir = _s(self.last_signal_dir.get(symbol)).strip().lower()
+        if Config.COOLDOWN_SEC > 0 and last_ts > 0 and now - last_ts < float(Config.COOLDOWN_SEC):
+            remaining = max(0.0, float(Config.COOLDOWN_SEC) - (now - last_ts))
+            if self.log_decisions:
+                self._log(
+                    f"跳过-冷却中 sym={symbol} 上次方向={last_dir or '-'} 本次方向={_s(r.direction).strip().lower()} remaining={remaining:.1f}s 时间={_now()}"
+                )
+            return
         self.last_signal_ts[symbol] = now
         self.last_signal_dir[symbol] = _s(r.direction).strip().lower()
         self._emit_signal(symbol, _s(r.direction).strip().lower(), r.entry_price, r.tp_price, r.sl_price, r.confidence)
