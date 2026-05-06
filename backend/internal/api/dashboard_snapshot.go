@@ -66,6 +66,6 @@ func runDashboardSnapshotLoop(ctx context.Context) {
 func buildDashboardSnapshot(uid uint, now time.Time) (DashboardResponse, error) {
 	return buildDashboardResponse(uid, now, dashboardBuildOptions{
 		IncludeCalendar: true,
-		CalendarDays:    60,
+		CalendarDays:    400,
 	})
 }

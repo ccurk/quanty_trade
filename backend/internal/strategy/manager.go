@@ -824,11 +824,18 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 		return
 	}
 
+	side = strings.ToLower(strings.TrimSpace(side))
 	now := time.Now()
 	var pos models.StrategyPosition
 	err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", ownerID, strategyID, symbol, "open").First(&pos).Error
 	if err != nil {
-		if side != "buy" {
+		openDirection := ""
+		if side == "buy" {
+			openDirection = "long"
+		} else if side == "sell" && (takeProfit > 0 || stopLoss > 0) {
+			openDirection = "short"
+		}
+		if openDirection == "" {
 			return
 		}
 		pos = models.StrategyPosition{
@@ -837,6 +844,7 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 			OwnerID:          ownerID,
 			Exchange:         exchangeName,
 			Symbol:           symbol,
+			Direction:        openDirection,
 			Amount:           executedQty,
 			AvgPrice:         avgPrice,
 			TakeProfit:       takeProfit,
@@ -856,13 +864,33 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 		return
 	}
 
-	if side == "buy" {
+	direction := strings.ToLower(strings.TrimSpace(pos.Direction))
+	if direction == "" {
+		if pos.TakeProfit > 0 && pos.StopLoss > 0 {
+			if pos.TakeProfit < pos.AvgPrice && pos.StopLoss > pos.AvgPrice {
+				direction = "short"
+			} else if pos.TakeProfit > pos.AvgPrice && pos.StopLoss < pos.AvgPrice {
+				direction = "long"
+			}
+		}
+		if direction == "" {
+			direction = "long"
+		}
+	}
+
+	isIncrease := (direction == "long" && side == "buy") || (direction == "short" && side == "sell")
+	if isIncrease {
 		newAmt := pos.Amount + executedQty
 		newAvg := pos.AvgPrice
 		if newAmt > 0 {
 			newAvg = ((pos.AvgPrice * pos.Amount) + (avgPrice * executedQty)) / newAmt
 		}
-		upd := map[string]interface{}{"amount": newAmt, "avg_price": newAvg, "updated_at": now}
+		upd := map[string]interface{}{
+			"amount":     newAmt,
+			"avg_price":  newAvg,
+			"direction":  direction,
+			"updated_at": now,
+		}
 		if takeProfit > 0 {
 			upd["take_profit"] = takeProfit
 		}
@@ -871,6 +899,7 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 		}
 		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).Updates(upd)
 		if hub != nil {
+			pos.Direction = direction
 			pos.Amount = newAmt
 			pos.AvgPrice = newAvg
 			if takeProfit > 0 {
@@ -884,50 +913,66 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 		return
 	}
 
-	if side == "sell" {
-		newAmt := pos.Amount - executedQty
-		realized := executedQty * (avgPrice - pos.AvgPrice)
-		newRealizedPnL := pos.RealizedPnL + realized
-		newRealizedNotional := pos.RealizedNotional + (executedQty * pos.AvgPrice)
-		newClosedQty := pos.ClosedQty + executedQty
-		newAvgClose := pos.AvgClosePrice
-		if newClosedQty > 0 {
-			newAvgClose = ((pos.AvgClosePrice * pos.ClosedQty) + (avgPrice * executedQty)) / newClosedQty
-		}
-		if newAmt <= 0 {
-			database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
-				Updates(map[string]interface{}{
-					"amount":            0,
-					"closed_qty":        newClosedQty,
-					"avg_close_price":   newAvgClose,
-					"realized_pn_l":     newRealizedPnL,
-					"realized_notional": newRealizedNotional,
-					"status":            "closed",
-					"close_time":        eventTime,
-					"updated_at":        now,
-				})
-			if hub != nil {
-				pos.Amount = 0
-				pos.ClosedQty = newClosedQty
-				pos.AvgClosePrice = newAvgClose
-				pos.RealizedPnL = newRealizedPnL
-				pos.RealizedNotional = newRealizedNotional
-				pos.Status = "closed"
-				pos.CloseTime = eventTime
-				hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
-			}
-			return
-		}
+	isReduce := (direction == "long" && side == "sell") || (direction == "short" && side == "buy")
+	if !isReduce {
+		return
+	}
+	newAmt := pos.Amount - executedQty
+	realized := executedQty * (avgPrice - pos.AvgPrice)
+	if direction == "short" {
+		realized = executedQty * (pos.AvgPrice - avgPrice)
+	}
+	newRealizedPnL := pos.RealizedPnL + realized
+	newRealizedNotional := pos.RealizedNotional + (executedQty * pos.AvgPrice)
+	newClosedQty := pos.ClosedQty + executedQty
+	newAvgClose := pos.AvgClosePrice
+	if newClosedQty > 0 {
+		newAvgClose = ((pos.AvgClosePrice * pos.ClosedQty) + (avgPrice * executedQty)) / newClosedQty
+	}
+	if newAmt <= 0 {
 		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
-			Updates(map[string]interface{}{"amount": newAmt, "closed_qty": newClosedQty, "avg_close_price": newAvgClose, "realized_pn_l": newRealizedPnL, "realized_notional": newRealizedNotional, "updated_at": now})
+			Updates(map[string]interface{}{
+				"amount":            0,
+				"direction":         direction,
+				"closed_qty":        newClosedQty,
+				"avg_close_price":   newAvgClose,
+				"realized_pn_l":     newRealizedPnL,
+				"realized_notional": newRealizedNotional,
+				"status":            "closed",
+				"close_time":        eventTime,
+				"updated_at":        now,
+			})
 		if hub != nil {
-			pos.Amount = newAmt
+			pos.Direction = direction
+			pos.Amount = 0
 			pos.ClosedQty = newClosedQty
 			pos.AvgClosePrice = newAvgClose
 			pos.RealizedPnL = newRealizedPnL
 			pos.RealizedNotional = newRealizedNotional
+			pos.Status = "closed"
+			pos.CloseTime = eventTime
 			hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
 		}
+		return
+	}
+	database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
+		Updates(map[string]interface{}{
+			"amount":            newAmt,
+			"direction":         direction,
+			"closed_qty":        newClosedQty,
+			"avg_close_price":   newAvgClose,
+			"realized_pn_l":     newRealizedPnL,
+			"realized_notional": newRealizedNotional,
+			"updated_at":        now,
+		})
+	if hub != nil {
+		pos.Direction = direction
+		pos.Amount = newAmt
+		pos.ClosedQty = newClosedQty
+		pos.AvgClosePrice = newAvgClose
+		pos.RealizedPnL = newRealizedPnL
+		pos.RealizedNotional = newRealizedNotional
+		hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
 	}
 }
 

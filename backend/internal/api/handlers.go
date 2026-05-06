@@ -265,8 +265,11 @@ type PnLSummaryResponse struct {
 	UpdatedAt     time.Time         `json:"updated_at"`
 	UnrealizedPnL float64           `json:"unrealized_pnl"`
 	Day           PnLPeriodSummary  `json:"day"`
+	SevenDay      PnLPeriodSummary  `json:"seven_day"`
 	Week          PnLPeriodSummary  `json:"week"`
+	ThirtyDay     PnLPeriodSummary  `json:"thirty_day"`
 	Month         PnLPeriodSummary  `json:"month"`
+	Year          PnLPeriodSummary  `json:"year"`
 	Custom        *PnLPeriodSummary `json:"custom,omitempty"`
 	CustomLabel   string            `json:"custom_label,omitempty"`
 	Calendar      []DailyPnLEntry   `json:"calendar,omitempty"`
@@ -326,7 +329,7 @@ func GetDashboard(c *gin.Context) {
 		StartRaw:        startRaw,
 		EndRaw:          endRaw,
 		IncludeCalendar: true,
-		CalendarDays:    60,
+		CalendarDays:    400,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

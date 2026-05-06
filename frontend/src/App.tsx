@@ -92,8 +92,11 @@ interface PnLSummaryResponse {
   updated_at: string;
   unrealized_pnl: number;
   day: PnLPeriodSummary;
+  seven_day: PnLPeriodSummary;
   week: PnLPeriodSummary;
+  thirty_day: PnLPeriodSummary;
   month: PnLPeriodSummary;
+  year: PnLPeriodSummary;
   custom?: PnLPeriodSummary;
   custom_label?: string;
   calendar?: DailyPnLEntry[];
@@ -175,6 +178,21 @@ const getCfgString = (cfg: Record<string, unknown>, key: string, fallback: strin
 const getCfgNumber = (cfg: Record<string, unknown>, key: string, fallback: number) => {
   const v = cfg[key];
   return typeof v === 'number' ? v : fallback;
+};
+
+const formatMoney = (value?: number, digits = 2) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '--';
+  return `$${value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+};
+
+const formatPct = (value?: number, digits = 2) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '--';
+  return `${value.toFixed(digits)}%`;
+};
+
+const toneClass = (value?: number) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '';
+  return value >= 0 ? 'text-green-500' : 'text-red-500';
 };
 
 interface Toast {
@@ -317,7 +335,7 @@ const App: React.FC = () => {
   const [isLoadingMarketSymbols, setIsLoadingMarketSymbols] = useState(false);
   const [strategySymbolSearch, setStrategySymbolSearch] = useState('');
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
-  const [dashboardRange, setDashboardRange] = useState<'default' | '1m' | '5m' | '1w' | '1mo' | 'custom'>('default');
+  const [dashboardRange, setDashboardRange] = useState<'default' | '1m' | '5m' | '7d' | '1w' | '30d' | '1mo' | '1y' | 'custom'>('default');
   const [dashboardStart, setDashboardStart] = useState('');
   const [dashboardEnd, setDashboardEnd] = useState('');
   const [dashboardCalendarMonth, setDashboardCalendarMonth] = useState(new Date().toISOString().slice(0, 7));
@@ -1547,18 +1565,18 @@ const App: React.FC = () => {
                       <td className="px-4 md:px-6 py-4 text-sm font-bold">
                         {p.direction === 'short' ? <span className="text-red-400">开空</span> : (p.direction === 'long' ? <span className="text-green-400">开多</span> : '--')}
                       </td>
-                      <td className="px-4 md:px-6 py-4 font-mono">{p.amount}</td>
-                      <td className="px-4 md:px-6 py-4 font-mono">${p.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                      <td className="px-4 md:px-6 py-4 font-mono">{typeof p.amount === 'number' ? p.amount.toLocaleString(undefined, { maximumFractionDigits: 8 }) : '--'}</td>
+                      <td className="px-4 md:px-6 py-4 font-mono">{formatMoney(p.price, 4)}</td>
                       <td className="px-4 md:px-6 py-4 font-mono">
-                        {typeof p.take_profit === 'number' && p.take_profit > 0 ? `$${p.take_profit.toLocaleString(undefined, { minimumFractionDigits: 6 })}` : '--'}
+                        {typeof p.take_profit === 'number' && p.take_profit > 0 ? formatMoney(p.take_profit, 6) : '--'}
                       </td>
                       <td className="px-4 md:px-6 py-4 font-mono">
-                        {typeof p.stop_loss === 'number' && p.stop_loss > 0 ? `$${p.stop_loss.toLocaleString(undefined, { minimumFractionDigits: 6 })}` : '--'}
+                        {typeof p.stop_loss === 'number' && p.stop_loss > 0 ? formatMoney(p.stop_loss, 6) : '--'}
                       </td>
                       <td className="px-4 md:px-6 py-4 font-mono">
                         {positionStatus === 'active'
-                          ? (typeof p.current_price === 'number' && p.current_price > 0 ? `$${p.current_price.toLocaleString(undefined, { minimumFractionDigits: 4 })}` : '--')
-                          : (typeof p.avg_close_price === 'number' && p.avg_close_price > 0 ? `$${p.avg_close_price.toLocaleString(undefined, { minimumFractionDigits: 4 })}` : '--')
+                          ? (typeof p.current_price === 'number' && p.current_price > 0 ? formatMoney(p.current_price, 4) : '--')
+                          : (typeof p.avg_close_price === 'number' && p.avg_close_price > 0 ? formatMoney(p.avg_close_price, 4) : '--')
                         }
                       </td>
                       <td className={`px-4 md:px-6 py-4 font-mono ${
@@ -1567,8 +1585,8 @@ const App: React.FC = () => {
                           : (typeof p.realized_pnl === 'number' ? (p.realized_pnl >= 0 ? 'text-green-500' : 'text-red-500') : '')
                       }`}>
                         {positionStatus === 'active'
-                          ? (typeof p.unrealized_pnl === 'number' ? `$${p.unrealized_pnl.toFixed(2)}` : '--')
-                          : (typeof p.realized_pnl === 'number' ? `$${p.realized_pnl.toFixed(2)}` : '--')
+                          ? formatMoney(p.unrealized_pnl, 2)
+                          : formatMoney(p.realized_pnl, 2)
                         }
                       </td>
                       <td className={`px-4 md:px-6 py-4 font-mono ${
@@ -1577,12 +1595,12 @@ const App: React.FC = () => {
                           : (typeof p.realized_return_rate === 'number' ? (p.realized_return_rate >= 0 ? 'text-green-500' : 'text-red-500') : '')
                       }`}>
                         {positionStatus === 'active'
-                          ? (typeof p.return_rate === 'number' ? `${p.return_rate.toFixed(2)}%` : '--')
-                          : (typeof p.realized_return_rate === 'number' ? `${p.realized_return_rate.toFixed(2)}%` : '--')
+                          ? formatPct(p.return_rate, 2)
+                          : formatPct(p.realized_return_rate, 2)
                         }
                       </td>
                       <td className="px-4 md:px-6 py-4 text-xs text-gray-500 font-mono">
-                        {new Date(positionStatus === 'active' ? p.open_time : (p.close_time || '')).toLocaleString()}
+                        {(positionStatus === 'active' ? p.open_time : p.close_time) ? new Date(positionStatus === 'active' ? p.open_time : (p.close_time || '')).toLocaleString() : '--'}
                       </td>
                       <td className="px-4 md:px-6 py-4">
                         <span className={`px-2 py-1 rounded text-[10px] font-black uppercase ${p.status === 'active' ? 'bg-green-900/30 text-green-500' : 'bg-gray-800 text-gray-400'}`}>
@@ -1674,8 +1692,11 @@ const App: React.FC = () => {
                   <option value="default">默认</option>
                   <option value="1m">近 1 分钟</option>
                   <option value="5m">近 5 分钟</option>
+                  <option value="7d">近 7 天</option>
                   <option value="1w">近 1 周</option>
+                  <option value="30d">近 30 天</option>
                   <option value="1mo">近 1 个月</option>
+                  <option value="1y">近 1 年</option>
                   <option value="custom">自定义</option>
                 </select>
                 {dashboardRange === 'custom' && (
@@ -1713,13 +1734,14 @@ const App: React.FC = () => {
               const overviewCards = [
                 { title: '交易所', value: dashboard ? dashboard.account.exchange : '--', sub: dashboard ? dashboard.account.market.toUpperCase() : '--' },
                 { title: '持仓数量', value: dashboard ? String(dashboard.positions.open_count) : '--', sub: dashboard ? `${dashboard.strategies.running} 个策略运行中` : '--' },
-                { title: '持仓名义额', value: dashboard ? `$${dashboard.positions.open_notional.toFixed(2)}` : '--', sub: '当前仓位规模' },
-                { title: '未实现盈亏', value: dashboard ? `$${dashboard.positions.unrealized_pnl.toFixed(2)}` : '--', sub: dashboard ? `${dashboard.positions.open_symbols} 个交易对持仓中` : '--', tone: dashboard && dashboard.positions.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500' },
-                { title: '今日总盈亏', value: dashboard ? `$${dashboard.pnl.day.total_pnl.toFixed(2)}` : '--', sub: dashboard ? `已实现 ${dashboard.pnl.day.realized_return_pct.toFixed(2)}%` : '--', tone: dashboard && dashboard.pnl.day.total_pnl >= 0 ? 'text-green-500' : 'text-red-500' },
-                { title: '本月总盈亏', value: dashboard ? `$${dashboard.pnl.month.total_pnl.toFixed(2)}` : '--', sub: dashboard ? `已实现 ${dashboard.pnl.month.realized_return_pct.toFixed(2)}%` : '--', tone: dashboard && dashboard.pnl.month.total_pnl >= 0 ? 'text-green-500' : 'text-red-500' },
+                { title: '持仓名义额', value: dashboard ? formatMoney(dashboard.positions.open_notional, 2) : '--', sub: '当前仓位规模' },
+                { title: '未实现盈亏', value: dashboard ? formatMoney(dashboard.positions.unrealized_pnl, 2) : '--', sub: dashboard ? `${dashboard.positions.open_symbols} 个交易对持仓中` : '--', tone: dashboard ? toneClass(dashboard.positions.unrealized_pnl) : '' },
+                { title: '近 7 天', value: dashboard ? formatMoney(dashboard.pnl.seven_day.total_pnl, 2) : '--', sub: dashboard ? `收益率 ${formatPct(dashboard.pnl.seven_day.realized_return_pct, 2)}` : '--', tone: dashboard ? toneClass(dashboard.pnl.seven_day.total_pnl) : '' },
+                { title: '近 30 天', value: dashboard ? formatMoney(dashboard.pnl.thirty_day.total_pnl, 2) : '--', sub: dashboard ? `收益率 ${formatPct(dashboard.pnl.thirty_day.realized_return_pct, 2)}` : '--', tone: dashboard ? toneClass(dashboard.pnl.thirty_day.total_pnl) : '' },
+                { title: '今年累计', value: dashboard ? formatMoney(dashboard.pnl.year.total_pnl, 2) : '--', sub: dashboard ? `收益率 ${formatPct(dashboard.pnl.year.realized_return_pct, 2)}` : '--', tone: dashboard ? toneClass(dashboard.pnl.year.total_pnl) : '' },
               ];
               return (
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-4">
                   {overviewCards.map(card => (
                     <div key={card.title} className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
                       <div className="text-xs text-gray-500 uppercase font-bold mb-2">{card.title}</div>
@@ -1731,34 +1753,37 @@ const App: React.FC = () => {
               );
             })()}
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               {(() => {
                 const cards: Array<{ key: string; title: string; p: PnLPeriodSummary | null }> = [];
                 if (dashboard?.pnl.custom) {
                   cards.push({ key: 'custom', title: dashboard.pnl.custom_label || '自定义范围', p: dashboard.pnl.custom });
                 }
                 cards.push({ key: 'day', title: '今日收益', p: dashboard ? dashboard.pnl.day : null });
+                cards.push({ key: 'seven_day', title: '近 7 天收益', p: dashboard ? dashboard.pnl.seven_day : null });
                 cards.push({ key: 'week', title: '本周收益', p: dashboard ? dashboard.pnl.week : null });
+                cards.push({ key: 'thirty_day', title: '近 30 天收益', p: dashboard ? dashboard.pnl.thirty_day : null });
                 cards.push({ key: 'month', title: '本月收益', p: dashboard ? dashboard.pnl.month : null });
+                cards.push({ key: 'year', title: '今年收益', p: dashboard ? dashboard.pnl.year : null });
                 return cards.map(({ key, title, p }) => {
                   const total = p ? p.total_pnl : 0;
                   return (
                     <div key={key} className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
                       <div className="flex justify-between items-center mb-3">
                         <div className="font-bold">{title}</div>
-                        <div className={`font-mono font-bold ${total >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                          {p ? `$${total.toFixed(2)}` : '--'}
+                        <div className={`font-mono font-bold ${toneClass(total)}`}>
+                          {p ? formatMoney(total, 2) : '--'}
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-3 text-sm">
                         <div className="text-gray-500">总收入</div>
-                        <div className="font-mono">{p ? `$${p.gross_profit.toFixed(2)}` : '--'}</div>
+                        <div className="font-mono">{p ? formatMoney(p.gross_profit, 2) : '--'}</div>
                         <div className="text-gray-500">已实现</div>
-                        <div className={`font-mono ${p && p.realized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `$${p.realized_pnl.toFixed(2)}` : '--'}</div>
+                        <div className={`font-mono ${p ? toneClass(p.realized_pnl) : ''}`}>{p ? formatMoney(p.realized_pnl, 2) : '--'}</div>
                         <div className="text-gray-500">未实现</div>
-                        <div className={`font-mono ${p && p.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `$${p.unrealized_pnl.toFixed(2)}` : '--'}</div>
+                        <div className={`font-mono ${p ? toneClass(p.unrealized_pnl) : ''}`}>{p ? formatMoney(p.unrealized_pnl, 2) : '--'}</div>
                         <div className="text-gray-500">回报率</div>
-                        <div className={`font-mono ${p && p.realized_return_pct >= 0 ? 'text-green-500' : 'text-red-500'}`}>{p ? `${p.realized_return_pct.toFixed(2)}%` : '--'}</div>
+                        <div className={`font-mono ${p ? toneClass(p.realized_return_pct) : ''}`}>{p ? formatPct(p.realized_return_pct, 2) : '--'}</div>
                       </div>
                     </div>
                   );
@@ -1769,7 +1794,7 @@ const App: React.FC = () => {
             <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
               <div className="flex items-center justify-between mb-3">
                 <div className="font-bold">盈亏日历</div>
-                <div className="text-xs text-gray-500">每天 00:05 统计上一天</div>
+                <div className="text-xs text-gray-500">历史按日展示，今天实时更新</div>
               </div>
               {(() => {
                 const calAll = dashboard?.pnl.calendar || [];
@@ -1777,9 +1802,12 @@ const App: React.FC = () => {
                 const cal = calAll.filter(d => (d.day || '').startsWith(month));
                 const weekdayHeaders = ['一', '二', '三', '四', '五', '六', '日'];
                 const monthPnl = cal.reduce((sum, d) => sum + (d.realized_pnl || 0), 0);
+                const monthNotional = cal.reduce((sum, d) => sum + (d.realized_notional || 0), 0);
                 const monthTrades = cal.reduce((sum, d) => sum + (d.trades || 0), 0);
                 const positiveDays = cal.filter(d => (d.realized_pnl || 0) > 0).length;
                 const negativeDays = cal.filter(d => (d.realized_pnl || 0) < 0).length;
+                const monthReturn = monthNotional > 0 ? (monthPnl / monthNotional) * 100 : 0;
+                const rows = [...cal].sort((a, b) => b.day.localeCompare(a.day));
                 const moveMonth = (step: number) => {
                   const dt = new Date(month + '-01T00:00:00');
                   dt.setMonth(dt.getMonth() + step);
@@ -1823,47 +1851,77 @@ const App: React.FC = () => {
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
                       <div className={`rounded-xl border p-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-gray-50'}`}>
                         <div className="text-xs text-gray-500 mb-1">当月已实现</div>
-                        <div className={`font-mono font-bold ${monthPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>${monthPnl.toFixed(2)}</div>
+                        <div className={`font-mono font-bold ${toneClass(monthPnl)}`}>{formatMoney(monthPnl, 2)}</div>
+                      </div>
+                      <div className={`rounded-xl border p-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-gray-50'}`}>
+                        <div className="text-xs text-gray-500 mb-1">当月收益率</div>
+                        <div className={`font-mono font-bold ${toneClass(monthReturn)}`}>{formatPct(monthReturn, 2)}</div>
                       </div>
                       <div className={`rounded-xl border p-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-gray-50'}`}>
                         <div className="text-xs text-gray-500 mb-1">交易次数</div>
                         <div className="font-mono font-bold">{monthTrades}</div>
                       </div>
                       <div className={`rounded-xl border p-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-gray-50'}`}>
-                        <div className="text-xs text-gray-500 mb-1">盈利天数</div>
-                        <div className="font-mono font-bold text-green-500">{positiveDays}</div>
-                      </div>
-                      <div className={`rounded-xl border p-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-gray-50'}`}>
-                        <div className="text-xs text-gray-500 mb-1">亏损天数</div>
-                        <div className="font-mono font-bold text-red-500">{negativeDays}</div>
+                        <div className="text-xs text-gray-500 mb-1">盈利 / 亏损天数</div>
+                        <div className="font-mono font-bold"><span className="text-green-500">{positiveDays}</span> / <span className="text-red-500">{negativeDays}</span></div>
                       </div>
                     </div>
-                    <div className="grid grid-cols-7 gap-2 mb-2">
-                      {weekdayHeaders.map(day => (
-                        <div key={day} className={`h-8 flex items-center justify-center text-xs font-bold ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{day}</div>
-                      ))}
-                    </div>
-                    <div className="grid grid-cols-7 gap-2">
-                      {cells.map((d, idx) => {
-                        if (!d) return <div key={`empty-${idx}`} className="h-10" />;
-                        const dayNum = d.day.slice(-2);
-                        const pnl = d.realized_pnl || 0;
-                        const title = `${d.day}  已实现: $${pnl.toFixed(2)}  回报率: ${(d.realized_return_pct || 0).toFixed(2)}%  交易数: ${d.trades || 0}`;
-                        return (
-                          <div
-                            key={d.day}
-                            title={title}
-                            className={`h-10 rounded-lg border flex items-center justify-center text-xs font-mono select-none ${isDarkMode ? 'border-gray-800' : 'border-gray-200'} ${getHeat(pnl)}`}
-                          >
-                            <span className={isDarkMode ? 'text-gray-200' : 'text-gray-800'}>{dayNum}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div className="flex items-center gap-4 mt-4 text-xs text-gray-500">
-                      <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-green-500/55" />盈利</div>
-                      <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-red-500/55" />亏损</div>
-                      <div className="flex items-center gap-2"><span className={`w-3 h-3 rounded ${isDarkMode ? 'bg-gray-800/40' : 'bg-gray-100'}`} />无交易</div>
+                    <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)] gap-6">
+                      <div>
+                        <div className="grid grid-cols-7 gap-2 mb-2">
+                          {weekdayHeaders.map(day => (
+                            <div key={day} className={`h-8 flex items-center justify-center text-xs font-bold ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{day}</div>
+                          ))}
+                        </div>
+                        <div className="grid grid-cols-7 gap-2">
+                          {cells.map((d, idx) => {
+                            if (!d) return <div key={`empty-${idx}`} className="h-16" />;
+                            const dayNum = d.day.slice(-2);
+                            const pnl = d.realized_pnl || 0;
+                            const title = `${d.day}  已实现: ${formatMoney(pnl, 2)}  回报率: ${formatPct(d.realized_return_pct || 0, 2)}  交易数: ${d.trades || 0}`;
+                            return (
+                              <div
+                                key={d.day}
+                                title={title}
+                                className={`h-16 rounded-lg border p-2 flex flex-col justify-between text-xs font-mono select-none ${isDarkMode ? 'border-gray-800' : 'border-gray-200'} ${getHeat(pnl)}`}
+                              >
+                                <span className={`text-[11px] font-bold ${isDarkMode ? 'text-gray-100' : 'text-gray-800'}`}>{dayNum}</span>
+                                <span className={`text-[10px] truncate ${toneClass(pnl)}`}>{formatMoney(pnl, 0)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="flex items-center gap-4 mt-4 text-xs text-gray-500">
+                          <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-green-500/55" />盈利</div>
+                          <div className="flex items-center gap-2"><span className="w-3 h-3 rounded bg-red-500/55" />亏损</div>
+                          <div className="flex items-center gap-2"><span className={`w-3 h-3 rounded ${isDarkMode ? 'bg-gray-800/40' : 'bg-gray-100'}`} />无交易</div>
+                        </div>
+                      </div>
+                      <div className={`rounded-2xl border overflow-hidden ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+                        <div className={`px-4 py-3 border-b text-sm font-bold ${isDarkMode ? 'border-gray-800' : 'border-gray-200'}`}>每日明细</div>
+                        <div className="max-h-[26rem] overflow-auto">
+                          <table className="w-full text-sm">
+                            <thead className={`${isDarkMode ? 'bg-gray-900/60 text-gray-400' : 'bg-white text-gray-500'}`}>
+                              <tr>
+                                <th className="px-4 py-3 text-left">日期</th>
+                                <th className="px-4 py-3 text-right">收益</th>
+                                <th className="px-4 py-3 text-right">收益率</th>
+                                <th className="px-4 py-3 text-right">交易数</th>
+                              </tr>
+                            </thead>
+                            <tbody className={`${isDarkMode ? 'divide-y divide-gray-800' : 'divide-y divide-gray-200'}`}>
+                              {rows.map((d) => (
+                                <tr key={`row-${d.day}`} className={isDarkMode ? 'hover:bg-gray-900/40' : 'hover:bg-white'}>
+                                  <td className="px-4 py-3 font-mono">{d.day}</td>
+                                  <td className={`px-4 py-3 text-right font-mono ${toneClass(d.realized_pnl)}`}>{formatMoney(d.realized_pnl, 2)}</td>
+                                  <td className={`px-4 py-3 text-right font-mono ${toneClass(d.realized_return_pct)}`}>{formatPct(d.realized_return_pct, 2)}</td>
+                                  <td className="px-4 py-3 text-right font-mono">{d.trades}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 );
@@ -1909,9 +1967,9 @@ const App: React.FC = () => {
                   <div className="text-gray-500">交易对数</div>
                   <div className="font-mono">{dashboard ? dashboard.positions.open_symbols : '--'}</div>
                   <div className="text-gray-500">名义额</div>
-                  <div className="font-mono">{dashboard ? `$${dashboard.positions.open_notional.toFixed(2)}` : '--'}</div>
+                  <div className="font-mono">{dashboard ? formatMoney(dashboard.positions.open_notional, 2) : '--'}</div>
                   <div className="text-gray-500">未实现</div>
-                  <div className={`font-mono ${dashboard && dashboard.positions.unrealized_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>{dashboard ? `$${dashboard.positions.unrealized_pnl.toFixed(2)}` : '--'}</div>
+                  <div className={`font-mono ${dashboard ? toneClass(dashboard.positions.unrealized_pnl) : ''}`}>{dashboard ? formatMoney(dashboard.positions.unrealized_pnl, 2) : '--'}</div>
                 </div>
               </div>
             </div>

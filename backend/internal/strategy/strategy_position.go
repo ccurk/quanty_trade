@@ -382,12 +382,17 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 					errDB := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").First(&pos).Error
 					if errDB != nil || pos.Amount <= 0 {
 						now := time.Now()
+						direction := "long"
+						if positionAmt < 0 {
+							direction = "short"
+						}
 						newPos := models.StrategyPosition{
 							StrategyID:   inst.ID,
 							StrategyName: inst.Name,
 							OwnerID:      inst.OwnerID,
 							Exchange:     bx.GetName(),
 							Symbol:       symbol,
+							Direction:    direction,
 							Amount:       math.Abs(positionAmt),
 							AvgPrice:     entryPx,
 							TakeProfit:   takeProfit,
@@ -453,12 +458,17 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 						m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
 						return
 					}
-					level := "error"
-					if lastErr != nil {
-						msg := lastErr.Error()
-						if strings.Contains(msg, "\"code\":-2021") || strings.Contains(msg, "immediately trigger") {
-							level = "info"
+					if len(created) > 0 {
+						if cleanupErr := m.cleanupCreatedTPSLOrders(inst, symbol, created); cleanupErr != nil {
+							emitStrategyLog(inst, "error", fmt.Sprintf("设置止盈止损部分成功后清理残留订单失败 symbol=%s created=%d err=%v", symbol, len(created), cleanupErr))
+						} else {
+							emitStrategyLog(inst, "info", fmt.Sprintf("设置止盈止损部分成功后已清理残留订单 symbol=%s created=%d", symbol, len(created)))
 						}
+					}
+					level := "error"
+					msg := lastErr.Error()
+					if strings.Contains(msg, "\"code\":-2021") || strings.Contains(msg, "immediately trigger") {
+						level = "info"
 					}
 					if m.atomicTPSLRequired(inst) {
 						emitStrategyLog(inst, level, fmt.Sprintf("设置止盈止损失败，触发事务回滚 symbol=%s tp=%v sl=%v err=%v", symbol, takeProfit, stopLoss, lastErr))
@@ -543,6 +553,33 @@ func (m *Manager) rollbackAtomicEntry(inst *StrategyInstance, symbol string, cli
 	}
 
 	return fmt.Errorf("atomic rollback unsupported for exchange=%s", inst.exchange.GetName())
+}
+
+func (m *Manager) cleanupCreatedTPSLOrders(inst *StrategyInstance, symbol string, created []exchange.USDMAlgoOrder) error {
+	if inst == nil || len(created) == 0 {
+		return nil
+	}
+	bx, ok := inst.exchange.(*exchange.BinanceExchange)
+	if !ok || bx.Market() != "usdm" {
+		return nil
+	}
+	sym := strings.TrimSpace(symbol)
+	if sym == "" {
+		return nil
+	}
+	var firstErr error
+	for _, ref := range created {
+		var err error
+		if ref.IsAlgo {
+			err = bx.CancelUSDMAlgoOrderByRef(inst.OwnerID, sym, fmt.Sprint(ref.AlgoID), ref.ClientAlgoID)
+		} else {
+			err = bx.CancelUSDMOrderByRef(inst.OwnerID, sym, fmt.Sprint(ref.AlgoID), ref.ClientAlgoID)
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (m *Manager) monitorPositionTPStop(inst *StrategyInstance, symbol string, takeProfit float64, stopLoss float64, signalID string) {

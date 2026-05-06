@@ -264,6 +264,7 @@ func ListPositions(c *gin.Context) {
 							OwnerID:      uid,
 							Exchange:     bx.GetName(),
 							Symbol:       p.Symbol,
+							Direction:    p.Direction,
 							Amount:       p.Amount,
 							AvgPrice:     p.Price,
 							TakeProfit:   tp,
@@ -330,7 +331,11 @@ func ListPositions(c *gin.Context) {
 		_ = query.Count(&total).Error
 		query = query.Offset((page - 1) * pageSize).Limit(pageSize)
 	}
-	if err := query.Order("open_time desc").Find(&rows).Error; err != nil {
+	orderClause := "open_time desc"
+	if status == "closed" {
+		orderClause = "close_time desc, open_time desc"
+	}
+	if err := query.Order(orderClause).Find(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -342,11 +347,18 @@ func ListPositions(c *gin.Context) {
 			realizedRet = (p.RealizedPnL / p.RealizedNotional) * 100
 		}
 		pos := exchange.Position{
-			StrategyID:         p.StrategyID,
-			Symbol:             p.Symbol,
-			Direction:          "long",
-			Amount:             p.Amount,
+			StrategyID: p.StrategyID,
+			Symbol:     p.Symbol,
+			Direction:  p.Direction,
+			Amount: func() float64 {
+				if p.ClosedQty > 0 {
+					return p.ClosedQty
+				}
+				return p.Amount
+			}(),
 			Price:              p.AvgPrice,
+			TakeProfit:         p.TakeProfit,
+			StopLoss:           p.StopLoss,
 			ClosedQty:          p.ClosedQty,
 			AvgClosePrice:      p.AvgClosePrice,
 			RealizedPnL:        p.RealizedPnL,
@@ -366,7 +378,12 @@ func ListPositions(c *gin.Context) {
 		positions = append(positions, pos)
 	}
 
-	sort.Slice(positions, func(i, j int) bool { return positions[i].OpenTime.After(positions[j].OpenTime) })
+	sort.Slice(positions, func(i, j int) bool {
+		if status == "closed" {
+			return positions[i].CloseTime.After(positions[j].CloseTime)
+		}
+		return positions[i].OpenTime.After(positions[j].OpenTime)
+	})
 	if !usePaging {
 		c.JSON(http.StatusOK, positions)
 		return
@@ -448,12 +465,14 @@ func ClosePosition(c *gin.Context) {
 		strategyID := ""
 		strategyName := ""
 		openTime := time.Now()
+		direction := ""
 		prevRealizedPnL := 0.0
 		prevRealizedNotional := 0.0
 		if hasExisting {
 			strategyID = existing.StrategyID
 			strategyName = existing.StrategyName
 			openTime = existing.OpenTime
+			direction = existing.Direction
 			prevRealizedPnL = existing.RealizedPnL
 			prevRealizedNotional = existing.RealizedNotional
 			if entryPrice == 0 {
@@ -465,6 +484,13 @@ func ClosePosition(c *gin.Context) {
 		if strategyID == "" {
 			strategyID = "manual"
 			strategyName = "manual"
+		}
+		if direction == "" {
+			if signedAmt < 0 {
+				direction = "short"
+			} else {
+				direction = "long"
+			}
 		}
 
 		qty := order.Amount
@@ -507,6 +533,7 @@ func ClosePosition(c *gin.Context) {
 			}
 			database.DB.Model(&models.StrategyPosition{}).Where("id = ?", existing.ID).
 				Updates(map[string]interface{}{
+					"direction":         direction,
 					"amount":            0,
 					"avg_price":         entryPrice,
 					"closed_qty":        newClosedQty,
@@ -524,6 +551,7 @@ func ClosePosition(c *gin.Context) {
 				OwnerID:          uid,
 				Exchange:         bx.GetName(),
 				Symbol:           symbol,
+				Direction:        direction,
 				Amount:           0,
 				AvgPrice:         entryPrice,
 				ClosedQty:        qty,

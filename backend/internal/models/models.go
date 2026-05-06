@@ -259,6 +259,8 @@ type StrategyPosition struct {
 	Exchange string `gorm:"type:varchar(32);index" json:"exchange"`
 	// Symbol is the trading symbol for this position (e.g. BTC/USDT).
 	Symbol string `gorm:"type:varchar(64);index" json:"symbol"`
+	// Direction is long/short for futures or long for spot.
+	Direction string `gorm:"type:varchar(16);index" json:"direction"`
 	// Amount is the current position size in base asset.
 	Amount float64 `json:"amount"`
 	// AvgPrice is the volume-weighted average entry price.

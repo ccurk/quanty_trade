@@ -206,6 +206,32 @@ class Config:
     HIGHER_TF_GROUP = 4
     SIGNAL_COOLDOWN_SEC = 600
 
+    RUNTIME_TP_RATIO = 0.0
+    RUNTIME_SL_RATIO = 0.0
+    RUNTIME_MIN_CONFIDENCE = 0.0
+
+
+def apply_runtime_overrides(cfg: dict):
+    tp_ratio = _parse_ratio(cfg.get("take_profit_pct", 0), 0.0)
+    sl_ratio = _parse_ratio(cfg.get("stop_loss_pct", 0), 0.0)
+    min_conf = _parse_ratio(cfg.get("min_confidence", 0), 0.0)
+    min_vol = _f(cfg.get("min_volatility", Config.MIN_VOLATILITY), Config.MIN_VOLATILITY)
+    warmup = max(60, _i(cfg.get("warmup_bars", Config.WARMUP_BARS), Config.WARMUP_BARS))
+    cooldown = max(0, _i(cfg.get("cooldown_sec", Config.SIGNAL_COOLDOWN_SEC), Config.SIGNAL_COOLDOWN_SEC))
+    max_price = _f(cfg.get("max_price", Config.MAX_PRICE), Config.MAX_PRICE)
+    min_precision = max(0, _i(cfg.get("min_precision", Config.MIN_PRECISION), Config.MIN_PRECISION))
+
+    Config.RUNTIME_TP_RATIO = tp_ratio
+    Config.RUNTIME_SL_RATIO = sl_ratio
+    Config.RUNTIME_MIN_CONFIDENCE = min_conf
+    Config.MIN_VOLATILITY = max(0.0, min_vol)
+    Config.WARMUP_BARS = warmup
+    Config.SIGNAL_COOLDOWN_SEC = cooldown
+    if max_price > 0:
+        Config.MAX_PRICE = max_price
+    if min_precision > 0:
+        Config.MIN_PRECISION = min_precision
+
 
 ADAPTIVE_CONFIGS: dict[MarketRegime, AdaptiveConfig] = {
     MarketRegime.TRENDING_UP: AdaptiveConfig(0.10, 0.04, 0.72, 0.04, 0.02, 1.2, "上升趋势"),
@@ -628,6 +654,8 @@ def build_score_card(symbol, direction, confidence, rsi_val, macd_diff, bb_pos, 
 def score_confidence(rsi_val, macd_val, macd_sig, price, bb_upper, bb_lower, funding_rate, ls_ratio, atr_pct, vol_ratio, ema_trend, cvd_trend, dist_sup, dist_res, obv_trend, obv_divergence, tf4h_dir, min_confidence=None):
     if min_confidence is None:
         min_confidence = Config.MIN_CONFIDENCE
+    if Config.RUNTIME_MIN_CONFIDENCE > 0:
+        min_confidence = Config.RUNTIME_MIN_CONFIDENCE
     ls = 0.0
     ss = 0.0
     if rsi_val < 35:
@@ -721,7 +749,7 @@ def _no_signal(snap: MarketSnapshot, reason: str) -> SignalResult:
     return SignalResult(snap.symbol, None, snap.price, 0, 0, 0, 0, 0, "—", 0, snap.funding_rate, snap.ls_ratio, 0, "flat", False, False, "flat", 0, 0, 0, 0, False, "flat", "none", None, False, 0.0, dummy_sz, dummy_ts, dummy_regime, dummy_sc, dummy_cfg, False, reason)
 
 
-def analyze(snapshot: MarketSnapshot, ohlcv_1h: OHLCVData, ohlcv_4h: Optional[OHLCVData] = None, kelly_params: Optional[KellyParams] = None) -> SignalResult:
+def analyze(snapshot: MarketSnapshot, ohlcv_1h: OHLCVData, ohlcv_4h: Optional[OHLCVData], kelly_params: Optional[KellyParams] = None, total_capital: Optional[float] = None) -> SignalResult:
     price = snapshot.price
     if price > Config.MAX_PRICE:
         return _no_signal(snapshot, f"币价${price:.8f}超上限")
@@ -748,8 +776,8 @@ def analyze(snapshot: MarketSnapshot, ohlcv_1h: OHLCVData, ohlcv_4h: Optional[OH
     adaptive_cfg = ADAPTIVE_CONFIGS[regime_result.regime]
     bb_pos = "下轨" if price <= bb_lower else ("上轨" if price >= bb_upper else "中部")
     confidence, direction, vol_boost, trend_align, tf_boost = score_confidence(rsi_val, macd_val, macd_sig, price, bb_upper, bb_lower, snapshot.funding_rate, snapshot.ls_ratio, atr_pct, vol_ratio, ema_trend, cvd_trend, ds, dr, obv_trend, obv_div, tf4h_dir, adaptive_cfg.min_confidence)
-    tp_ratio = adaptive_cfg.tp_ratio
-    sl_ratio = adaptive_cfg.sl_ratio
+    tp_ratio = Config.RUNTIME_TP_RATIO or adaptive_cfg.tp_ratio
+    sl_ratio = Config.RUNTIME_SL_RATIO or adaptive_cfg.sl_ratio
     if direction == "long":
         default_tp = round(price * (1 + tp_ratio), 10)
         default_sl = round(price * (1 - sl_ratio), 10)
@@ -765,13 +793,13 @@ def analyze(snapshot: MarketSnapshot, ohlcv_1h: OHLCVData, ohlcv_4h: Optional[OH
         sl = 0.0
         sl_dyn = False
     kp = kelly_params or KellyParams()
-    sizing = calc_position_sizing(confidence, kp, adaptive_cfg)
+    sizing = calc_position_sizing(confidence, kp, adaptive_cfg, total_capital)
     trail = init_trailing_stop(direction or "long", price, adaptive_cfg.trail_activate, adaptive_cfg.trail_retrace)
     score_card = build_score_card(snapshot.symbol, direction, confidence, rsi_val, macd_val - macd_sig, bb_pos, vol_ratio, vol_boost, cvd_trend, obv_trend, obv_div, ds, dr, snapshot.funding_rate, snapshot.ls_ratio, ema_trend, tf4h_dir == direction, tf_boost, regime_result, adaptive_cfg)
     return SignalResult(snapshot.symbol, direction, price, tp, sl, confidence, rsi_val, macd_val - macd_sig, bb_pos, atr_pct, snapshot.funding_rate, snapshot.ls_ratio, vol_ratio, ema_trend, vol_boost, trend_align, cvd_trend, ns, nr, ds, dr, sl_dyn, obv_trend, obv_div, tf4h_dir, tf4h_dir == direction, tf_boost, sizing, trail, regime_result, score_card, adaptive_cfg, True, "")
 
 
-def analyze_signal(symbol, candles, funding_rate, ls_ratio, kelly_params):
+def analyze_signal(symbol, candles, funding_rate, ls_ratio, kelly_params, total_capital=None):
     if not candles:
         return _no_signal(MarketSnapshot(symbol, 0.0, 0.0, funding_rate, ls_ratio), "缺少K线")
     o1h = candles_to_ohlcv(symbol, candles)
@@ -783,7 +811,7 @@ def analyze_signal(symbol, candles, funding_rate, ls_ratio, kelly_params):
     change_pct_24h = (price / base - 1.0) * 100.0 if base > 0 else 0.0
     snap = MarketSnapshot(symbol, price, change_pct_24h, funding_rate, ls_ratio)
     o4h = aggregate_ohlcv(o1h, Config.HIGHER_TF_GROUP)
-    return analyze(snap, o1h, o4h, kelly_params)
+    return analyze(snap, o1h, o4h, kelly_params, total_capital)
 
 
 def format_signal(r: SignalResult) -> str:
@@ -852,8 +880,11 @@ class MemeSignalEngineV6:
         self.log_trace = bool(self.cfg.get("log_trace", False))
         self.boot_id = str(self.cfg.get("boot_id") or f"{self.strategy_id or 'strategy'}-{uuid.uuid4().hex[:12]}")
         self.healthcheck = self.cfg.get("healthcheck", {}) or {}
-        self.base_trade_usdt = max(0.0, _f(self.cfg.get("base_trade_usdt", Config.BASE_TRADE_USDT), Config.BASE_TRADE_USDT))
-        self.total_capital = max(self.base_trade_usdt, _f(self.cfg.get("total_capital", Config.TOTAL_CAPITAL), Config.TOTAL_CAPITAL))
+        apply_runtime_overrides(self.cfg)
+        base_trade = self.cfg.get("base_trade_usdt", self.cfg.get("trade_amount", Config.BASE_TRADE_USDT))
+        self.base_trade_usdt = max(0.0, _f(base_trade, Config.BASE_TRADE_USDT))
+        capital = self.cfg.get("total_capital", self.cfg.get("max_initial_margin_usdt", Config.TOTAL_CAPITAL))
+        self.total_capital = max(self.base_trade_usdt, _f(capital, Config.TOTAL_CAPITAL))
         self.kelly_params = KellyParams(
             win_rate=max(0.01, min(0.99, _f(self.cfg.get("kelly_win_rate", 0.50), 0.50))),
             avg_win_pct=max(0.001, _parse_ratio(self.cfg.get("kelly_avg_win_pct", 0.06), 0.06)),
@@ -1023,7 +1054,7 @@ class MemeSignalEngineV6:
             last_at = self.last_signal_at.get(symbol, 0.0)
             if self.cooldown_sec > 0 and now - last_at < self.cooldown_sec:
                 continue
-            result = analyze_signal(symbol, candles, self._funding_rate(), self._ls_ratio(), self.kelly_params)
+            result = analyze_signal(symbol, candles, self._funding_rate(), self._ls_ratio(), self.kelly_params, self.total_capital)
             if not result.passed_filter or result.direction is None:
                 if self.log_trace:
                     reason = result.filter_reason or f"无方向 confidence={result.confidence:.4f}"

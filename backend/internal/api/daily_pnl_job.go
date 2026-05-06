@@ -20,7 +20,7 @@ func StartDailyPnLJob(ctx context.Context) {
 }
 
 func runDailyPnLLoop(ctx context.Context) {
-	backfillDailyPnL(30)
+	backfillDailyPnL(400)
 	for {
 		next := nextLocalTime(0, 5, 0)
 		timer := time.NewTimer(time.Until(next))
@@ -150,6 +150,31 @@ func loadDailyPnLCalendar(uid uint, days int) []DailyPnLEntry {
 	}
 	var rows []models.DailyPnL
 	_ = database.DB.Where("owner_id = ?", uid).Order("day desc").Limit(days).Find(&rows).Error
+	loc := time.Now().Location()
+	todayStart := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, loc)
+	todayEntry := buildDailyPnLEntryForRange(uid, todayStart, time.Now())
+	todayKey := todayStart.Format("2006-01-02")
+	replaceToday := false
+	for i := range rows {
+		if rows[i].Day == todayKey {
+			rows[i].RealizedPnL = todayEntry.RealizedPnL
+			rows[i].RealizedNotional = todayEntry.RealizedNotional
+			rows[i].Trades = todayEntry.Trades
+			replaceToday = true
+			break
+		}
+	}
+	if !replaceToday {
+		rows = append(rows, models.DailyPnL{
+			OwnerID:          uid,
+			Day:              todayKey,
+			StartTime:        todayStart,
+			EndTime:          time.Now(),
+			RealizedPnL:      todayEntry.RealizedPnL,
+			RealizedNotional: todayEntry.RealizedNotional,
+			Trades:           todayEntry.Trades,
+		})
+	}
 	out := make([]DailyPnLEntry, 0, len(rows))
 	for i := len(rows) - 1; i >= 0; i-- {
 		r := rows[i]
@@ -166,4 +191,31 @@ func loadDailyPnLCalendar(uid uint, days int) []DailyPnLEntry {
 		})
 	}
 	return out
+}
+
+func buildDailyPnLEntryForRange(uid uint, start time.Time, end time.Time) DailyPnLEntry {
+	var row struct {
+		RealizedPnL      float64
+		RealizedNotional float64
+		Trades           int64
+	}
+	_ = database.DB.Model(&models.StrategyPosition{}).
+		Select(`
+			COALESCE(SUM(realized_pn_l), 0) AS realized_pnl,
+			COALESCE(SUM(realized_notional), 0) AS realized_notional,
+			COALESCE(COUNT(*), 0) AS trades
+		`).
+		Where("owner_id = ? AND status = ? AND close_time >= ? AND close_time <= ?", uid, "closed", start, end).
+		Scan(&row).Error
+	ret := 0.0
+	if row.RealizedNotional > 0 {
+		ret = (row.RealizedPnL / row.RealizedNotional) * 100
+	}
+	return DailyPnLEntry{
+		Day:               start.Format("2006-01-02"),
+		RealizedPnL:       row.RealizedPnL,
+		RealizedNotional:  row.RealizedNotional,
+		RealizedReturnPct: ret,
+		Trades:            int(row.Trades),
+	}
 }

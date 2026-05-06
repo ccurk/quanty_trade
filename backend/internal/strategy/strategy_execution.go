@@ -324,6 +324,18 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 
 func (m *Manager) closeSpotPosition(inst *StrategyInstance, sym string) error {
 	m.stopPositionTPStopMonitor(inst, sym)
+	if found, canceled, err := m.cancelLinkedTPSLOrders(inst.OwnerID, inst.ID, sym); err != nil {
+		emitStrategyLog(inst, "error", fmt.Sprintf("平仓前撤销关联止盈止损失败 symbol=%s canceled=%d found=%d err=%v", sym, canceled, found, err))
+	} else if found > 0 {
+		emitStrategyLog(inst, "info", fmt.Sprintf("平仓前撤销关联止盈止损完成 symbol=%s canceled=%d found=%d", sym, canceled, found))
+	}
+	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() != "usdm" {
+		if err := bx.CancelPrePositionOpenOrders(inst.OwnerID, sym); err != nil {
+			emitStrategyLog(inst, "error", fmt.Sprintf("平仓前撤销该交易对未成交委托失败 symbol=%s err=%v", sym, err))
+		} else {
+			emitStrategyLog(inst, "info", fmt.Sprintf("平仓前撤销该交易对未成交委托完成 symbol=%s", sym))
+		}
+	}
 	var pos models.StrategyPosition
 	if err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, sym, "open").
 		Order("open_time desc").

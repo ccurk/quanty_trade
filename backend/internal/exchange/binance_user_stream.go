@@ -293,7 +293,7 @@ func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[st
 				})
 
 			if statusLower == "filled" {
-				b.applyFillToPosition(s.hub, stratOrder.StrategyID, stratOrder.StrategyName, s.ownerID, b.name, symbol, sideLower, execQty, avgPrice, eventTime)
+				b.applyFillToPosition(s.hub, stratOrder.StrategyID, stratOrder.StrategyName, s.ownerID, b.name, symbol, sideLower, stratOrder.Purpose, execQty, avgPrice, eventTime)
 			} else if statusLower == "canceled" {
 				// After cancellation, ensure no pre-position entry orders remain for this symbol
 				_ = b.CancelPrePositionOpenOrders(s.ownerID, b.displaySymbol(symbol))
@@ -322,21 +322,29 @@ func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[st
 	})
 }
 
-func (b *BinanceExchange) applyFillToPosition(hub *ws.Hub, strategyID string, strategyName string, ownerID uint, exchangeName string, symbol string, side string, executedQty float64, avgPrice float64, eventTime time.Time) {
+func (b *BinanceExchange) applyFillToPosition(hub *ws.Hub, strategyID string, strategyName string, ownerID uint, exchangeName string, symbol string, side string, purpose string, executedQty float64, avgPrice float64, eventTime time.Time) {
 	// applyFillToPosition updates the strategy-scoped position ledger:
-	// - buy fills open/increase a position with VWAP avgPrice
-	// - sell fills decrease and eventually close the position
+	// - entry buy/sell fills can open/increase long/short positions
+	// - opposite-side fills decrease and eventually close the position
 	if database.DB == nil || strategyID == "" || executedQty <= 0 {
 		return
 	}
 
 	sym := b.displaySymbol(symbol)
+	side = strings.ToLower(strings.TrimSpace(side))
+	purpose = strings.ToLower(strings.TrimSpace(purpose))
 	now := time.Now()
 
 	var pos models.StrategyPosition
 	err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", ownerID, strategyID, sym, "open").First(&pos).Error
 	if err != nil {
-		if side != "buy" {
+		openDirection := ""
+		if side == "buy" {
+			openDirection = "long"
+		} else if side == "sell" && purpose == "entry" {
+			openDirection = "short"
+		}
+		if openDirection == "" {
 			return
 		}
 		pos = models.StrategyPosition{
@@ -345,6 +353,7 @@ func (b *BinanceExchange) applyFillToPosition(hub *ws.Hub, strategyID string, st
 			OwnerID:      ownerID,
 			Exchange:     exchangeName,
 			Symbol:       sym,
+			Direction:    openDirection,
 			Amount:       executedQty,
 			AvgPrice:     avgPrice,
 			Status:       "open",
@@ -370,19 +379,25 @@ func (b *BinanceExchange) applyFillToPosition(hub *ws.Hub, strategyID string, st
 		return
 	}
 
-	if side == "buy" {
+	direction := strings.ToLower(strings.TrimSpace(pos.Direction))
+	if direction == "" {
+		direction = "long"
+	}
+	isIncrease := (direction == "long" && side == "buy") || (direction == "short" && side == "sell")
+	if isIncrease {
 		newAmt := pos.Amount + executedQty
 		newAvg := pos.AvgPrice
 		if newAmt > 0 {
 			newAvg = ((pos.AvgPrice * pos.Amount) + (avgPrice * executedQty)) / newAmt
 		}
 		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
-			Updates(map[string]interface{}{"amount": newAmt, "avg_price": newAvg, "updated_at": now})
+			Updates(map[string]interface{}{"amount": newAmt, "avg_price": newAvg, "direction": direction, "updated_at": now})
 		if hub != nil {
 			hub.BroadcastJSON(map[string]interface{}{
 				"type": "position",
 				"data": map[string]interface{}{
 					"symbol":        pos.Symbol,
+					"direction":     direction,
 					"amount":        newAmt,
 					"price":         newAvg,
 					"strategy_name": pos.StrategyName,
@@ -396,51 +411,56 @@ func (b *BinanceExchange) applyFillToPosition(hub *ws.Hub, strategyID string, st
 		return
 	}
 
-	if side == "sell" {
-		newAmt := pos.Amount - executedQty
-		if newAmt <= 0 {
-			database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
-				Updates(map[string]interface{}{
-					"amount":     0,
-					"status":     "closed",
-					"close_time": eventTime,
-					"updated_at": now,
-				})
-			if hub != nil {
-				hub.BroadcastJSON(map[string]interface{}{
-					"type": "position",
-					"data": map[string]interface{}{
-						"symbol":        pos.Symbol,
-						"amount":        0,
-						"price":         pos.AvgPrice,
-						"strategy_name": pos.StrategyName,
-						"exchange_name": pos.Exchange,
-						"status":        "closed",
-						"owner_id":      pos.OwnerID,
-						"open_time":     pos.OpenTime,
-						"close_time":    eventTime,
-					},
-				})
-			}
-		} else {
-			database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
-				Updates(map[string]interface{}{"amount": newAmt, "updated_at": now})
-			if hub != nil {
-				hub.BroadcastJSON(map[string]interface{}{
-					"type": "position",
-					"data": map[string]interface{}{
-						"symbol":        pos.Symbol,
-						"amount":        newAmt,
-						"price":         pos.AvgPrice,
-						"strategy_name": pos.StrategyName,
-						"exchange_name": pos.Exchange,
-						"status":        "active",
-						"owner_id":      pos.OwnerID,
-						"open_time":     pos.OpenTime,
-					},
-				})
-			}
+	isReduce := (direction == "long" && side == "sell") || (direction == "short" && side == "buy")
+	if !isReduce {
+		return
+	}
+	newAmt := pos.Amount - executedQty
+	if newAmt <= 0 {
+		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
+			Updates(map[string]interface{}{
+				"amount":     0,
+				"direction":  direction,
+				"status":     "closed",
+				"close_time": eventTime,
+				"updated_at": now,
+			})
+		if hub != nil {
+			hub.BroadcastJSON(map[string]interface{}{
+				"type": "position",
+				"data": map[string]interface{}{
+					"symbol":        pos.Symbol,
+					"direction":     direction,
+					"amount":        0,
+					"price":         pos.AvgPrice,
+					"strategy_name": pos.StrategyName,
+					"exchange_name": pos.Exchange,
+					"status":        "closed",
+					"owner_id":      pos.OwnerID,
+					"open_time":     pos.OpenTime,
+					"close_time":    eventTime,
+				},
+			})
 		}
+		return
+	}
+	database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
+		Updates(map[string]interface{}{"amount": newAmt, "direction": direction, "updated_at": now})
+	if hub != nil {
+		hub.BroadcastJSON(map[string]interface{}{
+			"type": "position",
+			"data": map[string]interface{}{
+				"symbol":        pos.Symbol,
+				"direction":     direction,
+				"amount":        newAmt,
+				"price":         pos.AvgPrice,
+				"strategy_name": pos.StrategyName,
+				"exchange_name": pos.Exchange,
+				"status":        "active",
+				"owner_id":      pos.OwnerID,
+				"open_time":     pos.OpenTime,
+			},
+		})
 	}
 }
 

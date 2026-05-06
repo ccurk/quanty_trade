@@ -134,6 +134,7 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 				OwnerID:      uid,
 				Exchange:     bx.GetName(),
 				Symbol:       p.Symbol,
+				Direction:    p.Direction,
 				Amount:       p.Amount,
 				AvgPrice:     p.Price,
 				TakeProfit:   tp,

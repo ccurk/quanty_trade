@@ -23,6 +23,7 @@ func buildDashboardResponse(uid uint, now time.Time, opt dashboardBuildOptions) 
 	weekOffset := (int(now.Weekday()) + 6) % 7
 	startWeek := startDay.AddDate(0, 0, -weekOffset)
 	startMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
+	startYear := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, loc)
 
 	unrealized, openCount, openSymbols, openNotional := loadOpenPositionMetrics(uid)
 	period := func(start time.Time, end time.Time) PnLPeriodSummary {
@@ -35,14 +36,17 @@ func buildDashboardResponse(uid uint, now time.Time, opt dashboardBuildOptions) 
 			UpdatedAt:     now,
 			UnrealizedPnL: unrealized,
 			Day:           period(startDay, now),
+			SevenDay:      period(startDay.AddDate(0, 0, -6), now),
 			Week:          period(startWeek, now),
+			ThirtyDay:     period(startDay.AddDate(0, 0, -29), now),
 			Month:         period(startMonth, now),
+			Year:          period(startYear, now),
 		},
 	}
 	if opt.IncludeCalendar {
 		days := opt.CalendarDays
 		if days <= 0 {
-			days = 60
+			days = 400
 		}
 		resp.PnL.Calendar = loadDailyPnLCalendar(uid, days)
 	}
@@ -165,6 +169,12 @@ func resolveDashboardCustomRange(now time.Time, rangePreset string, startRaw str
 		case "5m":
 			d = 5 * time.Minute
 			label = "近 5 分钟"
+		case "7d":
+			d = 7 * 24 * time.Hour
+			label = "近 7 天"
+		case "30d":
+			d = 30 * 24 * time.Hour
+			label = "近 30 天"
 		case "1h":
 			d = time.Hour
 			label = "近 1 小时"
@@ -177,6 +187,9 @@ func resolveDashboardCustomRange(now time.Time, rangePreset string, startRaw str
 		case "1mo":
 			d = 30 * 24 * time.Hour
 			label = "近 1 个月"
+		case "1y":
+			d = 365 * 24 * time.Hour
+			label = "近 1 年"
 		}
 		if d > 0 {
 			customStart = now.Add(-d)
