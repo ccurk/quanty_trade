@@ -373,6 +373,9 @@ type StrategyInstance struct {
 	candleRxCount   map[string]int
 	lastCandleClose map[string]float64
 	lastCandleAt    map[string]time.Time
+	candleEvent     map[string]string
+	candleEventInfo map[string]string
+	candleEventAt   map[string]time.Time
 	tpslCancel      map[string]context.CancelFunc
 }
 

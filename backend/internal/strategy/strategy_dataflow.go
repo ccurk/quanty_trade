@@ -130,16 +130,10 @@ func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBu
 
 	go func(syms []string) {
 		time.Sleep(20 * time.Second)
-		inst.mu.Lock()
-		rx := inst.candleRxCount
-		inst.mu.Unlock()
 		for _, s := range syms {
-			n := 0
-			if rx != nil {
-				n = rx[s]
-			}
+			n, reason := candleWaitReason(inst, s)
 			if n == 0 {
-				emitStrategyLog(inst, "info", fmt.Sprintf("Waiting first closed kline symbol=%s (Binance kline only triggers on close)", s))
+				emitStrategyLog(inst, "info", fmt.Sprintf("Waiting first closed kline symbol=%s reason=%s", s, reason))
 			}
 		}
 	}(append([]string(nil), symbols...))
@@ -194,6 +188,65 @@ func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBu
 		}()
 	}
 	return nil
+}
+
+func candleWaitReason(inst *StrategyInstance, sym string) (int, string) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	rx := 0
+	if inst.candleRxCount != nil {
+		rx = inst.candleRxCount[sym]
+	}
+	pub := 0
+	if inst.candlePubCount != nil {
+		pub = inst.candlePubCount[sym]
+	}
+	event := ""
+	if inst.candleEvent != nil {
+		event = inst.candleEvent[sym]
+	}
+	detail := ""
+	if inst.candleEventInfo != nil {
+		detail = inst.candleEventInfo[sym]
+	}
+	eventAt := time.Time{}
+	if inst.candleEventAt != nil {
+		eventAt = inst.candleEventAt[sym]
+	}
+	lastClosedAt := time.Time{}
+	if inst.lastCandleAt != nil {
+		lastClosedAt = inst.lastCandleAt[sym]
+	}
+	reason := "no_ws_event_yet"
+	switch event {
+	case "dialing":
+		reason = "dialing_ws"
+	case "connected":
+		reason = "ws_connected_waiting_payload"
+	case "rx_raw_first":
+		reason = "received_raw_ws_payload_waiting_parse"
+	case "rx_first":
+		reason = "received_kline_but_not_closed_yet"
+	case "rx_first_closed":
+		reason = "closed_kline_received_waiting_publish"
+	case "connect_failed":
+		reason = "ws_connect_failed"
+	case "disconnected":
+		reason = "ws_disconnected_reconnecting"
+	case "unmarshal_failed":
+		reason = "ws_payload_unmarshal_failed"
+	}
+	if strings.TrimSpace(detail) != "" {
+		reason += " detail=" + detail
+	}
+	if !eventAt.IsZero() {
+		reason += " event_at=" + eventAt.Format(time.RFC3339)
+	}
+	if !lastClosedAt.IsZero() {
+		reason += " last_closed_at=" + lastClosedAt.Format(time.RFC3339)
+	}
+	reason += fmt.Sprintf(" rx=%d pub=%d", rx, pub)
+	return rx, reason
 }
 
 func (m *Manager) onExchangeCandle(inst *StrategyInstance, redisBus *bus.RedisBus, sym string, candle exchange.Candle) {
@@ -269,6 +322,24 @@ func (m *Manager) onExchangeCandle(inst *StrategyInstance, redisBus *bus.RedisBu
 }
 
 func (m *Manager) onCandleStreamEvent(inst *StrategyInstance, sym string, event string, detail string, err error) {
+	inst.mu.Lock()
+	if inst.candleEvent == nil {
+		inst.candleEvent = map[string]string{}
+	}
+	if inst.candleEventInfo == nil {
+		inst.candleEventInfo = map[string]string{}
+	}
+	if inst.candleEventAt == nil {
+		inst.candleEventAt = map[string]time.Time{}
+	}
+	inst.candleEvent[sym] = event
+	if err != nil {
+		inst.candleEventInfo[sym] = fmt.Sprintf("%s err=%v", detail, err)
+	} else {
+		inst.candleEventInfo[sym] = detail
+	}
+	inst.candleEventAt[sym] = time.Now()
+	inst.mu.Unlock()
 	switch event {
 	case "dialing":
 		emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS dialing symbol=%s url=%s", sym, detail))

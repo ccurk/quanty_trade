@@ -531,16 +531,30 @@ def score_confidence_detail(
     return float(conf), direction, detail
 
 
+def empty_score_detail(reason: str = "") -> dict:
+    return {
+        "ls": 0.0,
+        "ss": 0.0,
+        "ls_parts": [],
+        "ss_parts": [],
+        "atr_discounted": False,
+        "atr_discount_thr": float(Config.ATR_DISCOUNT_THR),
+        "atr_discount": float(Config.ATR_DISCOUNT),
+        "min_confidence": float(Config.MIN_CONFIDENCE),
+        "reason": _s(reason),
+    }
+
+
 def analyze_with_detail(snapshot: MarketSnapshot, closes: list[float], highs: list[float], lows: list[float]) -> tuple[SignalResult, dict]:
     price = float(snapshot.price)
     if price <= 0:
-        return _no_signal(snapshot, "价格无效"), {"reason": "invalid_price"}
+        return _no_signal(snapshot, "价格无效"), empty_score_detail("invalid_price")
     if price > Config.MAX_PRICE:
-        return _no_signal(snapshot, f"币价${price:.8f}超上限"), {"reason": "max_price"}
+        return _no_signal(snapshot, f"币价${price:.8f}超上限"), empty_score_detail("max_price")
     if get_decimal_precision(price) < Config.MIN_PRECISION:
-        return _no_signal(snapshot, f"精度不足{Config.MIN_PRECISION}位"), {"reason": "min_precision"}
+        return _no_signal(snapshot, f"精度不足{Config.MIN_PRECISION}位"), empty_score_detail("min_precision")
     if abs(float(snapshot.change_pct_24h)) < Config.MIN_VOLATILITY:
-        return _no_signal(snapshot, f"波动不足{Config.MIN_VOLATILITY:.1f}%"), {"reason": "min_volatility"}
+        return _no_signal(snapshot, f"波动不足{Config.MIN_VOLATILITY:.1f}%"), empty_score_detail("min_volatility")
 
     rsi_val = calc_rsi_pd(closes)
     macd_val, macd_sig = calc_macd_pd(closes)
@@ -755,6 +769,14 @@ class Strategy:
         sys.stdout.write(json.dumps({"type": "log", "data": msg}) + "\n")
         sys.stdout.flush()
 
+    def _recv_summary(self, limit: int = 5) -> str:
+        pairs = sorted(self.recv_count.items(), key=lambda kv: (-int(kv[1]), kv[0]))
+        if not pairs:
+            return "-"
+        top = [f"{sym}:{cnt}" for sym, cnt in pairs[: max(1, limit)]]
+        active = sum(1 for _, cnt in pairs if int(cnt) > 0)
+        return f"active={active}/{len(pairs)} top={';'.join(top)}"
+
     def _heartbeat_loop(self):
         interval = 5
         try:
@@ -801,7 +823,7 @@ class Strategy:
             self.highs[symbol] = self.highs[symbol][-Config.MAX_BARS :]
             self.lows[symbol] = self.lows[symbol][-Config.MAX_BARS :]
 
-    def on_market_message(self, msg: dict):
+    def on_market_message(self, msg: dict, from_history: bool = False):
         t = _s(msg.get("type")).strip().lower()
         if t == "history":
             sym = _s(msg.get("symbol")).strip()
@@ -815,7 +837,7 @@ class Strategy:
             if isinstance(candles, list):
                 for it in candles:
                     if isinstance(it, dict):
-                        self.on_market_message(it)
+                        self.on_market_message(it, from_history=True)
             return
 
         if t and t != "candle":
@@ -839,9 +861,11 @@ class Strategy:
         self.recv_count[symbol] = int(self.recv_count.get(symbol) or 0) + 1
         n_recv = self.recv_count[symbol]
         if self.log_rx and (self.trace or n_recv % self.log_every == 0):
-            self._log(f"收到K线 sym={symbol} 序号={n_recv} 收盘={c} 缓存={len(self.closes[symbol])} 时间={_now()}")
+            src = "history" if from_history else "live"
+            self._log(f"收到K线 sym={symbol} 来源={src} 序号={n_recv} 收盘={c} 缓存={len(self.closes[symbol])} 时间={_now()}")
         if self.log_rx and n_recv == 1:
-            self._log(f"收到首根K线 sym={symbol} 收盘={c} 时间={_now()}")
+            src = "history" if from_history else "live"
+            self._log(f"收到首根K线 sym={symbol} 来源={src} 收盘={c} 时间={_now()}")
 
         closes = self.closes[symbol]
         highs = self.highs[symbol]
@@ -849,6 +873,11 @@ class Strategy:
         if len(closes) < Config.WARMUP_BARS:
             if self.log_decisions and (self.trace or n_recv % self.log_every == 0):
                 self._log(f"跳过-预热不足 sym={symbol} 当前缓存={len(closes)}/{Config.WARMUP_BARS} 时间={_now()}")
+            return
+
+        if from_history:
+            if self.log_decisions and (self.trace or n_recv % self.log_every == 0):
+                self._log(f"跳过-历史回放预热 sym={symbol} 缓存={len(closes)} 时间={_now()}")
             return
 
         extra = msg.get("extra") if isinstance(msg.get("extra"), dict) else {}
@@ -871,11 +900,17 @@ class Strategy:
         r, sc = analyze_with_detail(snap, closes, highs, lows)
         tick_log = self.log_decisions and (self.trace or n_recv % self.log_every == 0)
         if tick_log:
+            ls = _f(sc.get("ls"), 0.0)
+            ss = _f(sc.get("ss"), 0.0)
+            min_conf = _f(sc.get("min_confidence"), Config.MIN_CONFIDENCE)
+            atr_discounted = bool(sc.get("atr_discounted"))
+            ls_parts = sc.get("ls_parts") if isinstance(sc.get("ls_parts"), list) else []
+            ss_parts = sc.get("ss_parts") if isinstance(sc.get("ss_parts"), list) else []
             self._log(
                 f"评估 sym={symbol} 价格={r.entry_price} 方向={r.direction} 置信度={r.confidence:.3f} RSI={r.rsi:.1f} MACD差={r.macd_diff:+.6f} 布林位置={r.bb_position} ATR%={r.atr_pct:.2f} 资金费率={r.funding_rate:+.5f} 多空比={r.ls_ratio:.2f} 时间={_now()}"
             )
             self._log(
-                f"评分明细 sym={symbol} 多头分={sc['ls']:.3f} 空头分={sc['ss']:.3f} 最低置信度={sc['min_confidence']:.3f} 低波动折扣={sc['atr_discounted']} 多头加分项={','.join(sc['ls_parts'])} 空头加分项={','.join(sc['ss_parts'])} 时间={_now()}"
+                f"评分明细 sym={symbol} 多头分={ls:.3f} 空头分={ss:.3f} 最低置信度={min_conf:.3f} 低波动折扣={atr_discounted} 多头加分项={','.join(ls_parts)} 空头加分项={','.join(ss_parts)} 时间={_now()}"
             )
 
         if not r.passed_filter:
@@ -885,7 +920,7 @@ class Strategy:
         if r.direction is None:
             if tick_log:
                 self._log(
-                    f"未触发信号 sym={symbol} 置信度={r.confidence:.3f} 多头分={sc['ls']:.3f} 空头分={sc['ss']:.3f} 最低置信度={sc['min_confidence']:.3f} 时间={_now()}"
+                    f"未触发信号 sym={symbol} 置信度={r.confidence:.3f} 多头分={_f(sc.get('ls'), 0.0):.3f} 空头分={_f(sc.get('ss'), 0.0):.3f} 最低置信度={_f(sc.get('min_confidence'), Config.MIN_CONFIDENCE):.3f} 时间={_now()}"
                 )
             return
 
@@ -919,7 +954,7 @@ class Strategy:
             if not item:
                 if self.log_rx and time.time() - last_idle >= float(self.log_idle_sec):
                     last_idle = time.time()
-                    self._log(f"IDLE waiting candle ch={self._candle_ch()} symbols={len(self.symbols)} ts={_now()}")
+                    self._log(f"IDLE waiting candle ch={self._candle_ch()} symbols={len(self.symbols)} recv={self._recv_summary()} ts={_now()}")
                 continue
             payload = item.get("data")
             if not payload:
