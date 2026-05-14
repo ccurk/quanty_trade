@@ -355,28 +355,29 @@ type StrategyInstance struct {
 
 	mgr *Manager
 
-	redisCancel     context.CancelFunc
-	bootID          string
-	startedAt       time.Time
-	lastHB          time.Time
-	stopping        bool
-	restarting      bool
-	resync          bool
-	resyncLogBootID string
-	resyncNextAt    time.Time
-	resyncBackoff   time.Duration
-	stateReadySeen  bool
-	heartbeatSeen   bool
-	feedSymbols     []string
-	candleStops     map[string]func()
-	candlePubCount  map[string]int
-	candleRxCount   map[string]int
-	lastCandleClose map[string]float64
-	lastCandleAt    map[string]time.Time
-	candleEvent     map[string]string
-	candleEventInfo map[string]string
-	candleEventAt   map[string]time.Time
-	tpslCancel      map[string]context.CancelFunc
+	redisCancel      context.CancelFunc
+	bootID           string
+	startedAt        time.Time
+	lastHB           time.Time
+	stopping         bool
+	restarting       bool
+	resync           bool
+	resyncLogBootID  string
+	resyncNextAt     time.Time
+	resyncBackoff    time.Duration
+	stateReadySeen   bool
+	heartbeatSeen    bool
+	feedSymbols      []string
+	candleStops      map[string]func()
+	candlePubCount   map[string]int
+	candleRxCount    map[string]int
+	lastCandleClose  map[string]float64
+	lastCandleAt     map[string]time.Time
+	lastCandleSeenAt map[string]time.Time
+	candleEvent      map[string]string
+	candleEventInfo  map[string]string
+	candleEventAt    map[string]time.Time
+	tpslCancel       map[string]context.CancelFunc
 }
 
 // Manager manages lifecycle of all strategy instances and coordinates exchange access.

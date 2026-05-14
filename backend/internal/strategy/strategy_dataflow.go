@@ -20,6 +20,9 @@ func (m *Manager) attachRedisIO(inst *StrategyInstance, redisBus *bus.RedisBus, 
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	inst.mu.Lock()
+	if inst.redisCancel != nil {
+		inst.redisCancel()
+	}
 	inst.redisCancel = cancel
 	inst.mu.Unlock()
 
@@ -104,6 +107,24 @@ func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBu
 	if inst == nil {
 		return nil
 	}
+	inst.mu.Lock()
+	if len(inst.candleStops) > 0 {
+		for _, stop := range inst.candleStops {
+			if stop != nil {
+				stop()
+			}
+		}
+	}
+	inst.candleStops = nil
+	inst.candlePubCount = map[string]int{}
+	inst.candleRxCount = map[string]int{}
+	inst.lastCandleClose = map[string]float64{}
+	inst.lastCandleAt = map[string]time.Time{}
+	inst.lastCandleSeenAt = map[string]time.Time{}
+	inst.candleEvent = map[string]string{}
+	inst.candleEventInfo = map[string]string{}
+	inst.candleEventAt = map[string]time.Time{}
+	inst.mu.Unlock()
 	if len(symbols) == 0 {
 		logger.Warnf("[STRATEGY START WARN] id=%s owner=%d reason=no symbol in config", inst.ID, inst.OwnerID)
 		database.DB.Create(&models.StrategyLog{
@@ -366,8 +387,12 @@ func (m *Manager) onExchangeCandle(inst *StrategyInstance, redisBus *bus.RedisBu
 	if inst.lastCandleAt == nil {
 		inst.lastCandleAt = map[string]time.Time{}
 	}
+	if inst.lastCandleSeenAt == nil {
+		inst.lastCandleSeenAt = map[string]time.Time{}
+	}
 	inst.lastCandleClose[sym] = candle.Close
 	inst.lastCandleAt[sym] = candle.Timestamp
+	inst.lastCandleSeenAt[sym] = time.Now()
 	rxN := inst.candleRxCount[sym]
 	inst.mu.Unlock()
 	if rxN == 1 {

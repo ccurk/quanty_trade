@@ -280,6 +280,14 @@ func (m *Manager) activateStartedStrategy(inst *StrategyInstance, plan *strategy
 	inst.bootID = ""
 	inst.stateReadySeen = false
 	inst.heartbeatSeen = false
+	inst.candlePubCount = map[string]int{}
+	inst.candleRxCount = map[string]int{}
+	inst.lastCandleClose = map[string]float64{}
+	inst.lastCandleAt = map[string]time.Time{}
+	inst.lastCandleSeenAt = map[string]time.Time{}
+	inst.candleEvent = map[string]string{}
+	inst.candleEventInfo = map[string]string{}
+	inst.candleEventAt = map[string]time.Time{}
 	inst.startedAt = time.Now()
 	inst.lastHB = time.Time{}
 	inst.stopping = false

@@ -187,15 +187,23 @@ func (m *Manager) processSignalBatch(strategyID string) {
 	now := time.Now()
 	for sym, sig := range latestBySymbol {
 		cAt := time.Time{}
+		seenAt := time.Time{}
 		inst.mu.Lock()
 		if inst.lastCandleAt != nil {
 			cAt = inst.lastCandleAt[sym]
 		}
+		if inst.lastCandleSeenAt != nil {
+			seenAt = inst.lastCandleSeenAt[sym]
+		}
 		inst.mu.Unlock()
 		ok := false
-		if !cAt.IsZero() {
-			early := cAt.Add(-10 * time.Second)
-			late := cAt.Add(10 * time.Second)
+		baseAt := cAt
+		if !seenAt.IsZero() {
+			baseAt = seenAt
+		}
+		if !baseAt.IsZero() {
+			early := baseAt.Add(-10 * time.Second)
+			late := baseAt.Add(10 * time.Second)
 			ok = sig.GeneratedAt.After(early) && sig.GeneratedAt.Before(late)
 		} else {
 			ok = sig.GeneratedAt.After(now.Add(-10 * time.Second))
@@ -205,6 +213,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		}
 	}
 	if len(filtered) == 0 {
+		emitStrategyLog(inst, "info", fmt.Sprintf("本批信号因时间窗不匹配被过滤 batch=%d latest_symbols=%d", len(batch), len(latestBySymbol)))
 		return
 	}
 
