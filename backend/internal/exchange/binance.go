@@ -630,6 +630,18 @@ func formatBinanceAPIError(code int, msg string) error {
 	return fmt.Errorf("binance api error: {\"code\":%d,\"msg\":%q}", code, msg)
 }
 
+func isBinanceHTMLNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "<!doctype html>") ||
+		strings.Contains(msg, "<title>binance</title>") ||
+		strings.Contains(msg, "the page you’re looking for cannot be found") ||
+		strings.Contains(msg, "the page you're looking for cannot be found") ||
+		strings.Contains(msg, "/en/error")
+}
+
 func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, method, path string, params url.Values) ([]byte, int, error) {
 	if params == nil {
 		params = url.Values{}
@@ -1848,6 +1860,9 @@ func (b *BinanceExchange) CancelUSDMAllSymbolOrdersDetailed(ownerID uint, symbol
 	}
 	algoOrders, algoErr := b.ListUSDMAlgoOpenOrders(ownerID, symbol)
 	if algoErr != nil {
+		if isBinanceHTMLNotFound(algoErr) {
+			return summary, firstErr
+		}
 		if firstErr == nil {
 			firstErr = algoErr
 		}
@@ -1915,6 +1930,9 @@ func (b *BinanceExchange) CancelUSDMAlgoOrderByRef(ownerID uint, symbol string, 
 		return fmt.Errorf("missing algo order reference")
 	}
 	_, _, err = b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/algoOrder", q)
+	if isBinanceHTMLNotFound(err) {
+		return nil
+	}
 	return err
 }
 
@@ -1930,6 +1948,9 @@ func (b *BinanceExchange) ListUSDMAlgoOpenOrders(ownerID uint, symbol string) ([
 	params.Set("symbol", binanceSymbol(symbol))
 	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/algoOpenOrders", params)
 	if err != nil {
+		if isBinanceHTMLNotFound(err) {
+			return []USDMAlgoOrder{}, nil
+		}
 		return nil, err
 	}
 	var orders []struct {
@@ -2043,6 +2064,9 @@ func (b *BinanceExchange) CancelUSDMAlgoOpenOrders(ownerID uint, symbol string) 
 			continue
 		}
 		_, _, err := b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/algoOrder", q)
+		if isBinanceHTMLNotFound(err) {
+			continue
+		}
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
