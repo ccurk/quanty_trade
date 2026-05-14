@@ -146,6 +146,8 @@ func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBu
 				stop func()
 				err  error
 			)
+			pollCtx, pollCancel := context.WithCancel(context.Background())
+			go m.latestClosedCandleFallbackLoop(pollCtx, inst, redisBus, sym)
 			if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok {
 				stop, err = bx.SubscribeCandlesWithEvents(sym, func(candle exchange.Candle) {
 					m.onExchangeCandle(inst, redisBus, sym, candle)
@@ -158,6 +160,7 @@ func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBu
 				})
 			}
 			if err != nil {
+				pollCancel()
 				logger.Errorf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, err)
 				database.DB.Create(&models.StrategyLog{
 					StrategyID: inst.ID,
@@ -174,17 +177,21 @@ func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBu
 				return
 			}
 			emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles ok symbol=%s", sym))
-			if stop != nil {
-				inst.mu.Lock()
-				if inst.candleStops == nil {
-					inst.candleStops = map[string]func(){}
+			combinedStop := func() {
+				pollCancel()
+				if stop != nil {
+					stop()
 				}
-				if prev, ok := inst.candleStops[sym]; ok && prev != nil {
-					prev()
-				}
-				inst.candleStops[sym] = stop
-				inst.mu.Unlock()
 			}
+			inst.mu.Lock()
+			if inst.candleStops == nil {
+				inst.candleStops = map[string]func(){}
+			}
+			if prev, ok := inst.candleStops[sym]; ok && prev != nil {
+				prev()
+			}
+			inst.candleStops[sym] = combinedStop
+			inst.mu.Unlock()
 		}()
 	}
 	return nil
@@ -249,10 +256,108 @@ func candleWaitReason(inst *StrategyInstance, sym string) (int, string) {
 	return rx, reason
 }
 
+func shouldPollLatestClosedCandle(inst *StrategyInstance, sym string, now time.Time) (bool, string) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	lastClosedAt := time.Time{}
+	if inst.lastCandleAt != nil {
+		lastClosedAt = inst.lastCandleAt[sym]
+	}
+	event := ""
+	if inst.candleEvent != nil {
+		event = inst.candleEvent[sym]
+	}
+	if !lastClosedAt.IsZero() {
+		nextEligibleAt := lastClosedAt.Add(2*time.Minute + 3*time.Second)
+		if now.Before(nextEligibleAt) {
+			return false, ""
+		}
+		if event == "" {
+			return true, "latest_closed_kline_stale"
+		}
+		return true, fmt.Sprintf("latest_closed_kline_stale event=%s", event)
+	}
+	if !inst.startedAt.IsZero() && now.Before(inst.startedAt.Add(25*time.Second)) {
+		return false, ""
+	}
+	if event == "" {
+		return true, "no_live_ws_event_yet"
+	}
+	return true, fmt.Sprintf("no_live_closed_kline_yet event=%s", event)
+}
+
+func latestClosedOneMinuteCandle(ex exchange.Exchange, sym string, now time.Time) (exchange.Candle, bool, error) {
+	bars, err := ex.FetchCandles(sym, "1m", 3)
+	if err != nil {
+		return exchange.Candle{}, false, err
+	}
+	if len(bars) == 0 {
+		return exchange.Candle{}, false, nil
+	}
+	cutoff := now.Truncate(time.Minute)
+	var best exchange.Candle
+	found := false
+	for _, bar := range bars {
+		if !bar.Timestamp.Before(cutoff) {
+			continue
+		}
+		if !found || bar.Timestamp.After(best.Timestamp) {
+			best = bar
+			found = true
+		}
+	}
+	return best, found, nil
+}
+
+func (m *Manager) latestClosedCandleFallbackLoop(ctx context.Context, inst *StrategyInstance, redisBus *bus.RedisBus, sym string) {
+	if inst == nil || redisBus == nil {
+		return
+	}
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		now := time.Now()
+		shouldPoll, reason := shouldPollLatestClosedCandle(inst, sym, now)
+		if !shouldPoll {
+			continue
+		}
+		candle, ok, err := latestClosedOneMinuteCandle(inst.exchange, sym, now)
+		if err != nil {
+			emitStrategyLog(inst, "error", fmt.Sprintf("Fallback latest candle fetch failed symbol=%s reason=%s err=%v", sym, reason, err))
+			continue
+		}
+		if !ok {
+			continue
+		}
+		inst.mu.Lock()
+		lastClosedAt := time.Time{}
+		if inst.lastCandleAt != nil {
+			lastClosedAt = inst.lastCandleAt[sym]
+		}
+		inst.mu.Unlock()
+		if !lastClosedAt.IsZero() && !candle.Timestamp.After(lastClosedAt) {
+			continue
+		}
+		emitStrategyLog(inst, "info", fmt.Sprintf("Fallback latest closed kline symbol=%s ts=%s close=%v reason=%s", sym, candle.Timestamp.Format(time.RFC3339), candle.Close, reason))
+		m.onExchangeCandle(inst, redisBus, sym, candle)
+	}
+}
+
 func (m *Manager) onExchangeCandle(inst *StrategyInstance, redisBus *bus.RedisBus, sym string, candle exchange.Candle) {
 	inst.mu.Lock()
 	if inst.candleRxCount == nil {
 		inst.candleRxCount = map[string]int{}
+	}
+	if inst.lastCandleAt != nil {
+		if last := inst.lastCandleAt[sym]; !last.IsZero() && !candle.Timestamp.After(last) {
+			inst.mu.Unlock()
+			return
+		}
 	}
 	inst.candleRxCount[sym]++
 	if inst.lastCandleClose == nil {
