@@ -81,4 +81,9 @@ func SeedBuiltInTemplates(adminID uint) {
 		"Day7: 智能自适应过滤版，根据市场状态动态调整参数，增加开仓机会同时控制风险（Redis 模式）",
 		"meme_contract_signal_engine_v8_day7.py",
 	)
+	seed(
+		"Meme 合约信号计算引擎 v9 — Day8 (Quantum Contract Optimizer)",
+		"Day8: 量子合约优化版，专为加密货币合约交易设计，集成资金费率、杠杆、流动性、市场操纵检测等智能调整（Redis 模式）",
+		"meme_contract_signal_engine_v9_day8.py",
+	)
 }
