@@ -318,6 +318,7 @@ const App: React.FC = () => {
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showCreateConfigSection, setShowCreateConfigSection] = useState(true);
   const [showPublishConfirm, setShowPublishConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showDeleteTemplateConfirm, setShowDeleteTemplateConfirm] = useState(false);
@@ -1278,6 +1279,7 @@ const App: React.FC = () => {
                 setSelectedTemplate(0);
                 setNewStratName('');
                 setNewStratConfig(createDefaultStrategyConfig());
+                setShowCreateConfigSection(true);
                 setShowCreateModal(true);
               }}
               className={`p-6 rounded-2xl border-2 border-dashed flex flex-col items-center justify-center transition cursor-pointer group order-first ${isDarkMode ? 'bg-gray-900/30 border-gray-800 text-gray-600 hover:border-gray-700 hover:text-gray-400' : 'bg-white border-gray-200 text-gray-400 hover:border-blue-200 hover:text-blue-400'}`}
@@ -2060,9 +2062,9 @@ const App: React.FC = () => {
       {/* Create Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className={`w-full max-w-xl p-8 rounded-2xl shadow-2xl ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
-            <h3 className="text-2xl font-bold mb-6">新建交易策略</h3>
-            <div className="space-y-4 mb-8">
+          <div className={`w-full max-w-xl p-8 rounded-2xl shadow-2xl flex flex-col max-h-[90vh] ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'}`}>
+            <h3 className="text-2xl font-bold mb-6 shrink-0">新建交易策略</h3>
+            <div className="space-y-4 flex-1 overflow-y-auto pr-2 mb-8">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-500 mb-2">策略名称</label>
@@ -2077,24 +2079,41 @@ const App: React.FC = () => {
                 <div />
               </div>
 
-              <StrategyConfigForm
-                isDarkMode={isDarkMode}
-                config={newStratConfig}
-                onChange={setNewStratConfig}
-                marketSymbols={marketSymbols}
-                isLoadingMarketSymbols={isLoadingMarketSymbols}
-                onRefreshMarketSymbols={loadMarketSymbols}
-                symbolSearch={strategySymbolSearch}
-                onSymbolSearchChange={setStrategySymbolSearch}
-                showTemplateSelector
-                selectedTemplate={selectedTemplate}
-                onSelectedTemplateChange={setSelectedTemplate}
-                templates={templates}
-                strategyTemplateUsages={strategies}
-              />
+              <div className={`rounded-2xl border ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateConfigSection(v => !v)}
+                  className={`w-full flex items-center justify-between px-4 py-3 text-left rounded-2xl transition ${isDarkMode ? 'hover:bg-gray-900/60 text-gray-200' : 'hover:bg-white text-gray-800'}`}
+                >
+                  <div>
+                    <div className="font-medium">策略参数配置</div>
+                    <div className="text-xs text-gray-500 mt-1">模板、交易对、仓位、时间范围等配置都在这里</div>
+                  </div>
+                  <span className="text-sm font-bold text-gray-400">{showCreateConfigSection ? '收起 ▲' : '展开 ▼'}</span>
+                </button>
+                {showCreateConfigSection && (
+                  <div className="px-4 pb-4">
+                    <StrategyConfigForm
+                      isDarkMode={isDarkMode}
+                      config={newStratConfig}
+                      onChange={setNewStratConfig}
+                      marketSymbols={marketSymbols}
+                      isLoadingMarketSymbols={isLoadingMarketSymbols}
+                      onRefreshMarketSymbols={loadMarketSymbols}
+                      symbolSearch={strategySymbolSearch}
+                      onSymbolSearchChange={setStrategySymbolSearch}
+                      showTemplateSelector
+                      selectedTemplate={selectedTemplate}
+                      onSelectedTemplateChange={setSelectedTemplate}
+                      templates={templates}
+                      strategyTemplateUsages={strategies}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
 
-            <div className="flex gap-4">
+            <div className="flex gap-4 shrink-0">
               <button 
                 onClick={() => setShowCreateModal(false)}
                 className={`flex-1 py-3 rounded-xl font-bold transition ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-gray-100 hover:bg-gray-200'}`}

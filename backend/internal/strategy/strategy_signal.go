@@ -61,15 +61,35 @@ func parseNonNaturalEntrySequence(raw string) []string {
 	return out
 }
 
-func resolveNonNaturalEntrySide(inst *StrategyInstance, slotIndex int) (string, bool) {
-	if inst == nil || slotIndex <= 0 || !getBool(inst.Config["non_natural_entry_enabled"]) {
+func flipStrategySide(side string) string {
+	switch normalizeStrategySide(side) {
+	case "buy":
+		return "sell"
+	case "sell":
+		return "buy"
+	default:
+		return ""
+	}
+}
+
+func resolveNonNaturalEntrySide(inst *StrategyInstance, slotIndex int, anchorSide string) (string, bool) {
+	if inst == nil || slotIndex <= 1 || !getBool(inst.Config["non_natural_entry_enabled"]) {
 		return "", false
 	}
 	seq := parseNonNaturalEntrySequence(getString(inst.Config["non_natural_entry_sequence"]))
-	if len(seq) == 0 || slotIndex > len(seq) {
+	if len(seq) < 2 || slotIndex > len(seq) {
 		return "", false
 	}
-	return seq[slotIndex-1], true
+	anchor := normalizeStrategySide(anchorSide)
+	base := normalizeStrategySide(seq[0])
+	target := normalizeStrategySide(seq[slotIndex-1])
+	if anchor == "" || base == "" || target == "" {
+		return "", false
+	}
+	if target == base {
+		return anchor, true
+	}
+	return flipStrategySide(anchor), true
 }
 
 func remapTPSLBySide(inst *StrategyInstance, side string, entryPrice float64, takeProfit float64, stopLoss float64) (float64, float64) {
@@ -467,12 +487,16 @@ func (m *Manager) processSignalBatch(strategyID string) {
 	}
 	openCount := 0
 	openSymbols := map[string]struct{}{}
+	anchorSide := ""
 	var openRows []models.StrategyPosition
-	_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").Find(&openRows).Error
+	_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "open").Order("open_time asc, id asc").Find(&openRows).Error
 	for _, p := range openRows {
 		key := exchange.NormalizeSymbol(p.Symbol)
 		if key == "" {
 			continue
+		}
+		if anchorSide == "" {
+			anchorSide = normalizeStrategySide(p.Direction)
 		}
 		openSymbols[key] = struct{}{}
 		openCount++
@@ -486,6 +510,9 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		key := exchange.NormalizeSymbol(ord.Symbol)
 		if key == "" {
 			continue
+		}
+		if anchorSide == "" {
+			anchorSide = normalizeStrategySide(ord.Side)
 		}
 		if _, ok := openSymbols[key]; ok {
 			continue
@@ -559,12 +586,16 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		}
 		slotIndex := openCount + selected + 1
 		side := c.side
+		naturalSide := side
 		takeProfit := sig.TakeProfit
 		stopLoss := sig.StopLoss
-		if forcedSide, ok := resolveNonNaturalEntrySide(inst, slotIndex); ok {
+		if slotIndex == 1 && anchorSide == "" {
+			anchorSide = naturalSide
+		}
+		if forcedSide, ok := resolveNonNaturalEntrySide(inst, slotIndex, anchorSide); ok {
 			if forcedSide != side {
 				takeProfit, stopLoss = remapTPSLBySide(inst, forcedSide, c.px, sig.TakeProfit, sig.StopLoss)
-				emitStrategyLog(inst, "info", fmt.Sprintf("非自然开仓覆盖：slot=%d symbol=%s direction=%s->%s", slotIndex, sig.Symbol, side, forcedSide))
+				emitStrategyLog(inst, "info", fmt.Sprintf("非自然开仓顺延：slot=%d symbol=%s anchor=%s direction=%s->%s", slotIndex, sig.Symbol, anchorSide, side, forcedSide))
 			}
 			side = forcedSide
 		}
