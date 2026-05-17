@@ -347,6 +347,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 	}
 
 	filtered := make([]bus.SignalMessage, 0, len(latestBySymbol))
+	timeMismatch := make([]string, 0, len(latestBySymbol))
 	now := time.Now()
 	for sym, sig := range latestBySymbol {
 		cAt := time.Time{}
@@ -373,14 +374,33 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		}
 		if ok {
 			filtered = append(filtered, sig)
+		} else if len(timeMismatch) < 8 {
+			baseText := "none"
+			if !baseAt.IsZero() {
+				baseText = baseAt.Format(time.RFC3339)
+			}
+			candleText := "none"
+			if !cAt.IsZero() {
+				candleText = cAt.Format(time.RFC3339)
+			}
+			seenText := "none"
+			if !seenAt.IsZero() {
+				seenText = seenAt.Format(time.RFC3339)
+			}
+			timeMismatch = append(timeMismatch, fmt.Sprintf("%s(gen=%s base=%s candle=%s seen=%s)", sym, sig.GeneratedAt.Format(time.RFC3339), baseText, candleText, seenText))
 		}
 	}
 	if len(filtered) == 0 {
-		emitStrategyLog(inst, "info", fmt.Sprintf("本批信号因时间窗不匹配被过滤 batch=%d latest_symbols=%d", len(batch), len(latestBySymbol)))
+		if len(timeMismatch) > 0 {
+			emitStrategyLog(inst, "info", fmt.Sprintf("本批信号因时间窗不匹配被过滤 batch=%d latest_symbols=%d details=%s", len(batch), len(latestBySymbol), strings.Join(timeMismatch, "；")))
+		} else {
+			emitStrategyLog(inst, "info", fmt.Sprintf("本批信号因时间窗不匹配被过滤 batch=%d latest_symbols=%d", len(batch), len(latestBySymbol)))
+		}
 		return
 	}
 
 	pxCache := map[string]float64{}
+	noPriceSymbols := make([]string, 0, len(filtered))
 	type cand struct {
 		s                bus.SignalMessage
 		rr               float64
@@ -410,6 +430,9 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			px = pxCache[sym]
 		}
 		if px <= 0 {
+			if len(noPriceSymbols) < 8 {
+				noPriceSymbols = append(noPriceSymbols, sig.Symbol)
+			}
 			continue
 		}
 		rr := 0.0
@@ -448,6 +471,11 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		})
 	}
 	if len(cands) == 0 {
+		if len(noPriceSymbols) > 0 {
+			emitStrategyLog(inst, "info", fmt.Sprintf("本批信号未生成候选：缺少最新价格 symbols=%s", strings.Join(noPriceSymbols, ",")))
+		} else {
+			emitStrategyLog(inst, "info", fmt.Sprintf("本批信号未生成候选：filtered=%d latest_symbols=%d", len(filtered), len(latestBySymbol)))
+		}
 		return
 	}
 
@@ -581,7 +609,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			continue
 		}
 		if c.amount <= 0 || (c.side != "buy" && c.side != "sell") || !c.ok {
-			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 条件无效，适配度=%0.4f", sig.Symbol, c.rr))
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 条件无效 side=%s amount=%0.6f px=%0.8f tp=%0.8f sl=%0.8f rr=%0.4f", sig.Symbol, c.side, c.amount, c.px, sig.TakeProfit, sig.StopLoss, c.rr))
 			continue
 		}
 		slotIndex := openCount + selected + 1

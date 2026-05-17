@@ -385,6 +385,38 @@ class MemeSignalEngineV10(base.MemeSignalEngineV6):
     def on_candle(self, candle):
         return candle
 
+    def _warmup_log(self, symbol, candles):
+        if not self.log_trace:
+            return
+        history = self.history_count.get(symbol, 0)
+        realtime = self.realtime_count.get(symbol, 0)
+        self._throttled_log(
+            f"v10-warmup:{symbol}",
+            f"v10等待样本 symbol={symbol} bars={len(candles)}/{base.Config.WARMUP_BARS} history={history} realtime={realtime}",
+            20,
+        )
+
+    def _cooldown_log(self, symbol, candles, remaining_sec):
+        if not self.log_trace:
+            return
+        self._throttled_log(
+            f"v10-cooldown:{symbol}",
+            f"v10冷却中 symbol={symbol} remaining={max(0.0, remaining_sec):.1f}s bars={len(candles)}",
+            20,
+        )
+
+    def _skip_log(self, symbol, candles, result):
+        if not self.log_trace:
+            return
+        reason = result.filter_reason or f"no direction confidence={result.confidence:.4f}"
+        history = self.history_count.get(symbol, 0)
+        realtime = self.realtime_count.get(symbol, 0)
+        self._throttled_log(
+            f"v10-skip:{symbol}",
+            f"v10激进跳过 symbol={symbol} reason={reason} bars={len(candles)} history={history} realtime={realtime} regime={result.regime_result.regime.value} score={result.score_card.overall_score:.1f}",
+            20,
+        )
+
     def run(self):
         try:
             MiniRedis
@@ -433,19 +465,17 @@ class MemeSignalEngineV10(base.MemeSignalEngineV6):
             if not symbol:
                 continue
             candles = self.candles.get(symbol, [])
+            if len(candles) < base.Config.WARMUP_BARS:
+                self._warmup_log(symbol, candles)
+                continue
             now = time.time()
             last_at = self.last_signal_at.get(symbol, 0.0)
             if self.cooldown_sec > 0 and now - last_at < self.cooldown_sec:
+                self._cooldown_log(symbol, candles, self.cooldown_sec - (now - last_at))
                 continue
             result = analyze_signal(symbol, candles, self._funding_rate(), self._ls_ratio(), self.kelly_params, self.total_capital)
             if not result.passed_filter or result.direction is None:
-                if self.log_trace:
-                    reason = result.filter_reason or f"no direction confidence={result.confidence:.4f}"
-                    self._throttled_log(
-                        f"v10-skip:{symbol}",
-                        f"v10激进跳过 symbol={symbol} reason={reason} bars={len(candles)} regime={result.regime_result.regime.value} score={result.score_card.overall_score:.1f}",
-                        20,
-                    )
+                self._skip_log(symbol, candles, result)
                 continue
             
             self._emit_signal(redis_conn, result)
