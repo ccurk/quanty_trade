@@ -19,6 +19,149 @@ type symbolEntryStats struct {
 	LastEntryAt      time.Time
 }
 
+func normalizeStrategySide(raw string) string {
+	side := strings.ToLower(strings.TrimSpace(raw))
+	switch side {
+	case "buy", "long", "bull", "up", "多", "做多", "看多":
+		return "buy"
+	case "sell", "short", "bear", "down", "空", "做空", "看空", "低":
+		return "sell"
+	default:
+		return ""
+	}
+}
+
+func parseNonNaturalEntrySequence(raw string) []string {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(text, func(r rune) bool {
+		switch r {
+		case ',', '，', ';', '；', '|', '/', '\\', '、', '\n', '\r', '\t', ' ':
+			return true
+		default:
+			return false
+		}
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if side := normalizeStrategySide(part); side != "" {
+			out = append(out, side)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, r := range text {
+		if side := normalizeStrategySide(string(r)); side != "" {
+			out = append(out, side)
+		}
+	}
+	return out
+}
+
+func resolveNonNaturalEntrySide(inst *StrategyInstance, slotIndex int) (string, bool) {
+	if inst == nil || slotIndex <= 0 || !getBool(inst.Config["non_natural_entry_enabled"]) {
+		return "", false
+	}
+	seq := parseNonNaturalEntrySequence(getString(inst.Config["non_natural_entry_sequence"]))
+	if len(seq) == 0 || slotIndex > len(seq) {
+		return "", false
+	}
+	return seq[slotIndex-1], true
+}
+
+func remapTPSLBySide(inst *StrategyInstance, side string, entryPrice float64, takeProfit float64, stopLoss float64) (float64, float64) {
+	tp, sl := resolveTPSLFromROI(inst, side, entryPrice, 0, 0)
+	rewardDist := math.Abs(takeProfit - entryPrice)
+	riskDist := math.Abs(stopLoss - entryPrice)
+	if side == "buy" {
+		if tp <= 0 && rewardDist > 0 {
+			tp = entryPrice + rewardDist
+		}
+		if sl <= 0 && riskDist > 0 {
+			sl = entryPrice - riskDist
+		}
+	} else if side == "sell" {
+		if tp <= 0 && rewardDist > 0 {
+			tp = entryPrice - rewardDist
+		}
+		if sl <= 0 && riskDist > 0 {
+			sl = entryPrice + riskDist
+		}
+	}
+	return tp, sl
+}
+
+func parseClockMinutes(raw string) (int, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, false
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) != 2 {
+		return 0, false
+	}
+	hour := int(getNumber(parts[0]))
+	minute := int(getNumber(parts[1]))
+	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return 0, false
+	}
+	return hour*60 + minute, true
+}
+
+func resolveEntryTimeWindows(inst *StrategyInstance, now time.Time) (bool, string, bool) {
+	if inst == nil {
+		return true, "", false
+	}
+	raw := strings.TrimSpace(getString(inst.Config["entry_time_windows"]))
+	if raw == "" {
+		return true, "", false
+	}
+	current := now.Hour()*60 + now.Minute()
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case ',', '，', ';', '；', '|', '\n', '\r':
+			return true
+		default:
+			return false
+		}
+	})
+	normalized := make([]string, 0, len(parts))
+	validFound := false
+	for _, part := range parts {
+		seg := strings.TrimSpace(part)
+		if seg == "" {
+			continue
+		}
+		bounds := strings.Split(seg, "-")
+		if len(bounds) != 2 {
+			continue
+		}
+		start, okStart := parseClockMinutes(bounds[0])
+		end, okEnd := parseClockMinutes(bounds[1])
+		if !okStart || !okEnd {
+			continue
+		}
+		validFound = true
+		normalized = append(normalized, fmt.Sprintf("%s-%s", strings.TrimSpace(bounds[0]), strings.TrimSpace(bounds[1])))
+		if start == end {
+			return true, strings.Join(normalized, ","), true
+		}
+		if start < end {
+			if current >= start && current < end {
+				return true, strings.Join(normalized, ","), true
+			}
+			continue
+		}
+		if current >= start || current < end {
+			return true, strings.Join(normalized, ","), true
+		}
+	}
+	return !validFound, strings.Join(normalized, ","), validFound
+}
+
 func symbolReentryCooldown(inst *StrategyInstance) time.Duration {
 	if inst == nil {
 		return 0
@@ -126,7 +269,7 @@ func loadRecentEntryStats(inst *StrategyInstance, limit int) map[string]symbolEn
 	return stats
 }
 
-func canOpenSymbolByCooldown(inst *StrategyInstance, symbol string, stats symbolEntryStats) (bool, time.Duration, time.Time) {
+func canOpenSymbolByCooldown(inst *StrategyInstance, stats symbolEntryStats) (bool, time.Duration, time.Time) {
 	cooldown := symbolReentryCooldown(inst)
 	if cooldown <= 0 || stats.LastEntryAt.IsZero() {
 		return true, 0, stats.LastEntryAt
@@ -250,8 +393,8 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			continue
 		}
 		rr := 0.0
-		side := strings.ToLower(strings.TrimSpace(sig.Side))
-		if side == "long" || side == "buy" || side == "" {
+		side := normalizeStrategySide(sig.Side)
+		if side == "buy" || side == "" {
 			if sig.TakeProfit > px && sig.StopLoss < px && sig.StopLoss > 0 {
 				rr = (sig.TakeProfit - px) / (px - sig.StopLoss)
 			}
@@ -262,11 +405,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		}
 		ok := rr > 0
 		amount := clampOrderAmount(inst, sig.Amount)
-		if side == "long" {
-			side = "buy"
-		} else if side == "short" {
-			side = "sell"
-		} else if side == "" {
+		if side == "" {
 			side = "buy"
 		}
 		stats := recentStats[exchange.NormalizeSymbol(sig.Symbol)]
@@ -368,6 +507,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 					continue
 				}
 				openSymbols[key] = struct{}{}
+				openCount++
 			}
 		}
 	}
@@ -381,6 +521,16 @@ func (m *Manager) processSignalBatch(strategyID string) {
 	filledCount := 0
 	pendingCount := 0
 	selectedSymbols := map[string]struct{}{}
+	if allowedNow, windows, configured := resolveEntryTimeWindows(inst, time.Now()); !allowedNow {
+		windowText := strings.TrimSpace(getString(inst.Config["entry_time_windows"]))
+		if windows != "" {
+			windowText = windows
+		}
+		if configured {
+			emitStrategyLog(inst, "info", fmt.Sprintf("本批信号空跑：当前时间不在有效开仓范围内 windows=%s now=%s", windowText, time.Now().Format("15:04")))
+			return
+		}
+	}
 	for i := 0; i < len(cands); i++ {
 		if selected >= availableSlots {
 			break
@@ -395,7 +545,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		if _, ok := selectedSymbols[symKey]; ok {
 			continue
 		}
-		if ok, remain, _ := canOpenSymbolByCooldown(inst, sig.Symbol, recentStats[symKey]); !ok {
+		if ok, remain, _ := canOpenSymbolByCooldown(inst, recentStats[symKey]); !ok {
 			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 仍在重复开仓冷却期 remaining=%s", sig.Symbol, remain.Truncate(time.Second)))
 			continue
 		}
@@ -407,21 +557,41 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 条件无效，适配度=%0.4f", sig.Symbol, c.rr))
 			continue
 		}
-		res := m.tryPlaceCandidate(inst, sig.Symbol, c.side, c.amount, sig.TakeProfit, sig.StopLoss, strings.TrimSpace(sig.SignalID))
+		slotIndex := openCount + selected + 1
+		side := c.side
+		takeProfit := sig.TakeProfit
+		stopLoss := sig.StopLoss
+		if forcedSide, ok := resolveNonNaturalEntrySide(inst, slotIndex); ok {
+			if forcedSide != side {
+				takeProfit, stopLoss = remapTPSLBySide(inst, forcedSide, c.px, sig.TakeProfit, sig.StopLoss)
+				emitStrategyLog(inst, "info", fmt.Sprintf("非自然开仓覆盖：slot=%d symbol=%s direction=%s->%s", slotIndex, sig.Symbol, side, forcedSide))
+			}
+			side = forcedSide
+		}
+		if side == "buy" {
+			if !(takeProfit > c.px && stopLoss > 0 && stopLoss < c.px) {
+				emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 非自然开仓后止盈止损无效 side=%s tp=%v sl=%v px=%v", sig.Symbol, side, takeProfit, stopLoss, c.px))
+				continue
+			}
+		} else if !(takeProfit > 0 && takeProfit < c.px && stopLoss > c.px) {
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 非自然开仓后止盈止损无效 side=%s tp=%v sl=%v px=%v", sig.Symbol, side, takeProfit, stopLoss, c.px))
+			continue
+		}
+		res := m.tryPlaceCandidate(inst, sig.Symbol, side, c.amount, takeProfit, stopLoss, strings.TrimSpace(sig.SignalID))
 		if res == candidatePlaceFilled || res == candidatePlacePending {
 			selected++
 			selectedSymbols[symKey] = struct{}{}
 			openSymbols[symKey] = struct{}{}
 			if res == candidatePlaceFilled {
 				filledCount++
-				emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓成功：%s 方向=%s 适配度=%0.4f，当前已占用 %d/%d 个仓位", sig.Symbol, c.side, c.rr, openCount+selected, maxPos))
+				emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓成功：%s 方向=%s 适配度=%0.4f，当前已占用 %d/%d 个仓位", sig.Symbol, side, c.rr, openCount+selected, maxPos))
 			} else {
 				pendingCount++
-				emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓请求已提交：%s 方向=%s 适配度=%0.4f，已预留 %d/%d 个仓位，等待成交确认", sig.Symbol, c.side, c.rr, openCount+selected, maxPos))
+				emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓请求已提交：%s 方向=%s 适配度=%0.4f，已预留 %d/%d 个仓位，等待成交确认", sig.Symbol, side, c.rr, openCount+selected, maxPos))
 			}
 			continue
 		}
-		emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓失败：%s 方向=%s 适配度=%0.4f", sig.Symbol, c.side, c.rr))
+		emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓失败：%s 方向=%s 适配度=%0.4f", sig.Symbol, side, c.rr))
 	}
 	if selected == 0 {
 		emitStrategyLog(inst, "info", "本批信号未找到可开仓标的")
@@ -500,22 +670,15 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 		return
 	}
 	side := strings.ToLower(strings.TrimSpace(s.Side))
-	if side == "long" {
-		side = "buy"
-	} else if side == "short" {
-		side = "sell"
-	} else if side == "auto" || side == "both" {
+	if side == "auto" || side == "both" {
 		side = ""
+	} else {
+		side = normalizeStrategySide(side)
 	}
 	if side == "" {
-		side = strings.ToLower(strings.TrimSpace(getString(inst.Config["default_open_side"])))
+		side = normalizeStrategySide(getString(inst.Config["default_open_side"]))
 		if side == "" {
 			side = "buy"
-		}
-		if side == "long" {
-			side = "buy"
-		} else if side == "short" {
-			side = "sell"
 		}
 	}
 	if side != "buy" && side != "sell" {

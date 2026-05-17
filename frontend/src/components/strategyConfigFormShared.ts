@@ -20,6 +20,9 @@ export type StrategyFormConfig = {
   min_precision: number;
   min_volatility: number;
   select_limit: number;
+  non_natural_entry_enabled: boolean;
+  non_natural_entry_sequence: string;
+  entry_time_windows: string;
 };
 
 export type StrategyConfigMarketSymbol = {
@@ -53,7 +56,14 @@ const getCfgNumber = (cfg: Record<string, unknown>, key: string, fallback: numbe
 
 const getCfgBool = (cfg: Record<string, unknown>, key: string, fallback: boolean) => {
   const v = cfg[key];
-  return typeof v === 'boolean' ? v : fallback;
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v !== 0;
+  if (typeof v === 'string') {
+    const normalized = v.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+  }
+  return fallback;
 };
 
 export const parseFixedSymbols = (raw: string): string[] => {
@@ -88,6 +98,9 @@ export const createDefaultStrategyConfig = (): StrategyFormConfig => ({
   min_precision: 5,
   min_volatility: 5,
   select_limit: 20,
+  non_natural_entry_enabled: false,
+  non_natural_entry_sequence: '多,多,多,多,空',
+  entry_time_windows: '',
 });
 
 export const strategyConfigFromExisting = (cfg: Record<string, unknown>): StrategyFormConfig => {
@@ -114,6 +127,9 @@ export const strategyConfigFromExisting = (cfg: Record<string, unknown>): Strate
     min_precision: getCfgNumber(cfg, 'min_precision', 5),
     min_volatility: getCfgNumber(cfg, 'min_volatility', 5),
     select_limit: getCfgNumber(cfg, 'select_limit', 20),
+    non_natural_entry_enabled: getCfgBool(cfg, 'non_natural_entry_enabled', false),
+    non_natural_entry_sequence: getCfgString(cfg, 'non_natural_entry_sequence', '多,多,多,多,空'),
+    entry_time_windows: getCfgString(cfg, 'entry_time_windows', ''),
   };
 };
 
@@ -139,4 +155,7 @@ export const buildStrategyConfigPayload = (cfg: StrategyFormConfig) => ({
   min_precision: Number(cfg.min_precision) || 0,
   min_volatility: Number(cfg.min_volatility) || 0,
   select_limit: Number(cfg.select_limit) || 20,
+  non_natural_entry_enabled: cfg.non_natural_entry_enabled,
+  non_natural_entry_sequence: cfg.non_natural_entry_sequence.trim(),
+  entry_time_windows: cfg.entry_time_windows.trim(),
 });

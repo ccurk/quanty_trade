@@ -55,7 +55,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	if amount <= 0 {
 		return
 	}
-	if ok, remain, _ := canOpenSymbolByCooldown(inst, symbol, loadRecentEntryStats(inst, 1)[exchange.NormalizeSymbol(symbol)]); !ok {
+	if ok, remain, _ := canOpenSymbolByCooldown(inst, loadRecentEntryStats(inst, 1)[exchange.NormalizeSymbol(symbol)]); !ok {
 		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：%s 仍在重复开仓冷却期 remaining=%s", symbol, remain.Truncate(time.Second)))
 		return
 	}

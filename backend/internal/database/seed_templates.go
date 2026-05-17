@@ -71,4 +71,9 @@ func SeedBuiltInTemplates(adminID uint) {
 		"Day5: 市场状态识别 + 自适应参数 + 综合评分卡（Redis 模式）",
 		"meme_contract_signal_engine_v6_day5.py",
 	)
+	seed(
+		"Meme 合约信号计算引擎 v7 — Day6 (Strict Trend Filter)",
+		"Day6: 更保守的趋势确认版，只做高置信度、量价和 4h 方向更一致的机会（Redis 模式）",
+		"meme_contract_signal_engine_v7_day6.py",
+	)
 }

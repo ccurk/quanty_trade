@@ -232,6 +232,60 @@ export function StrategyConfigForm({
         </div>
       </div>
 
+      <div>
+        <label className="block text-sm font-medium text-gray-500 mb-2">非自然开仓</label>
+        <div className={`rounded-2xl border p-4 space-y-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-sm font-medium text-gray-400">按仓位序号强制开仓方向</div>
+              <div className="text-xs text-gray-500 mt-1">开启后，第 1 到第 N 个仓位会优先按你配置的方向开仓，例如 `多,多,多,多,空` 或 `多多多多低`。</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onChange({ ...config, non_natural_entry_enabled: !config.non_natural_entry_enabled })}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+            >
+              {config.non_natural_entry_enabled ? '已开启' : '未开启'}
+            </button>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">方向序列</label>
+            <input
+              type="text"
+              value={config.non_natural_entry_sequence}
+              onChange={(e) => onChange({ ...config, non_natural_entry_sequence: e.target.value })}
+              placeholder="多,多,多,多,空"
+              className={`w-full px-4 py-2.5 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+            />
+            <div className="mt-2 text-xs text-gray-500">
+              支持 `多/空`、`buy/sell`、`long/short`，也兼容你现在这种连续写法；超出配置长度的仓位会继续按策略自然方向执行。
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-500 mb-2">有效时间范围</label>
+        <div className={`rounded-2xl border p-4 space-y-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+          <div className="text-xs text-gray-500">
+            仅在这个时间范围内允许开仓，其他时间继续接收行情但不会下单；留空表示全天有效。支持多个时间段和跨天时间。
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">时间段</label>
+            <input
+              type="text"
+              value={config.entry_time_windows}
+              onChange={(e) => onChange({ ...config, entry_time_windows: e.target.value })}
+              placeholder="09:00-11:30,13:00-18:00 或 22:00-02:00"
+              className={`w-full px-4 py-2.5 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+            />
+            <div className="mt-2 text-xs text-gray-500">
+              使用服务端本地时间判断，格式为 `HH:mm-HH:mm`，多个时间段用逗号分隔。
+            </div>
+          </div>
+        </div>
+      </div>
+
       {showTemplateSelector && (
         <div>
           <label className="block text-sm font-medium text-gray-500 mb-2">选择模板</label>
