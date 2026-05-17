@@ -18,7 +18,7 @@ import meme_contract_signal_engine_v6_day5 as base
 base.Config.MAX_PRICE = 5.0
 base.Config.MIN_PRECISION = 5
 base.Config.MIN_VOLATILITY = 6.0
-base.Config.MIN_CONFIDENCE = 0.65
+base.Config.MIN_CONFIDENCE = 0.62
 base.Config.TP_RATIO = 0.06
 base.Config.SL_RATIO = 0.028
 base.Config.WARMUP_BARS = 180
@@ -28,12 +28,12 @@ base.Config.TF_ALIGN_BOOST = 0.30
 base.Config.TF_CONFLICT_PENALTY = 0.25
 
 
-base.ADAPTIVE_CONFIGS[base.MarketRegime.TRENDING_UP] = base.AdaptiveConfig(0.065, 0.028, 0.68, 0.04, 0.02, 1.0, "v10 trend long")
-base.ADAPTIVE_CONFIGS[base.MarketRegime.TRENDING_DOWN] = base.AdaptiveConfig(0.065, 0.028, 0.68, 0.04, 0.02, 1.0, "v10 trend short")
-base.ADAPTIVE_CONFIGS[base.MarketRegime.REVERSAL_UP] = base.AdaptiveConfig(0.055, 0.025, 0.72, 0.035, 0.018, 0.8, "v10 reversal long")
-base.ADAPTIVE_CONFIGS[base.MarketRegime.REVERSAL_DOWN] = base.AdaptiveConfig(0.055, 0.025, 0.72, 0.035, 0.018, 0.8, "v10 reversal short")
-base.ADAPTIVE_CONFIGS[base.MarketRegime.RANGING] = base.AdaptiveConfig(0.045, 0.022, 0.75, 0.025, 0.015, 0.6, "v10 ranging skip")
-base.ADAPTIVE_CONFIGS[base.MarketRegime.UNKNOWN] = base.AdaptiveConfig(0.050, 0.025, 0.75, 0.028, 0.016, 0.6, "v10 unknown skip")
+base.ADAPTIVE_CONFIGS[base.MarketRegime.TRENDING_UP] = base.AdaptiveConfig(0.065, 0.028, 0.66, 0.04, 0.02, 1.0, "v10 trend long")
+base.ADAPTIVE_CONFIGS[base.MarketRegime.TRENDING_DOWN] = base.AdaptiveConfig(0.065, 0.028, 0.66, 0.04, 0.02, 1.0, "v10 trend short")
+base.ADAPTIVE_CONFIGS[base.MarketRegime.REVERSAL_UP] = base.AdaptiveConfig(0.055, 0.025, 0.69, 0.035, 0.018, 0.8, "v10 reversal long")
+base.ADAPTIVE_CONFIGS[base.MarketRegime.REVERSAL_DOWN] = base.AdaptiveConfig(0.055, 0.025, 0.69, 0.035, 0.018, 0.8, "v10 reversal short")
+base.ADAPTIVE_CONFIGS[base.MarketRegime.RANGING] = base.AdaptiveConfig(0.045, 0.022, 0.70, 0.025, 0.015, 0.6, "v10 ranging relaxed")
+base.ADAPTIVE_CONFIGS[base.MarketRegime.UNKNOWN] = base.AdaptiveConfig(0.050, 0.025, 0.70, 0.028, 0.016, 0.6, "v10 unknown relaxed")
 
 
 def _reject(result: base.SignalResult, reason: str) -> base.SignalResult:
@@ -140,9 +140,9 @@ def _calculate_aggressive_thresholds(result):
     ls_ratio = result.ls_ratio
     
     base_thresholds = {
-        "trending": {"score": 58, "confidence": 0.65, "rr": 1.1, "vol_ratio": 0.85},
-        "reversal": {"score": 60, "confidence": 0.72, "rr": 1.2, "vol_ratio": 0.90},
-        "ranging": {"score": 64, "confidence": 0.75, "rr": 1.4, "vol_ratio": 1.00},
+        "trending": {"score": 56, "confidence": 0.63, "rr": 1.05, "vol_ratio": 0.80},
+        "reversal": {"score": 58, "confidence": 0.68, "rr": 1.10, "vol_ratio": 0.85},
+        "ranging": {"score": 60, "confidence": 0.70, "rr": 1.20, "vol_ratio": 0.90},
     }
     
     funding_adj = _calculate_funding_rate_adjustment(funding_rate)
@@ -160,16 +160,16 @@ def _calculate_aggressive_thresholds(result):
         regime_key = "ranging"
     
     if atr_percentile > 0.75:
-        thresholds["score"] = max(54, thresholds["score"] - 4)
-        thresholds["confidence"] = max(0.62, thresholds["confidence"] - 0.04)
+        thresholds["score"] = max(52, thresholds["score"] - 4)
+        thresholds["confidence"] = max(0.60, thresholds["confidence"] - 0.04)
         thresholds["rr"] = max(1.0, thresholds["rr"] - 0.1)
-        thresholds["vol_ratio"] = max(0.80, thresholds["vol_ratio"] - 0.05)
+        thresholds["vol_ratio"] = max(0.75, thresholds["vol_ratio"] - 0.05)
     
     if not _is_high_liquidity_hour():
         thresholds["score"] += 1
-        thresholds["confidence"] += 0.01
-        thresholds["rr"] += 0.05
-        thresholds["vol_ratio"] += 0.03
+        thresholds["confidence"] += 0.0
+        thresholds["rr"] += 0.03
+        thresholds["vol_ratio"] += 0.02
     
     thresholds["confidence"] = max(thresholds["confidence"] + total_adjustment, 0.60)
     
@@ -242,19 +242,20 @@ def _aggressive_filter(result: base.SignalResult, candles) -> base.SignalResult:
         return result
 
     regime = result.regime_result.regime
+    confidence = result.confidence
     thresholds = _calculate_aggressive_thresholds(result)
     
     manipulation_risk = _detect_manipulation_risk(result, candles)
     if manipulation_risk["risk"] == "high":
-        if confidence < 0.75:
+        if confidence < 0.68:
             return _reject(result, f"v10 市场操纵风险: {manipulation_risk['reason']}")
     
     if not _is_high_liquidity_hour():
-        if result.confidence < 0.70:
+        if confidence < 0.66:
             return _reject(result, "v10 低流动性时段需要更高置信度")
     
     if regime in (base.MarketRegime.RANGING, base.MarketRegime.UNKNOWN):
-        if result.confidence < 0.72 or result.score_card.overall_score < 66:
+        if confidence < 0.68 or result.score_card.overall_score < 60:
             return _reject(result, f"v10 skip regime={regime.value} conf={result.confidence:.4f} score={result.score_card.overall_score:.1f}")
 
     if result.score_card.overall_score < thresholds["score"]:
@@ -268,55 +269,55 @@ def _aggressive_filter(result: base.SignalResult, candles) -> base.SignalResult:
         return _reject(result, "v10 volatility too extreme")
 
     if result.vol_ratio < thresholds["vol_ratio"] and not result.vol_boost:
-        if result.confidence < 0.75:
+        if confidence < 0.72:
             return _reject(result, f"v10 volume weak={result.vol_ratio:.2f} < {thresholds['vol_ratio']}")
 
     funding_bias = thresholds["funding_bias"]
     if funding_bias == "long" and result.direction == "short":
-        if result.confidence < 0.78:
+        if confidence < 0.74:
             return _reject(result, f"v10 费率偏多时做空需要更高置信度: {thresholds['funding_reason']}")
     elif funding_bias == "short" and result.direction == "long":
-        if result.confidence < 0.78:
+        if confidence < 0.74:
             return _reject(result, f"v10 费率偏空时做多需要更高置信度: {thresholds['funding_reason']}")
 
     if result.direction == "long":
         if result.ema_trend != "up":
-            if result.confidence < 0.75:
+            if confidence < 0.70:
                 return _reject(result, "v10 need ema up for long")
         if result.cvd_trend == "down" or result.obv_trend == "down":
-            if result.confidence < 0.78:
+            if confidence < 0.73:
                 return _reject(result, "v10 flow against long")
         if result.tf4h_direction and result.tf4h_direction != "long":
-            if result.confidence < 0.80:
+            if confidence < 0.76:
                 return _reject(result, "v10 4h conflict long")
         if regime == base.MarketRegime.TRENDING_DOWN:
-            if result.confidence < 0.82:
+            if confidence < 0.78:
                 return _reject(result, "v10 regime down for long")
     else:
         if result.ema_trend != "down":
-            if result.confidence < 0.75:
+            if confidence < 0.70:
                 return _reject(result, "v10 need ema down for short")
         if result.cvd_trend == "up" or result.obv_trend == "up":
-            if result.confidence < 0.78:
+            if confidence < 0.73:
                 return _reject(result, "v10 flow against short")
         if result.tf4h_direction and result.tf4h_direction != "short":
-            if result.confidence < 0.80:
+            if confidence < 0.76:
                 return _reject(result, "v10 4h conflict short")
         if regime == base.MarketRegime.TRENDING_UP:
-            if result.confidence < 0.82:
+            if confidence < 0.78:
                 return _reject(result, "v10 regime up for short")
 
     if regime in (base.MarketRegime.REVERSAL_UP, base.MarketRegime.REVERSAL_DOWN):
         need_div = "bullish" if result.direction == "long" else "bearish"
-        if result.confidence < 0.78:
+        if confidence < 0.72:
             return _reject(result, "v10 reversal confidence low")
         if result.obv_divergence != need_div:
-            if result.confidence < 0.82:
+            if confidence < 0.78:
                 return _reject(result, "v10 reversal needs divergence")
 
     rr = _rr(result)
     if rr < thresholds["rr"]:
-        if result.confidence < 0.80:
+        if confidence < 0.76:
             return _reject(result, f"v10 rr too low={rr:.2f} < {thresholds['rr']}")
 
     aggressive_position = _calculate_aggressive_position(result, thresholds)
@@ -446,9 +447,6 @@ class MemeSignalEngineV10(base.MemeSignalEngineV6):
                         20,
                     )
                 continue
-            
-            aggressive_position = _calculate_aggressive_position(result, _calculate_aggressive_thresholds(result))
-            result.position_sizing.usdt_amount *= aggressive_position["final_multiplier"]
             
             self._emit_signal(redis_conn, result)
             self.last_signal_at[symbol] = now
