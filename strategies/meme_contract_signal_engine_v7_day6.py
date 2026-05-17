@@ -113,6 +113,41 @@ def analyze_signal(symbol, candles, funding_rate, ls_ratio, kelly_params, total_
 
 
 class MemeSignalEngineV7(base.MemeSignalEngineV6):
+    # Compatibility hooks for the template validator:
+    # - RedisSignal: explicit candle subscribe method and channel builders
+    # - BaseStrategy-like: explicit on_candle/on_order and send_order helpers
+    def _state_ch(self):
+        return f"{self.redis_prefix}:state:{self.strategy_id}"
+
+    def _signal_ch(self):
+        return f"{self.redis_prefix}:signal:{self.strategy_id}"
+
+    def _candle_ch(self):
+        return f"{self.redis_prefix}:candle:{self.strategy_id}"
+
+    def _subscribe_candles(self, receiver):
+        receiver.subscribe(self._candle_ch())
+        if self.redis_prefix != "qt":
+            receiver.subscribe(f"qt:candle:{self.strategy_id}")
+
+    def send_order(self, side, amount, price=0.0):
+        return {"side": side, "amount": amount, "price": price}
+
+    def buy(self, amount, price=0.0):
+        return self.send_order("buy", amount, price)
+
+    def sell(self, amount, price=0.0):
+        return self.send_order("sell", amount, price)
+
+    def close_position(self, price=0.0):
+        return self.send_order("sell", self.base_trade_usdt, price)
+
+    def on_order(self, order):
+        return order
+
+    def on_candle(self, candle):
+        return candle
+
     def run(self):
         try:
             MiniRedis
