@@ -193,6 +193,7 @@ func (m *Manager) optimizeStrategyInstance(inst *StrategyInstance, trigger strin
 	windowStart := now.Add(-lookback)
 	model := firstNonEmpty(
 		strings.TrimSpace(getString(inst.Config["auto_optimize_model"])),
+		strings.TrimSpace(conf.C().AI.Optimizer.Model),
 		strings.TrimSpace(os.Getenv("AI_OPTIMIZER_MODEL")),
 	)
 
@@ -475,6 +476,9 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 		return "", "", fmt.Errorf("missing optimization input")
 	}
 	provider := strings.ToLower(strings.TrimSpace(getString(inst.Config["auto_optimize_provider"])))
+	if provider == "" {
+		provider = strings.ToLower(strings.TrimSpace(conf.C().AI.Optimizer.Provider))
+	}
 	defaultAPIURL := "https://api.openai.com/v1/chat/completions"
 	switch provider {
 	case "openrouter":
@@ -482,11 +486,13 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	}
 	apiURL := firstNonEmpty(
 		strings.TrimSpace(getString(inst.Config["auto_optimize_api_url"])),
+		strings.TrimSpace(conf.C().AI.Optimizer.APIURL),
 		strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_URL")),
 		defaultAPIURL,
 	)
 	apiKeyCandidates := []string{
 		strings.TrimSpace(getString(inst.Config["auto_optimize_api_key"])),
+		strings.TrimSpace(conf.C().AI.Optimizer.APIKey),
 		strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_KEY")),
 	}
 	if provider == "openrouter" {
@@ -496,6 +502,7 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	apiKey := firstNonEmpty(apiKeyCandidates...)
 	model := firstNonEmpty(
 		strings.TrimSpace(getString(inst.Config["auto_optimize_model"])),
+		strings.TrimSpace(conf.C().AI.Optimizer.Model),
 		strings.TrimSpace(os.Getenv("AI_OPTIMIZER_MODEL")),
 	)
 	if apiKey == "" {
@@ -511,6 +518,7 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	}
 	systemPrompt := firstNonEmpty(
 		strings.TrimSpace(getString(inst.Config["auto_optimize_system_prompt"])),
+		strings.TrimSpace(conf.C().AI.Optimizer.SystemPrompt),
 		strings.TrimSpace(os.Getenv("AI_OPTIMIZER_SYSTEM_PROMPT")),
 		"你是资深量化交易策略工程师。请基于最近3小时的持仓、订单和合约行情摘要，优化现有Python策略代码。必须保留现有项目的 websocket/redis 运行协议、run() 入口、信号输出格式和风险控制接口。优先调整参数、过滤逻辑、仓位控制和评分机制，避免破坏项目集成。优先做最小必要修改，不要重写框架。只返回完整 Python 代码，不要解释。",
 	)
@@ -537,11 +545,13 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	if provider == "openrouter" || strings.Contains(strings.ToLower(apiURL), "openrouter.ai") {
 		httpReferer := firstNonEmpty(
 			strings.TrimSpace(getString(inst.Config["auto_optimize_http_referer"])),
+			strings.TrimSpace(conf.C().AI.Optimizer.HTTPReferer),
 			strings.TrimSpace(os.Getenv("OPENROUTER_HTTP_REFERER")),
 			strings.TrimSpace(os.Getenv("AI_OPTIMIZER_HTTP_REFERER")),
 		)
 		xTitle := firstNonEmpty(
 			strings.TrimSpace(getString(inst.Config["auto_optimize_app_name"])),
+			strings.TrimSpace(conf.C().AI.Optimizer.AppName),
 			strings.TrimSpace(os.Getenv("OPENROUTER_APP_NAME")),
 			strings.TrimSpace(os.Getenv("AI_OPTIMIZER_APP_NAME")),
 			"QuantyTrade",

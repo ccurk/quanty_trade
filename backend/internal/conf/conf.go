@@ -21,6 +21,7 @@ type Config struct {
 	Exchange ExchangeConfig `yaml:"exchange"`
 	Redis    RedisConfig    `yaml:"redis"`
 	Telegram TelegramConfig `yaml:"telegram"`
+	AI       AIConfig       `yaml:"ai"`
 }
 
 type ServerConfig struct {
@@ -77,6 +78,20 @@ type TelegramConfig struct {
 	Enabled            bool   `yaml:"enabled"`
 	BotToken           string `yaml:"bot_token"`
 	PollTimeoutSeconds int    `yaml:"poll_timeout_seconds"`
+}
+
+type AIConfig struct {
+	Optimizer AIOptimizerConfig `yaml:"optimizer"`
+}
+
+type AIOptimizerConfig struct {
+	Provider     string `yaml:"provider"`
+	Model        string `yaml:"model"`
+	APIURL       string `yaml:"api_url"`
+	APIKey       string `yaml:"api_key"`
+	SystemPrompt string `yaml:"system_prompt"`
+	HTTPReferer  string `yaml:"http_referer"`
+	AppName      string `yaml:"app_name"`
 }
 
 type BinanceConfig struct {
@@ -151,6 +166,16 @@ func defaultConfig() Config {
 			Enabled:            false,
 			BotToken:           "",
 			PollTimeoutSeconds: 30,
+		},
+		AI: AIConfig{
+			Optimizer: AIOptimizerConfig{
+				Provider:    "openrouter",
+				Model:       "anthropic/claude-opus-4.8-fast",
+				APIURL:      "https://openrouter.ai/api/v1/chat/completions",
+				APIKey:      "",
+				HTTPReferer: "",
+				AppName:     "QuantyTrade",
+			},
 		},
 	}
 }
@@ -464,6 +489,40 @@ func applyEnvOverrides(c *Config) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			c.Telegram.PollTimeoutSeconds = n
 		}
+	}
+
+	if v := strings.TrimSpace(os.Getenv("AI_OPTIMIZER_PROVIDER")); v != "" {
+		c.AI.Optimizer.Provider = v
+	}
+	if v := strings.TrimSpace(os.Getenv("AI_OPTIMIZER_MODEL")); v != "" {
+		c.AI.Optimizer.Model = v
+	}
+	if v := strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_URL")); v != "" {
+		c.AI.Optimizer.APIURL = v
+	}
+	if v := os.Getenv("AI_OPTIMIZER_API_KEY"); v != "" {
+		c.AI.Optimizer.APIKey = v
+	}
+	if v := os.Getenv("OPENROUTER_API_KEY"); v != "" {
+		c.AI.Optimizer.APIKey = v
+	}
+	if v := os.Getenv("OPENAI_API_KEY"); v != "" && c.AI.Optimizer.APIKey == "" {
+		c.AI.Optimizer.APIKey = v
+	}
+	if v := os.Getenv("AI_OPTIMIZER_SYSTEM_PROMPT"); v != "" {
+		c.AI.Optimizer.SystemPrompt = v
+	}
+	if v := strings.TrimSpace(os.Getenv("AI_OPTIMIZER_HTTP_REFERER")); v != "" {
+		c.AI.Optimizer.HTTPReferer = v
+	}
+	if v := strings.TrimSpace(os.Getenv("OPENROUTER_HTTP_REFERER")); v != "" {
+		c.AI.Optimizer.HTTPReferer = v
+	}
+	if v := strings.TrimSpace(os.Getenv("AI_OPTIMIZER_APP_NAME")); v != "" {
+		c.AI.Optimizer.AppName = v
+	}
+	if v := strings.TrimSpace(os.Getenv("OPENROUTER_APP_NAME")); v != "" {
+		c.AI.Optimizer.AppName = v
 	}
 }
 

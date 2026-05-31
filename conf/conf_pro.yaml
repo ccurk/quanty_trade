@@ -45,3 +45,12 @@ redis:
   password: "work@..."
   db: 0
   prefix: "qt"
+
+ai:
+  optimizer:
+    provider: "openrouter"
+    model: "anthropic/claude-opus-4.7"
+    api_url: "https://openrouter.ai/api/v1/chat/completions"
+    api_key: "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"
+    http_referer: "https://quanty.qxyz.xyz"
+    app_name: "QuantyTrade"
