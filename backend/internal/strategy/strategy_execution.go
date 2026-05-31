@@ -291,10 +291,12 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 		UpdatedAt:       time.Now(),
 	})
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
-	m.notifyTradeClosed(inst, sym, strings.ToLower(order.Side), order.Amount, order.Price, strings.ToLower(order.Status), "strategy_close")
+	var closeMetrics *TradeCloseMetrics
 	if strings.ToLower(order.Status) == "filled" {
 		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, 0, 0, order.Timestamp)
+		closeMetrics = loadTradeCloseMetrics(inst.OwnerID, inst.ID, sym)
 	}
+	m.notifyTradeClosed(inst, sym, strings.ToLower(order.Side), order.Amount, order.Price, strings.ToLower(order.Status), "strategy_close", closeMetrics)
 	go func(ownerID uint, symbol string) {
 		if summary, err := bx.CancelUSDMAllSymbolOrdersDetailed(ownerID, symbol); err != nil {
 			emitStrategyLog(inst, "error", fmt.Sprintf("平仓后立即撤销该交易对全部委托失败 symbol=%s err=%v", symbol, err))
@@ -378,9 +380,11 @@ func (m *Manager) closeSpotPosition(inst *StrategyInstance, sym string) error {
 			"updated_at":        time.Now(),
 		})
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
-	m.notifyTradeClosed(inst, sym, "sell", order.Amount, order.Price, strings.ToLower(order.Status), "strategy_close")
+	var closeMetrics *TradeCloseMetrics
 	if strings.ToLower(order.Status) == "filled" {
 		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, "sell", order.Amount, order.Price, 0, 0, order.Timestamp)
+		closeMetrics = loadTradeCloseMetrics(inst.OwnerID, inst.ID, sym)
 	}
+	m.notifyTradeClosed(inst, sym, "sell", order.Amount, order.Price, strings.ToLower(order.Status), "strategy_close", closeMetrics)
 	return nil
 }

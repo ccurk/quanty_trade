@@ -124,8 +124,12 @@ func (s *Service) NotifyTradeOpened(ownerID uint, strategyID string, strategyNam
 	s.broadcast(buildTelegramCard("📈", "开仓成交", lines...))
 }
 
-func (s *Service) NotifyTradeClosed(ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, qty float64, price float64, status string, reason string) {
+func (s *Service) NotifyTradeClosed(ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, qty float64, price float64, status string, reason string, metrics *strategy.TradeCloseMetrics) {
 	notional := qty * price
+	exitPrice := price
+	if metrics != nil && metrics.ExitPrice > 0 {
+		exitPrice = metrics.ExitPrice
+	}
 	lines := []string{
 		cardKV("策略", displayValue(strategyName, strategyID)),
 		cardKV("策略ID", displayValue(strategyID, "-")),
@@ -136,8 +140,18 @@ func (s *Service) NotifyTradeClosed(ownerID uint, strategyID string, strategyNam
 		cardKV("原因", formatCloseReason(reason)),
 		"──── 成交信息 ────",
 		cardKV("数量", formatFloat(qty)),
-		cardKV("成交价", formatFloat(price)),
+		cardKV("平仓价", formatFloat(exitPrice)),
 		cardKV("名义价值", formatFloat(notional)),
+	}
+	if metrics != nil {
+		lines = append(lines,
+			"──── 收益信息 ────",
+			cardKV("开仓价", formatFloat(metrics.EntryPrice)),
+			cardKV("已实现收益", formatSignedFloat(metrics.RealizedPnL)),
+			cardKV("收益率", formatPercent(metrics.RealizedReturnPct)),
+			cardKV("入场本金", formatFloat(metrics.RealizedNotional)),
+			cardKV("持仓时长", formatDuration(metrics.HoldingDuration)),
+		)
 	}
 	s.broadcast(buildTelegramCard("📉", "平仓成交", lines...))
 }
@@ -573,6 +587,43 @@ func displayValue(v string, fallback string) string {
 
 func formatFloat(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+func formatSignedFloat(v float64) string {
+	if v > 0 {
+		return "+" + formatFloat(v)
+	}
+	return formatFloat(v)
+}
+
+func formatPercent(v float64) string {
+	if v > 0 {
+		return fmt.Sprintf("+%.2f%%", v)
+	}
+	return fmt.Sprintf("%.2f%%", v)
+}
+
+func formatDuration(d time.Duration) string {
+	if d <= 0 {
+		return "-"
+	}
+	d = d.Round(time.Second)
+	h := d / time.Hour
+	d -= h * time.Hour
+	m := d / time.Minute
+	d -= m * time.Minute
+	s := d / time.Second
+	parts := make([]string, 0, 3)
+	if h > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", h))
+	}
+	if m > 0 {
+		parts = append(parts, fmt.Sprintf("%dm", m))
+	}
+	if s > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%ds", s))
+	}
+	return strings.Join(parts, " ")
 }
 
 func buildTelegramCard(icon string, title string, lines ...string) string {
