@@ -46,6 +46,11 @@ redis:
   db: 0
   prefix: "qt"
 
+telegram:
+  enabled: true
+  bot_token: "8531784709:AAF6gmy8CAoBzWTPmOfoLWrlG9Eabwa6Sng"
+  poll_timeout_seconds: 30
+
 ai:
   optimizer:
     provider: "openrouter"
