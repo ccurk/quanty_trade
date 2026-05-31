@@ -12,6 +12,7 @@ import (
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/models"
+	"quanty_trade/internal/strategy"
 
 	"github.com/gin-gonic/gin"
 )
@@ -584,7 +585,8 @@ func ClosePosition(c *gin.Context) {
 				<-ticker.C
 			}
 		}(uid, symbol)
-		stratMgr.NotifyExternalTradeClosed(uid, strategyID, strategyName, bx.GetName(), symbol, strings.ToLower(order.Side), qty, exitPrice, strings.ToLower(order.Status), "manual_close", nil)
+		metrics := strategy.BuildTradeCloseMetricsFromPosition(&existing, qty, exitPrice, order.Timestamp)
+		stratMgr.NotifyExternalTradeClosed(uid, strategyID, strategyName, bx.GetName(), symbol, strings.ToLower(order.Side), qty, exitPrice, strings.ToLower(order.Status), "manual_close", metrics)
 
 		c.JSON(http.StatusOK, gin.H{"status": "success"})
 		return
@@ -631,7 +633,8 @@ func ClosePosition(c *gin.Context) {
 			"status":            order.Status,
 			"updated_at":        time.Now(),
 		})
-	stratMgr.NotifyExternalTradeClosed(uid, pos.StrategyID, pos.StrategyName, pos.Exchange, pos.Symbol, "sell", order.Amount, order.Price, strings.ToLower(order.Status), "manual_close", nil)
+	metrics := strategy.BuildTradeCloseMetricsFromPosition(&pos, order.Amount, order.Price, order.Timestamp)
+	stratMgr.NotifyExternalTradeClosed(uid, pos.StrategyID, pos.StrategyName, pos.Exchange, pos.Symbol, "sell", order.Amount, order.Price, strings.ToLower(order.Status), "manual_close", metrics)
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }

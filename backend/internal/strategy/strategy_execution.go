@@ -248,6 +248,17 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 	_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, sym, "open").
 		Order("updated_at desc, id desc").
 		First(&pos).Error
+	fallbackMetrics := BuildTradeCloseMetricsFromPosition(&pos, pos.Amount, 0, time.Time{})
+	if bx != nil && fallbackMetrics != nil && fallbackMetrics.EntryPrice <= 0 {
+		if amt, entryPx, _, _, err := bx.USDMPositionInfo(inst.OwnerID, sym); err == nil {
+			if entryPx > 0 {
+				fallbackMetrics.EntryPrice = entryPx
+			}
+			if fallbackMetrics.RealizedNotional <= 0 && math.Abs(amt) > 0 && entryPx > 0 {
+				fallbackMetrics.RealizedNotional = math.Abs(amt) * entryPx
+			}
+		}
+	}
 	if found, canceled, err := m.cancelLinkedTPSLOrders(inst.OwnerID, inst.ID, sym); err != nil {
 		emitStrategyLog(inst, "error", fmt.Sprintf("平仓前撤销关联止盈止损失败 symbol=%s canceled=%d found=%d err=%v", sym, canceled, found, err))
 	} else if found > 0 {
@@ -294,7 +305,8 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 	var closeMetrics *TradeCloseMetrics
 	if strings.ToLower(order.Status) == "filled" {
 		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, 0, 0, order.Timestamp)
-		closeMetrics = loadTradeCloseMetrics(inst.OwnerID, inst.ID, sym)
+		fallbackMetrics = BuildTradeCloseMetricsFromPosition(&pos, order.Amount, order.Price, order.Timestamp)
+		closeMetrics = MergeTradeCloseMetrics(loadTradeCloseMetrics(inst.OwnerID, inst.ID, sym), fallbackMetrics)
 	}
 	m.notifyTradeClosed(inst, sym, strings.ToLower(order.Side), order.Amount, order.Price, strings.ToLower(order.Status), "strategy_close", closeMetrics)
 	go func(ownerID uint, symbol string) {
@@ -347,6 +359,7 @@ func (m *Manager) closeSpotPosition(inst *StrategyInstance, sym string) error {
 	if pos.Amount <= 0 {
 		return nil
 	}
+	fallbackMetrics := BuildTradeCloseMetricsFromPosition(&pos, pos.Amount, 0, time.Time{})
 	clientOrderID := models.GenerateUUID()
 	database.DB.Create(&models.StrategyOrder{
 		PositionID:    pos.ID,
@@ -383,7 +396,8 @@ func (m *Manager) closeSpotPosition(inst *StrategyInstance, sym string) error {
 	var closeMetrics *TradeCloseMetrics
 	if strings.ToLower(order.Status) == "filled" {
 		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, "sell", order.Amount, order.Price, 0, 0, order.Timestamp)
-		closeMetrics = loadTradeCloseMetrics(inst.OwnerID, inst.ID, sym)
+		fallbackMetrics = BuildTradeCloseMetricsFromPosition(&pos, order.Amount, order.Price, order.Timestamp)
+		closeMetrics = MergeTradeCloseMetrics(loadTradeCloseMetrics(inst.OwnerID, inst.ID, sym), fallbackMetrics)
 	}
 	m.notifyTradeClosed(inst, sym, "sell", order.Amount, order.Price, strings.ToLower(order.Status), "strategy_close", closeMetrics)
 	return nil

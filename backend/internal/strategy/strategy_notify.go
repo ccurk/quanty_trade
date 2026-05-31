@@ -20,6 +20,89 @@ type TradeCloseMetrics struct {
 	HoldingDuration   time.Duration
 }
 
+func BuildTradeCloseMetricsFromPosition(pos *models.StrategyPosition, qty float64, exitPrice float64, closeTime time.Time) *TradeCloseMetrics {
+	if pos == nil {
+		return nil
+	}
+	entryPrice := pos.AvgPrice
+	if exitPrice <= 0 {
+		exitPrice = pos.AvgClosePrice
+	}
+	if qty <= 0 {
+		if pos.ClosedQty > 0 {
+			qty = pos.ClosedQty
+		} else {
+			qty = pos.Amount
+		}
+	}
+	realizedNotional := pos.RealizedNotional
+	if realizedNotional <= 0 && qty > 0 && entryPrice > 0 {
+		realizedNotional = qty * entryPrice
+	}
+	realizedPnL := pos.RealizedPnL
+	if realizedPnL == 0 && qty > 0 && entryPrice > 0 && exitPrice > 0 {
+		dir := strings.ToLower(strings.TrimSpace(pos.Direction))
+		if dir == "short" {
+			realizedPnL = qty * (entryPrice - exitPrice)
+		} else {
+			realizedPnL = qty * (exitPrice - entryPrice)
+		}
+	}
+	if closeTime.IsZero() {
+		closeTime = pos.CloseTime
+	}
+	metrics := &TradeCloseMetrics{
+		EntryPrice:       entryPrice,
+		ExitPrice:        exitPrice,
+		RealizedPnL:      realizedPnL,
+		RealizedNotional: realizedNotional,
+		OpenTime:         pos.OpenTime,
+		CloseTime:        closeTime,
+	}
+	if realizedNotional > 0 {
+		metrics.RealizedReturnPct = (realizedPnL / realizedNotional) * 100
+	}
+	if !metrics.OpenTime.IsZero() && !metrics.CloseTime.IsZero() && metrics.CloseTime.After(metrics.OpenTime) {
+		metrics.HoldingDuration = metrics.CloseTime.Sub(metrics.OpenTime)
+	}
+	return metrics
+}
+
+func MergeTradeCloseMetrics(primary *TradeCloseMetrics, fallback *TradeCloseMetrics) *TradeCloseMetrics {
+	if primary == nil {
+		return fallback
+	}
+	if fallback == nil {
+		return primary
+	}
+	out := *primary
+	if out.EntryPrice <= 0 {
+		out.EntryPrice = fallback.EntryPrice
+	}
+	if out.ExitPrice <= 0 {
+		out.ExitPrice = fallback.ExitPrice
+	}
+	if out.RealizedPnL == 0 && fallback.RealizedPnL != 0 {
+		out.RealizedPnL = fallback.RealizedPnL
+	}
+	if out.RealizedNotional <= 0 {
+		out.RealizedNotional = fallback.RealizedNotional
+	}
+	if out.RealizedReturnPct == 0 && fallback.RealizedReturnPct != 0 {
+		out.RealizedReturnPct = fallback.RealizedReturnPct
+	}
+	if out.OpenTime.IsZero() {
+		out.OpenTime = fallback.OpenTime
+	}
+	if out.CloseTime.IsZero() {
+		out.CloseTime = fallback.CloseTime
+	}
+	if out.HoldingDuration <= 0 {
+		out.HoldingDuration = fallback.HoldingDuration
+	}
+	return &out
+}
+
 type RuntimeNotifier interface {
 	NotifyTradeOpened(ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, qty float64, price float64, takeProfit float64, stopLoss float64, status string)
 	NotifyTradeClosed(ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, qty float64, price float64, status string, reason string, metrics *TradeCloseMetrics)
