@@ -261,6 +261,16 @@ type DailyPnLEntry struct {
 	Trades            int     `json:"trades"`
 }
 
+type MonthlyPnLEntry struct {
+	Month             string  `json:"month"`
+	RealizedPnL       float64 `json:"realized_pnl"`
+	RealizedNotional  float64 `json:"realized_notional"`
+	RealizedReturnPct float64 `json:"realized_return_pct"`
+	Trades            int     `json:"trades"`
+	PositiveDays      int     `json:"positive_days"`
+	NegativeDays      int     `json:"negative_days"`
+}
+
 type PnLSummaryResponse struct {
 	UpdatedAt     time.Time         `json:"updated_at"`
 	UnrealizedPnL float64           `json:"unrealized_pnl"`
@@ -273,6 +283,7 @@ type PnLSummaryResponse struct {
 	Custom        *PnLPeriodSummary `json:"custom,omitempty"`
 	CustomLabel   string            `json:"custom_label,omitempty"`
 	Calendar      []DailyPnLEntry   `json:"calendar,omitempty"`
+	Monthly       []MonthlyPnLEntry `json:"monthly,omitempty"`
 }
 
 type DashboardResponse struct {
@@ -848,7 +859,7 @@ func ReferenceTemplate(c *gin.Context) {
 	var template models.StrategyTemplate
 	database.DB.First(&template, instance.TemplateID)
 
-	stratMgr.AddStrategy(instance.ID, instance.Name, template.Path, userID.(uint), config)
+	stratMgr.AddStrategy(instance.ID, instance.Name, template.Path, userID.(uint), template.ID, instance.StrategyVersionID, config)
 
 	c.JSON(http.StatusOK, instance)
 }

@@ -159,6 +159,37 @@ func loadLatestDiskStrategySource(inst *StrategyInstance, row *models.StrategyIn
 	return "", "", false
 }
 
+func resolveStrategySource(inst *StrategyInstance, row *models.StrategyInstance) (string, string, *uint, error) {
+	if row == nil {
+		return "", "", nil, fmt.Errorf("missing strategy row")
+	}
+	if row.StrategyVersionID != nil && row.StrategyVersion != nil {
+		code := strings.TrimSpace(row.StrategyVersion.Code)
+		path := strings.TrimSpace(row.StrategyVersion.Path)
+		if code != "" {
+			if path == "" {
+				path = fmt.Sprintf("db://strategy_version/%d", row.StrategyVersion.ID)
+			}
+			return code, path, row.StrategyVersionID, nil
+		}
+	}
+
+	code := strings.TrimSpace(row.Template.Code)
+	sourcePath := strings.TrimSpace(row.Template.Path)
+	if diskPath, diskCode, ok := loadLatestDiskStrategySource(inst, row); ok {
+		sourcePath = diskPath
+		code = diskCode
+		if row.Template.ID > 0 && row.StrategyVersionID == nil && diskCode != strings.TrimSpace(row.Template.Code) {
+			_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
+				Updates(map[string]interface{}{"code": diskCode, "path": diskPath, "updated_at": time.Now()}).Error
+		}
+	}
+	if code == "" {
+		return "", "", row.StrategyVersionID, fmt.Errorf("current strategy code is empty")
+	}
+	return code, sourcePath, row.StrategyVersionID, nil
+}
+
 func sanitizeStrategyRuntimeCode(code string) string {
 	if strings.TrimSpace(code) == "" {
 		return code
@@ -319,6 +350,10 @@ type StrategyInstance struct {
 	ID string `json:"id"`
 	// Name is the user-visible strategy name.
 	Name string `json:"name"`
+	// TemplateID is the backing template family id.
+	TemplateID uint `json:"template_id"`
+	// StrategyVersionID is the bound immutable version id, if any.
+	StrategyVersionID *uint `json:"strategy_version_id,omitempty"`
 	// Path points to the python file of this strategy.
 	Path             string `json:"path"`
 	RuntimePath      string `json:"runtime_path"`
@@ -378,6 +413,8 @@ type StrategyInstance struct {
 	candleEventInfo  map[string]string
 	candleEventAt    map[string]time.Time
 	tpslCancel       map[string]context.CancelFunc
+	optimizeRunning  bool
+	lastOptimizeAt   time.Time
 }
 
 // Manager manages lifecycle of all strategy instances and coordinates exchange access.
@@ -665,6 +702,7 @@ func (m *Manager) StartWorkers() {
 	go m.runOrderWorker()
 	go m.runStartWorker()
 	go m.runStopWorker()
+	go m.runAutoOptimizeWorker()
 }
 
 func (m *Manager) enqueueOrderForInstance(inst *StrategyInstance, symbol string, side string, amount float64, price float64, takeProfit float64, stopLoss float64, signalID string) {
@@ -689,20 +727,22 @@ func (m *Manager) SetRedisBus(b *bus.RedisBus) {
 // Typical usage:
 // - When creating a StrategyInstance in DB (API CreateStrategy)
 // - When syncing from DB on startup (SyncFromDB)
-func (m *Manager) AddStrategy(id, name, path string, ownerID uint, config map[string]interface{}) *StrategyInstance {
+func (m *Manager) AddStrategy(id, name, path string, ownerID uint, templateID uint, strategyVersionID *uint, config map[string]interface{}) *StrategyInstance {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	inst := &StrategyInstance{
-		ID:        id,
-		Name:      name,
-		Path:      path,
-		Config:    config,
-		Status:    StatusStopped,
-		OwnerID:   ownerID,
-		CreatedAt: time.Now(),
-		hub:       m.hub,
-		exchange:  m.exchange,
-		mgr:       m,
+		ID:                id,
+		Name:              name,
+		TemplateID:        templateID,
+		StrategyVersionID: strategyVersionID,
+		Path:              path,
+		Config:            config,
+		Status:            StatusStopped,
+		OwnerID:           ownerID,
+		CreatedAt:         time.Now(),
+		hub:               m.hub,
+		exchange:          m.exchange,
+		mgr:               m,
 	}
 	m.instances[id] = inst
 	return inst
@@ -717,23 +757,15 @@ func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, er
 	}
 
 	var row models.StrategyInstance
-	if err := database.DB.Preload("Template").Where("id = ?", inst.ID).First(&row).Error; err != nil {
+	if err := database.DB.Preload("Template").Preload("StrategyVersion").Where("id = ?", inst.ID).First(&row).Error; err != nil {
 		return resolveStrategyPath(inst.Path)
 	}
-
-	code := strings.TrimSpace(row.Template.Code)
-	sourcePath := strings.TrimSpace(row.Template.Path)
-	if diskPath, diskCode, ok := loadLatestDiskStrategySource(inst, &row); ok {
-		sourcePath = diskPath
-		if diskCode != code && row.Template.ID > 0 {
-			_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
-				Updates(map[string]interface{}{"code": diskCode, "path": diskPath, "updated_at": time.Now()}).Error
-		}
-		code = diskCode
-	}
-	if code == "" {
+	code, sourcePath, versionID, err := resolveStrategySource(inst, &row)
+	if err != nil {
 		return resolveStrategyPath(inst.Path)
 	}
+	inst.TemplateID = row.TemplateID
+	inst.StrategyVersionID = versionID
 
 	strategiesDir := conf.C().Paths.StrategiesDir
 	if strategiesDir == "" {
@@ -783,19 +815,17 @@ func (m *Manager) prepareBacktestStrategyFile(inst *StrategyInstance, backtestID
 	}
 
 	var row models.StrategyInstance
-	if err := database.DB.Preload("Template").Where("id = ?", inst.ID).First(&row).Error; err != nil {
+	if err := database.DB.Preload("Template").Preload("StrategyVersion").Where("id = ?", inst.ID).First(&row).Error; err != nil {
 		absPath, err2 := resolveStrategyPath(inst.Path)
 		return absPath, func() {}, err2
 	}
-
-	code := strings.TrimSpace(row.Template.Code)
-	if diskPath, diskCode, ok := loadLatestDiskStrategySource(inst, &row); ok {
-		if diskCode != code && row.Template.ID > 0 {
-			_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
-				Updates(map[string]interface{}{"code": diskCode, "path": diskPath, "updated_at": time.Now()}).Error
-		}
-		code = diskCode
+	code, _, versionID, err := resolveStrategySource(inst, &row)
+	if err != nil {
+		absPath, err2 := resolveStrategyPath(inst.Path)
+		return absPath, func() {}, err2
 	}
+	inst.TemplateID = row.TemplateID
+	inst.StrategyVersionID = versionID
 	if code == "" {
 		absPath, err := resolveStrategyPath(inst.Path)
 		return absPath, func() {}, err
@@ -1218,7 +1248,7 @@ func (m *Manager) SyncFromDB(db *gorm.DB) error {
 	//
 	// This is called once on backend startup.
 	var instances []models.StrategyInstance
-	if err := db.Preload("Template").Find(&instances).Error; err != nil {
+	if err := db.Preload("Template").Preload("StrategyVersion").Find(&instances).Error; err != nil {
 		return err
 	}
 
@@ -1231,67 +1261,36 @@ func (m *Manager) SyncFromDB(db *gorm.DB) error {
 			json.Unmarshal([]byte(inst.Config), &config)
 
 			path := strings.TrimSpace(inst.Template.Path)
-			needsWrite := path == ""
-			if !needsWrite {
-				if fi, err := os.Stat(path); err != nil || (err == nil && fi.IsDir()) {
-					needsWrite = true
-				}
-			}
-			if needsWrite {
-				filename := fmt.Sprintf("%s_%d.py", inst.Template.Name, inst.Template.AuthorID)
-				filename = strings.ReplaceAll(filename, " ", "_")
-				filename = filepath.Base(filename)
-				strategiesDir := conf.C().Paths.StrategiesDir
-				if strategiesDir == "" {
-					strategiesDir = conf.Path("strategies")
-				}
-				absDir, err := filepath.Abs(strategiesDir)
-				if err == nil {
-					_ = os.MkdirAll(absDir, 0o755)
-					candidate := ""
-					if strings.TrimSpace(inst.Template.Code) != "" {
-						absPath := filepath.Join(absDir, filename)
-						if err := os.WriteFile(absPath, []byte(inst.Template.Code), 0o644); err == nil {
-							candidate = absPath
-						}
-					} else {
-						// Try match existing file by name prefix
-						entries, _ := os.ReadDir(absDir)
-						prefix := strings.ToLower(strings.ReplaceAll(inst.Template.Name, " ", "_")) + "_"
-						for _, e := range entries {
-							if e.IsDir() {
-								continue
-							}
-							n := strings.ToLower(e.Name())
-							if strings.HasSuffix(n, ".py") && strings.HasPrefix(n, prefix) {
-								candidate = filepath.Join(absDir, e.Name())
-								break
-							}
-						}
-					}
-					if candidate != "" {
-						path = candidate
-						_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", inst.Template.ID).
-							Updates(map[string]interface{}{"path": candidate, "updated_at": time.Now()}).Error
-						logger.Infof("[SYNC PATH FIX] template_id=%d path=%s", inst.Template.ID, candidate)
+			versionID := inst.StrategyVersionID
+			if code, sourcePath, resolvedVersionID, err := resolveStrategySource(nil, &inst); err == nil {
+				if strings.TrimSpace(sourcePath) != "" {
+					path = sourcePath
+				} else if strings.TrimSpace(path) == "" && strings.TrimSpace(code) != "" {
+					if resolvedVersionID != nil {
+						path = fmt.Sprintf("db://strategy_version/%d", *resolvedVersionID)
+					} else if inst.Template.ID != 0 {
+						path = fmt.Sprintf("db://template/%d", inst.Template.ID)
 					}
 				}
+				versionID = resolvedVersionID
 			}
 			if path == "" {
-				path = inst.Template.Path
+				path = firstNonEmpty(strings.TrimSpace(inst.Template.Path), fmt.Sprintf("db://template/%d", inst.Template.ID))
 			}
 
 			m.instances[inst.ID] = &StrategyInstance{
-				ID:        inst.ID,
-				Name:      inst.Name,
-				Path:      path,
-				Config:    config,
-				Status:    StatusStopped,
-				OwnerID:   inst.OwnerID,
-				CreatedAt: inst.CreatedAt,
-				hub:       m.hub,
-				exchange:  m.exchange,
-				mgr:       m,
+				ID:                inst.ID,
+				Name:              inst.Name,
+				TemplateID:        inst.TemplateID,
+				StrategyVersionID: versionID,
+				Path:              path,
+				Config:            config,
+				Status:            StatusStopped,
+				OwnerID:           inst.OwnerID,
+				CreatedAt:         inst.CreatedAt,
+				hub:               m.hub,
+				exchange:          m.exchange,
+				mgr:               m,
 			}
 
 		}

@@ -80,6 +80,10 @@ type StrategyInstance struct {
 	TemplateID uint `json:"template_id"`
 	// Template is the joined template record.
 	Template StrategyTemplate `gorm:"foreignKey:TemplateID" json:"template"`
+	// StrategyVersionID points to the immutable version currently bound to this instance.
+	StrategyVersionID *uint `gorm:"index" json:"strategy_version_id,omitempty"`
+	// StrategyVersion is the joined bound version record.
+	StrategyVersion *StrategyVersion `gorm:"foreignKey:StrategyVersionID" json:"strategy_version,omitempty"`
 	// OwnerID is the user who owns this instance.
 	OwnerID uint `json:"owner_id"`
 	// Owner is the joined owner record.
@@ -282,6 +286,75 @@ type StrategyPosition struct {
 	// CloseTime is set when position becomes closed.
 	CloseTime time.Time `json:"close_time,omitempty"`
 	// UpdatedAt is when we last updated this row.
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// StrategyOptimizationRun records one automatic AI optimization attempt for a strategy.
+type StrategyOptimizationRun struct {
+	ID uint `gorm:"primaryKey" json:"id"`
+
+	StrategyID string `gorm:"type:varchar(64);index" json:"strategy_id"`
+	OwnerID    uint   `gorm:"index" json:"owner_id"`
+
+	Status  string `gorm:"type:varchar(32);index" json:"status"`
+	Trigger string `gorm:"type:varchar(32)" json:"trigger"`
+	Model   string `gorm:"type:varchar(128)" json:"model"`
+
+	WindowStart time.Time `json:"window_start"`
+	WindowEnd   time.Time `json:"window_end"`
+
+	BaseCodeHash      string `gorm:"type:varchar(64)" json:"base_code_hash"`
+	CandidateCodeHash string `gorm:"type:varchar(64)" json:"candidate_code_hash"`
+	Applied           bool   `json:"applied"`
+
+	Summary      string `gorm:"type:text" json:"summary"`
+	ErrorMessage string `gorm:"type:text" json:"error_message"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// StrategyVersion stores one versioned snapshot of a strategy template/code for a strategy instance.
+type StrategyVersion struct {
+	ID uint `gorm:"primaryKey" json:"id"`
+
+	StrategyID string `gorm:"type:varchar(64);index" json:"strategy_id"`
+	TemplateID uint   `gorm:"index" json:"template_id"`
+	OwnerID    uint   `gorm:"index" json:"owner_id"`
+
+	VersionHash string `gorm:"type:varchar(64);index" json:"version_hash"`
+	CodeHash    string `gorm:"type:varchar(64);index" json:"code_hash"`
+	CodeSize    int    `json:"code_size"`
+	Code        string `gorm:"type:text" json:"code"`
+
+	Source    string `gorm:"type:varchar(32);index" json:"source"`
+	Trigger   string `gorm:"type:varchar(32)" json:"trigger"`
+	Path      string `gorm:"type:text" json:"path"`
+	Summary   string `gorm:"type:text" json:"summary"`
+	IsCurrent bool   `gorm:"index" json:"is_current"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// StrategyPublishRecord records a version switch applied to a strategy.
+type StrategyPublishRecord struct {
+	ID uint `gorm:"primaryKey" json:"id"`
+
+	StrategyID string `gorm:"type:varchar(64);index" json:"strategy_id"`
+	TemplateID uint   `gorm:"index" json:"template_id"`
+	OwnerID    uint   `gorm:"index" json:"owner_id"`
+
+	RunID         *uint `gorm:"index" json:"run_id,omitempty"`
+	FromVersionID *uint `gorm:"index" json:"from_version_id,omitempty"`
+	ToVersionID   *uint `gorm:"index" json:"to_version_id,omitempty"`
+
+	Status      string `gorm:"type:varchar(32);index" json:"status"`
+	Trigger     string `gorm:"type:varchar(32)" json:"trigger"`
+	AppliedPath string `gorm:"type:text" json:"applied_path"`
+	Summary     string `gorm:"type:text" json:"summary"`
+
+	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

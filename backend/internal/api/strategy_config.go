@@ -66,5 +66,35 @@ func normalizeStrategyConfigMap(cfg map[string]interface{}) map[string]interface
 	if _, ok := out["hunger_stop_loss_pct"].(float64); !ok {
 		out["hunger_stop_loss_pct"] = 0.03
 	}
+	if _, ok := out["auto_optimize_enabled"].(bool); !ok {
+		out["auto_optimize_enabled"] = false
+	}
+	if _, ok := out["auto_optimize_provider"].(string); !ok {
+		out["auto_optimize_provider"] = ""
+	}
+	if _, ok := out["auto_optimize_api_url"].(string); !ok {
+		out["auto_optimize_api_url"] = ""
+	}
+	if _, ok := out["auto_optimize_interval_minutes"].(float64); !ok {
+		out["auto_optimize_interval_minutes"] = 180.0
+	}
+	if _, ok := out["auto_optimize_lookback_minutes"].(float64); !ok {
+		out["auto_optimize_lookback_minutes"] = 180.0
+	}
+	if _, ok := out["auto_optimize_max_symbols"].(float64); !ok {
+		out["auto_optimize_max_symbols"] = 6.0
+	}
+	if _, ok := out["auto_optimize_max_positions"].(float64); !ok {
+		out["auto_optimize_max_positions"] = 24.0
+	}
+	if _, ok := out["auto_optimize_max_orders"].(float64); !ok {
+		out["auto_optimize_max_orders"] = 48.0
+	}
+	if _, ok := out["auto_optimize_apply"].(bool); !ok {
+		out["auto_optimize_apply"] = true
+	}
+	if _, ok := out["auto_optimize_dry_run"].(bool); !ok {
+		out["auto_optimize_dry_run"] = false
+	}
 	return out
 }

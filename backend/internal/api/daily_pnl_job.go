@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -151,45 +152,71 @@ func loadDailyPnLCalendar(uid uint, days int) []DailyPnLEntry {
 	var rows []models.DailyPnL
 	_ = database.DB.Where("owner_id = ?", uid).Order("day desc").Limit(days).Find(&rows).Error
 	loc := time.Now().Location()
-	todayStart := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, loc)
-	todayEntry := buildDailyPnLEntryForRange(uid, todayStart, time.Now())
-	todayKey := todayStart.Format("2006-01-02")
-	replaceToday := false
-	for i := range rows {
-		if rows[i].Day == todayKey {
-			rows[i].RealizedPnL = todayEntry.RealizedPnL
-			rows[i].RealizedNotional = todayEntry.RealizedNotional
-			rows[i].Trades = todayEntry.Trades
-			replaceToday = true
-			break
-		}
+	today := time.Now()
+	todayStart := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, loc)
+	todayEntry := buildDailyPnLEntryForRange(uid, todayStart, today)
+	entryMap := map[string]DailyPnLEntry{}
+	for _, r := range rows {
+		entryMap[r.Day] = dailyPnLEntryFromRow(r)
 	}
-	if !replaceToday {
-		rows = append(rows, models.DailyPnL{
-			OwnerID:          uid,
-			Day:              todayKey,
-			StartTime:        todayStart,
-			EndTime:          time.Now(),
-			RealizedPnL:      todayEntry.RealizedPnL,
-			RealizedNotional: todayEntry.RealizedNotional,
-			Trades:           todayEntry.Trades,
-		})
-	}
-	out := make([]DailyPnLEntry, 0, len(rows))
-	for i := len(rows) - 1; i >= 0; i-- {
-		r := rows[i]
-		ret := 0.0
-		if r.RealizedNotional > 0 {
-			ret = (r.RealizedPnL / r.RealizedNotional) * 100
+	entryMap[todayStart.Format("2006-01-02")] = todayEntry
+	out := make([]DailyPnLEntry, 0, days)
+	for i := days - 1; i >= 0; i-- {
+		dayTime := todayStart.AddDate(0, 0, -i)
+		key := dayTime.Format("2006-01-02")
+		if entry, ok := entryMap[key]; ok {
+			out = append(out, entry)
+			continue
 		}
 		out = append(out, DailyPnLEntry{
-			Day:               r.Day,
-			RealizedPnL:       r.RealizedPnL,
-			RealizedNotional:  r.RealizedNotional,
-			RealizedReturnPct: ret,
-			Trades:            r.Trades,
+			Day:               key,
+			RealizedPnL:       0,
+			RealizedNotional:  0,
+			RealizedReturnPct: 0,
+			Trades:            0,
 		})
 	}
+	return out
+}
+
+func loadMonthlyPnLCalendar(uid uint, days int) []MonthlyPnLEntry {
+	daysData := loadDailyPnLCalendar(uid, days)
+	if len(daysData) == 0 {
+		return nil
+	}
+	monthMap := map[string]*MonthlyPnLEntry{}
+	for _, day := range daysData {
+		monthKey := ""
+		if len(day.Day) >= 7 {
+			monthKey = day.Day[:7]
+		}
+		if monthKey == "" {
+			continue
+		}
+		entry, ok := monthMap[monthKey]
+		if !ok {
+			entry = &MonthlyPnLEntry{Month: monthKey}
+			monthMap[monthKey] = entry
+		}
+		entry.RealizedPnL += day.RealizedPnL
+		entry.RealizedNotional += day.RealizedNotional
+		entry.Trades += day.Trades
+		if day.RealizedPnL > 0 {
+			entry.PositiveDays++
+		} else if day.RealizedPnL < 0 {
+			entry.NegativeDays++
+		}
+	}
+	out := make([]MonthlyPnLEntry, 0, len(monthMap))
+	for _, entry := range monthMap {
+		if entry.RealizedNotional > 0 {
+			entry.RealizedReturnPct = (entry.RealizedPnL / entry.RealizedNotional) * 100
+		}
+		out = append(out, *entry)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Month < out[j].Month
+	})
 	return out
 }
 
@@ -217,5 +244,19 @@ func buildDailyPnLEntryForRange(uid uint, start time.Time, end time.Time) DailyP
 		RealizedNotional:  row.RealizedNotional,
 		RealizedReturnPct: ret,
 		Trades:            int(row.Trades),
+	}
+}
+
+func dailyPnLEntryFromRow(r models.DailyPnL) DailyPnLEntry {
+	ret := 0.0
+	if r.RealizedNotional > 0 {
+		ret = (r.RealizedPnL / r.RealizedNotional) * 100
+	}
+	return DailyPnLEntry{
+		Day:               r.Day,
+		RealizedPnL:       r.RealizedPnL,
+		RealizedNotional:  r.RealizedNotional,
+		RealizedReturnPct: ret,
+		Trades:            r.Trades,
 	}
 }

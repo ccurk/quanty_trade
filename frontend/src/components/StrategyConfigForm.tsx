@@ -34,6 +34,26 @@ export function StrategyConfigForm({
 }: StrategyConfigFormProps) {
   const selectedSymbols = parseFixedSymbols(config.symbols || config.symbol || '');
   const selectedTemplateInfo = templates.find(t => t.id === selectedTemplate);
+  const providerOptions = [
+    { value: '', label: '跟随后端默认', url: '', desc: '使用环境变量 AI_OPTIMIZER_API_URL 和 AI_OPTIMIZER_MODEL' },
+    { value: 'openai', label: 'OpenAI 兼容', url: 'https://api.openai.com/v1/chat/completions', desc: '直接使用 OpenAI 兼容 chat/completions 接口' },
+    { value: 'openrouter', label: 'OpenRouter', url: 'https://openrouter.ai/api/v1/chat/completions', desc: '统一第三方模型转发入口，只需一个 OpenRouter Token 即可切换多模型' },
+    { value: 'claude_code_compatible', label: 'Claude Code 兼容网关', url: '', desc: '用于接 Claude Code 模型，但需要你提供兼容 OpenAI 协议的网关 URL' },
+    { value: 'custom', label: '自定义', url: '', desc: '手动填写任意兼容 chat/completions 的地址' },
+  ];
+  const optimizeModelOptions = [
+    { value: 'anthropic/claude-opus-4.8-fast', label: 'Claude Opus 4.8 Fast', desc: '默认推荐，走 OpenRouter 路由，适合策略代码优化' },
+    { value: 'openai/gpt-5.5', label: 'OpenAI GPT-5.5', desc: '通过 OpenRouter 路由的 GPT-5.5，效果强但成本更高' },
+    { value: '', label: '跟随后端默认', desc: '使用环境变量 AI_OPTIMIZER_MODEL' },
+    { value: 'openai/gpt-4.1', label: 'OpenAI GPT-4.1', desc: '通过 OpenRouter 路由的 GPT-4.1，适合策略优化' },
+    { value: 'openai/gpt-4o', label: 'OpenAI GPT-4o', desc: '通过 OpenRouter 路由，速度与效果平衡' },
+    { value: 'openai/gpt-4o-mini', label: 'OpenAI GPT-4o mini', desc: '通过 OpenRouter 路由，更省 token' },
+    { value: 'anthropic/claude-sonnet-4', label: 'Claude Sonnet 4', desc: '通过 OpenRouter 路由，适合代码修改与重构' },
+    { value: 'claude-code', label: 'Claude Code', desc: '适合代码修改与重构，需后端接入对应兼容 API 或网关' },
+  ];
+  const knownProviderUrls = providerOptions.map(item => item.url).filter(Boolean);
+  const selectedProviderInfo = providerOptions.find(item => item.value === config.auto_optimize_provider) || providerOptions[0];
+  const selectedModelInfo = optimizeModelOptions.find(item => item.value === config.auto_optimize_model) || optimizeModelOptions[0];
 
   return (
     <div className="space-y-4">
@@ -229,6 +249,74 @@ export function StrategyConfigForm({
         <div>
           <label className="block text-sm font-medium text-gray-500 mb-2">预热 K 线</label>
           <input type="number" value={config.warmup_bars} onChange={(e) => onChange({ ...config, warmup_bars: Number(e.target.value) })} className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`} />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-500 mb-2">AI 自动优化</label>
+        <div className={`rounded-2xl border p-4 space-y-4 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-sm font-medium text-gray-400">每 3 小时自动分析并更新策略脚本</div>
+              <div className="text-xs text-gray-500 mt-1">系统会自动回看最近 3 小时仓位与行情数据，用选定模型生成新版本策略并自动替换执行脚本。</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onChange({ ...config, auto_optimize_enabled: !config.auto_optimize_enabled })}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-100'}`}
+            >
+              {config.auto_optimize_enabled ? '已开启' : '未开启'}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">提供商</label>
+              <select
+                value={config.auto_optimize_provider}
+                onChange={(e) => {
+                  const provider = e.target.value;
+                  const info = providerOptions.find(item => item.value === provider);
+                  const nextUrl = !info || provider === '' || provider === 'custom'
+                    ? (provider === '' ? '' : config.auto_optimize_api_url)
+                    : (!config.auto_optimize_api_url || knownProviderUrls.includes(config.auto_optimize_api_url) ? info.url : config.auto_optimize_api_url);
+                  onChange({ ...config, auto_optimize_provider: provider, auto_optimize_api_url: nextUrl });
+                }}
+                className={`w-full px-4 py-2.5 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+              >
+                {providerOptions.map((item) => (
+                  <option key={item.value || 'provider-default'} value={item.value}>{item.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">优化模型</label>
+              <select
+                value={config.auto_optimize_model}
+                onChange={(e) => onChange({ ...config, auto_optimize_model: e.target.value })}
+                className={`w-full px-4 py-2.5 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+              >
+                {optimizeModelOptions.map((item) => (
+                  <option key={item.value || 'default'} value={item.value}>{item.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">API URL</label>
+              <input
+                type="text"
+                value={config.auto_optimize_api_url}
+                onChange={(e) => onChange({ ...config, auto_optimize_api_url: e.target.value })}
+                placeholder={selectedProviderInfo.url || '留空则跟随后端默认地址'}
+                className={`w-full px-4 py-2.5 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+              />
+            </div>
+          </div>
+          <div className={`rounded-xl border px-4 py-3 text-xs space-y-1 ${isDarkMode ? 'border-gray-800 bg-gray-900/50 text-gray-400' : 'border-gray-200 bg-white text-gray-600'}`}>
+            <div><span className="font-semibold">提供商说明：</span>{selectedProviderInfo.desc}</div>
+            <div><span className="font-semibold">模型说明：</span>{selectedModelInfo.desc}</div>
+            <div>提示：当前后端使用 OpenAI 兼容的 `chat/completions` 调用方式；如果选择 `Claude Code`，请确保你的网关地址兼容该协议。</div>
+          </div>
         </div>
       </div>
 

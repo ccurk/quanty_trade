@@ -49,6 +49,7 @@ func buildDashboardResponse(uid uint, now time.Time, opt dashboardBuildOptions) 
 			days = 400
 		}
 		resp.PnL.Calendar = loadDailyPnLCalendar(uid, days)
+		resp.PnL.Monthly = loadMonthlyPnLCalendar(uid, days)
 	}
 
 	customStart, customEnd, label := resolveDashboardCustomRange(now, opt.RangePreset, opt.StartRaw, opt.EndRaw)

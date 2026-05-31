@@ -72,7 +72,7 @@ func CreateStrategy(c *gin.Context) {
 			Updates(map[string]interface{}{"path": template.Path, "updated_at": time.Now()}).Error
 	}
 
-	stratMgr.AddStrategy(instance.ID, instance.Name, template.Path, userID.(uint), config)
+	stratMgr.AddStrategy(instance.ID, instance.Name, template.Path, userID.(uint), template.ID, instance.StrategyVersionID, config)
 
 	c.JSON(http.StatusOK, instance)
 }

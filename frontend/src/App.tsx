@@ -88,6 +88,16 @@ interface DailyPnLEntry {
   trades: number;
 }
 
+interface MonthlyPnLEntry {
+  month: string;
+  realized_pnl: number;
+  realized_notional: number;
+  realized_return_pct: number;
+  trades: number;
+  positive_days: number;
+  negative_days: number;
+}
+
 interface PnLSummaryResponse {
   updated_at: string;
   unrealized_pnl: number;
@@ -100,6 +110,7 @@ interface PnLSummaryResponse {
   custom?: PnLPeriodSummary;
   custom_label?: string;
   calendar?: DailyPnLEntry[];
+  monthly?: MonthlyPnLEntry[];
 }
 
 interface DashboardResponse {
@@ -1800,9 +1811,26 @@ const App: React.FC = () => {
               </div>
               {(() => {
                 const calAll = dashboard?.pnl.calendar || [];
+                const calMap = new Map(calAll.map(d => [d.day, d]));
                 const month = dashboardCalendarMonth;
-                const cal = calAll.filter(d => (d.day || '').startsWith(month));
                 const weekdayHeaders = ['一', '二', '三', '四', '五', '六', '日'];
+                const moveMonth = (step: number) => {
+                  const dt = new Date(month + '-01T00:00:00');
+                  dt.setMonth(dt.getMonth() + step);
+                  setDashboardCalendarMonth(dt.toISOString().slice(0, 7));
+                };
+                const first = new Date(`${month}-01T00:00:00`);
+                const daysInMonth = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+                const cal: DailyPnLEntry[] = Array.from({ length: daysInMonth }, (_, idx) => {
+                  const key = `${month}-${String(idx + 1).padStart(2, '0')}`;
+                  return calMap.get(key) || {
+                    day: key,
+                    realized_pnl: 0,
+                    realized_notional: 0,
+                    realized_return_pct: 0,
+                    trades: 0,
+                  };
+                });
                 const monthPnl = cal.reduce((sum, d) => sum + (d.realized_pnl || 0), 0);
                 const monthNotional = cal.reduce((sum, d) => sum + (d.realized_notional || 0), 0);
                 const monthTrades = cal.reduce((sum, d) => sum + (d.trades || 0), 0);
@@ -1810,24 +1838,6 @@ const App: React.FC = () => {
                 const negativeDays = cal.filter(d => (d.realized_pnl || 0) < 0).length;
                 const monthReturn = monthNotional > 0 ? (monthPnl / monthNotional) * 100 : 0;
                 const rows = [...cal].sort((a, b) => b.day.localeCompare(a.day));
-                const moveMonth = (step: number) => {
-                  const dt = new Date(month + '-01T00:00:00');
-                  dt.setMonth(dt.getMonth() + step);
-                  setDashboardCalendarMonth(dt.toISOString().slice(0, 7));
-                };
-                if (!cal.length) {
-                  return (
-                    <div>
-                      <div className="flex items-center gap-3 mb-3">
-                        <button onClick={() => moveMonth(-1)} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>上个月</button>
-                        <div className="text-sm">{month}</div>
-                        <button onClick={() => moveMonth(1)} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'}`}>下个月</button>
-                        <button onClick={() => setDashboardCalendarMonth(new Date().toISOString().slice(0, 7))} className={`px-3 py-1 rounded ${isDarkMode ? 'bg-blue-900/40 text-blue-200' : 'bg-blue-50 text-blue-700'}`}>本月</button>
-                      </div>
-                      <div className="text-sm text-gray-500">该月暂无数据</div>
-                    </div>
-                  );
-                }
                 const maxAbs = cal.reduce((m, d) => Math.max(m, Math.abs(d.realized_pnl || 0)), 0) || 1;
                 const getHeat = (v: number) => {
                   const r = Math.abs(v) / maxAbs;
@@ -1837,7 +1847,6 @@ const App: React.FC = () => {
                   const alpha = level === 1 ? '/20' : level === 2 ? '/35' : level === 3 ? '/55' : '/75';
                   return `${base}${alpha}`;
                 };
-                const first = new Date(`${month}-01T00:00:00`);
                 const offset = (first.getDay() + 6) % 7;
                 const cells: Array<DailyPnLEntry | null> = [];
                 for (let i = 0; i < offset; i++) cells.push(null);
@@ -1924,6 +1933,47 @@ const App: React.FC = () => {
                           </table>
                         </div>
                       </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-bold">月度收益</div>
+                <div className="text-xs text-gray-500">按自然月聚合已实现收益</div>
+              </div>
+              {(() => {
+                const rows = [...(dashboard?.pnl.monthly || [])].sort((a, b) => b.month.localeCompare(a.month));
+                if (!rows.length) {
+                  return <div className="text-sm text-gray-500">暂无月度收益数据</div>;
+                }
+                return (
+                  <div className={`rounded-2xl border overflow-hidden ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+                    <div className="max-h-[20rem] overflow-auto">
+                      <table className="w-full text-sm">
+                        <thead className={`${isDarkMode ? 'bg-gray-900/60 text-gray-400' : 'bg-white text-gray-500'}`}>
+                          <tr>
+                            <th className="px-4 py-3 text-left">月份</th>
+                            <th className="px-4 py-3 text-right">收益</th>
+                            <th className="px-4 py-3 text-right">收益率</th>
+                            <th className="px-4 py-3 text-right">交易数</th>
+                            <th className="px-4 py-3 text-right">盈利 / 亏损天数</th>
+                          </tr>
+                        </thead>
+                        <tbody className={`${isDarkMode ? 'divide-y divide-gray-800' : 'divide-y divide-gray-200'}`}>
+                          {rows.map((d) => (
+                            <tr key={`month-${d.month}`} className={isDarkMode ? 'hover:bg-gray-900/40' : 'hover:bg-white'}>
+                              <td className="px-4 py-3 font-mono">{d.month}</td>
+                              <td className={`px-4 py-3 text-right font-mono ${toneClass(d.realized_pnl)}`}>{formatMoney(d.realized_pnl, 2)}</td>
+                              <td className={`px-4 py-3 text-right font-mono ${toneClass(d.realized_return_pct)}`}>{formatPct(d.realized_return_pct, 2)}</td>
+                              <td className="px-4 py-3 text-right font-mono">{d.trades}</td>
+                              <td className="px-4 py-3 text-right font-mono"><span className="text-green-500">{d.positive_days}</span> / <span className="text-red-500">{d.negative_days}</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
                 );
