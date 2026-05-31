@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"quanty_trade/internal/conf"
@@ -25,6 +26,11 @@ type Service struct {
 	pollTimeout int
 	manager     *strategy.Manager
 }
+
+var (
+	currentServiceMu sync.RWMutex
+	currentService   *Service
+)
 
 type updatesResponse struct {
 	OK          bool             `json:"ok"`
@@ -62,10 +68,12 @@ func Start(ctx context.Context, mgr *strategy.Manager) *Service {
 	token := strings.TrimSpace(cfg.BotToken)
 	logger.Infof("telegram bootstrap enabled=%t token_present=%t token_len=%d poll_timeout=%d", cfg.Enabled, token != "", len(token), cfg.PollTimeoutSeconds)
 	if !cfg.Enabled {
+		setCurrentService(nil)
 		logger.Infof("telegram disabled")
 		return nil
 	}
 	if token == "" {
+		setCurrentService(nil)
 		logger.Errorf("telegram enabled but bot token is empty")
 		return nil
 	}
@@ -83,9 +91,18 @@ func Start(ctx context.Context, mgr *strategy.Manager) *Service {
 	if mgr != nil {
 		mgr.SetNotifier(svc)
 	}
+	setCurrentService(svc)
 	logger.Infof("telegram service started poll_timeout=%d token_len=%d", pollTimeout, len(token))
 	go svc.run(ctx)
 	return svc
+}
+
+func NotifySystemEvent(title string, lines ...string) {
+	getCurrentService().notifySystemEvent(title, lines...)
+}
+
+func NotifyBusinessEvent(category string, title string, lines ...string) {
+	getCurrentService().notifyBusinessEvent(category, title, lines...)
 }
 
 func (s *Service) NotifyTradeOpened(ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, qty float64, price float64, takeProfit float64, stopLoss float64, status string) {
@@ -169,6 +186,38 @@ func (s *Service) NotifyAIOptimization(ownerID uint, strategyID string, strategy
 	}
 	lines = append(lines, "时间："+time.Now().Format("2006-01-02 15:04:05"))
 	s.broadcast(strings.Join(lines, "\n"))
+}
+
+func (s *Service) notifySystemEvent(title string, lines ...string) {
+	if s == nil {
+		return
+	}
+	all := []string{"🟦 系统通知", "标题：" + displayValue(strings.TrimSpace(title), "系统事件")}
+	for _, line := range lines {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			all = append(all, trimmed)
+		}
+	}
+	all = append(all, "时间："+time.Now().Format("2006-01-02 15:04:05"))
+	s.broadcast(strings.Join(all, "\n"))
+}
+
+func (s *Service) notifyBusinessEvent(category string, title string, lines ...string) {
+	if s == nil {
+		return
+	}
+	all := []string{
+		"🟨 业务通知",
+		"分类：" + displayValue(strings.TrimSpace(category), "business"),
+		"标题：" + displayValue(strings.TrimSpace(title), "业务事件"),
+	}
+	for _, line := range lines {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			all = append(all, trimmed)
+		}
+	}
+	all = append(all, "时间："+time.Now().Format("2006-01-02 15:04:05"))
+	s.broadcast(strings.Join(all, "\n"))
 }
 
 func (s *Service) run(ctx context.Context) {
@@ -473,6 +522,18 @@ func previewTelegramText(text string) string {
 		return text[:160] + "..."
 	}
 	return text
+}
+
+func setCurrentService(svc *Service) {
+	currentServiceMu.Lock()
+	currentService = svc
+	currentServiceMu.Unlock()
+}
+
+func getCurrentService() *Service {
+	currentServiceMu.RLock()
+	defer currentServiceMu.RUnlock()
+	return currentService
 }
 
 func (s *Service) loadOffset() int64 {
