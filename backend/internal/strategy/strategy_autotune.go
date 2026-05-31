@@ -138,6 +138,7 @@ type optimizationPromptPayload struct {
 
 type openAIChatRequest struct {
 	Model       string              `json:"model"`
+	SessionID   string              `json:"session_id,omitempty"`
 	Messages    []openAIChatMessage `json:"messages"`
 	Temperature float64             `json:"temperature"`
 	Reasoning   *openAIReasoning    `json:"reasoning,omitempty"`
@@ -539,7 +540,8 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	if model == "" {
 		return "", "", fmt.Errorf("未配置 AI 优化模型名称")
 	}
-	emitAIOptimizationLog(inst, "info", "REQUEST", "provider=%s model=%s api_url=%s inst_key=%t conf_key=%t env_openrouter_key=%t env_ai_key=%t", provider, model, apiURL, strings.TrimSpace(getString(inst.Config["auto_optimize_api_key"])) != "", strings.TrimSpace(conf.C().AI.Optimizer.APIKey) != "", strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "", strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_KEY")) != "")
+	sessionID := buildOptimizerSessionID(inst)
+	emitAIOptimizationLog(inst, "info", "REQUEST", "provider=%s model=%s api_url=%s session_id=%s inst_key=%t conf_key=%t env_openrouter_key=%t env_ai_key=%t", provider, model, apiURL, firstNonEmpty(sessionID, "-"), strings.TrimSpace(getString(inst.Config["auto_optimize_api_key"])) != "", strings.TrimSpace(conf.C().AI.Optimizer.APIKey) != "", strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "", strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_KEY")) != "")
 
 	ctxJSON, err := json.MarshalIndent(buildOptimizationPromptPayload(input.payload), "", "  ")
 	if err != nil {
@@ -556,7 +558,8 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
 		reqBody := openAIChatRequest{
-			Model: model,
+			Model:     model,
+			SessionID: sessionID,
 			Messages: []openAIChatMessage{
 				{Role: "system", Content: systemPrompt},
 				{Role: "user", Content: userPrompt},
@@ -596,7 +599,7 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 				req.Header.Set("X-Title", xTitle)
 			}
 		}
-		client := &http.Client{Timeout: 2 * time.Minute}
+		client := &http.Client{Timeout: 20 * time.Minute}
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
@@ -877,6 +880,16 @@ func sanitizeOptimizerURL(v string) string {
 
 func isWhitespaceOnly(body []byte) bool {
 	return strings.TrimSpace(string(body)) == ""
+}
+
+func buildOptimizerSessionID(inst *StrategyInstance) string {
+	if inst == nil {
+		return ""
+	}
+	if raw := sanitizeOptionalPromptString(getString(inst.Config["auto_optimize_session_id"])); raw != "" {
+		return raw
+	}
+	return "aiopt-" + strings.TrimSpace(inst.ID)
 }
 
 func emitAIOptimizationLog(inst *StrategyInstance, level string, stage string, format string, args ...interface{}) {
