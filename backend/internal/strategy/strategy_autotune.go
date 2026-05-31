@@ -554,6 +554,7 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	if err != nil {
 		return "", "", err
 	}
+	emitAIOptimizationLog(inst, "info", "REQUEST_BODY", "body_preview=%s", summarizeOptimizationResponse(body))
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, apiURL, bytes.NewReader(body))
 	if err != nil {
 		return "", "", err
@@ -589,12 +590,13 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	defer resp.Body.Close()
 	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	emitAIOptimizationLog(inst, "info", "RESPONSE", "status=%d bytes=%d content_type=%s", resp.StatusCode, len(respBytes), strings.TrimSpace(resp.Header.Get("Content-Type")))
+	emitAIOptimizationLog(inst, "info", "RESPONSE_BODY", "body_preview=%s hex_preview=%s", summarizeOptimizationResponse(respBytes), summarizeOptimizationResponseHex(respBytes))
 	if resp.StatusCode >= 300 {
 		return "", "", fmt.Errorf("AI 接口返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(respBytes)))
 	}
 	var parsed openAIChatResponse
 	if err := json.Unmarshal(respBytes, &parsed); err != nil {
-		emitAIOptimizationLog(inst, "error", "RESPONSE_JSON", "err=%v body_preview=%s", err, summarizeOptimizationResponse(respBytes))
+		emitAIOptimizationLog(inst, "error", "RESPONSE_JSON", "err=%v body_preview=%s hex_preview=%s", err, summarizeOptimizationResponse(respBytes), summarizeOptimizationResponseHex(respBytes))
 		return "", "", err
 	}
 	if parsed.Error != nil && strings.TrimSpace(parsed.Error.Message) != "" {
@@ -719,7 +721,13 @@ func validatePythonStrategy(code string) error {
 }
 
 func summarizeOptimizationResponse(body []byte) string {
+	if len(body) == 0 {
+		return "<empty>"
+	}
 	text := strings.TrimSpace(string(body))
+	if text == "" {
+		return "<whitespace>"
+	}
 	text = strings.ReplaceAll(text, "\n", " ")
 	text = strings.ReplaceAll(text, "\r", " ")
 	text = strings.Join(strings.Fields(text), " ")
@@ -727,6 +735,21 @@ func summarizeOptimizationResponse(body []byte) string {
 		return text
 	}
 	return text[:800] + "...(truncated)"
+}
+
+func summarizeOptimizationResponseHex(body []byte) string {
+	if len(body) == 0 {
+		return "<empty>"
+	}
+	limit := len(body)
+	if limit > 96 {
+		limit = 96
+	}
+	hexText := fmt.Sprintf("%x", body[:limit])
+	if len(body) > limit {
+		return hexText + "...(truncated)"
+	}
+	return hexText
 }
 
 func emitAIOptimizationLog(inst *StrategyInstance, level string, stage string, format string, args ...interface{}) {
