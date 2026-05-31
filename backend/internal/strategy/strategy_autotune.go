@@ -126,11 +126,16 @@ type openAIChatRequest struct {
 	Model       string              `json:"model"`
 	Messages    []openAIChatMessage `json:"messages"`
 	Temperature float64             `json:"temperature"`
+	Reasoning   *openAIReasoning    `json:"reasoning,omitempty"`
 }
 
 type openAIChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+type openAIReasoning struct {
+	Enabled bool `json:"enabled"`
 }
 
 type openAIChatResponse struct {
@@ -475,35 +480,25 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	if input == nil {
 		return "", "", fmt.Errorf("missing optimization input")
 	}
-	provider := strings.ToLower(strings.TrimSpace(getString(inst.Config["auto_optimize_provider"])))
-	if provider == "" {
-		provider = strings.ToLower(strings.TrimSpace(conf.C().AI.Optimizer.Provider))
-	}
-	defaultAPIURL := "https://api.openai.com/v1/chat/completions"
-	switch provider {
-	case "openrouter":
-		defaultAPIURL = "https://openrouter.ai/api/v1/chat/completions"
-	}
-	apiURL := firstNonEmpty(
-		strings.TrimSpace(getString(inst.Config["auto_optimize_api_url"])),
+	provider := "openrouter"
+	apiURL := "https://openrouter.ai/api/v1/chat/completions"
+	apiURL = firstNonEmpty(
+		apiURL,
 		strings.TrimSpace(conf.C().AI.Optimizer.APIURL),
-		strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_URL")),
-		defaultAPIURL,
+		"https://openrouter.ai/api/v1/chat/completions",
 	)
 	apiKeyCandidates := []string{
 		strings.TrimSpace(getString(inst.Config["auto_optimize_api_key"])),
 		strings.TrimSpace(conf.C().AI.Optimizer.APIKey),
+		strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")),
 		strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_KEY")),
 	}
-	if provider == "openrouter" {
-		apiKeyCandidates = append(apiKeyCandidates, strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")))
-	}
-	apiKeyCandidates = append(apiKeyCandidates, strings.TrimSpace(os.Getenv("OPENAI_API_KEY")))
 	apiKey := firstNonEmpty(apiKeyCandidates...)
 	model := firstNonEmpty(
 		strings.TrimSpace(getString(inst.Config["auto_optimize_model"])),
 		strings.TrimSpace(conf.C().AI.Optimizer.Model),
 		strings.TrimSpace(os.Getenv("AI_OPTIMIZER_MODEL")),
+		"anthropic/claude-opus-4.8-fast",
 	)
 	if apiKey == "" {
 		return "", "", fmt.Errorf("未配置 AI 优化器 API Key")
@@ -531,6 +526,7 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 			{Role: "user", Content: userPrompt},
 		},
 		Temperature: 0.2,
+		Reasoning:   &openAIReasoning{Enabled: true},
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -587,7 +583,7 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	code := extractPythonCode(raw)
 	summary := fmt.Sprintf(
 		"provider=%s model=%s payload_symbols=%d recent_positions=%d recent_orders=%d market_summaries=%d realized_pnl=%.4f win_rate=%.2f%%",
-		firstNonEmpty(provider, "openai_compatible"),
+		provider,
 		model,
 		len(input.payload.Symbols),
 		len(input.payload.RecentPositions),

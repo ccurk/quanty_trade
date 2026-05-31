@@ -24,9 +24,8 @@ export type StrategyFormConfig = {
   non_natural_entry_sequence: string;
   entry_time_windows: string;
   auto_optimize_enabled: boolean;
-  auto_optimize_provider: string;
   auto_optimize_model: string;
-  auto_optimize_api_url: string;
+  auto_optimize_api_key: string;
 };
 
 export type StrategyConfigMarketSymbol = {
@@ -106,9 +105,8 @@ export const createDefaultStrategyConfig = (): StrategyFormConfig => ({
   non_natural_entry_sequence: '多,多,多,多,空',
   entry_time_windows: '',
   auto_optimize_enabled: false,
-  auto_optimize_provider: 'openrouter',
   auto_optimize_model: 'anthropic/claude-opus-4.8-fast',
-  auto_optimize_api_url: 'https://openrouter.ai/api/v1/chat/completions',
+  auto_optimize_api_key: '',
 });
 
 export const strategyConfigFromExisting = (cfg: Record<string, unknown>): StrategyFormConfig => {
@@ -139,9 +137,8 @@ export const strategyConfigFromExisting = (cfg: Record<string, unknown>): Strate
     non_natural_entry_sequence: getCfgString(cfg, 'non_natural_entry_sequence', '多,多,多,多,空'),
     entry_time_windows: getCfgString(cfg, 'entry_time_windows', ''),
     auto_optimize_enabled: getCfgBool(cfg, 'auto_optimize_enabled', false),
-    auto_optimize_provider: getCfgString(cfg, 'auto_optimize_provider', ''),
     auto_optimize_model: getCfgString(cfg, 'auto_optimize_model', ''),
-    auto_optimize_api_url: getCfgString(cfg, 'auto_optimize_api_url', ''),
+    auto_optimize_api_key: getCfgString(cfg, 'auto_optimize_api_key', ''),
   };
 };
 
@@ -171,7 +168,6 @@ export const buildStrategyConfigPayload = (cfg: StrategyFormConfig) => ({
   non_natural_entry_sequence: cfg.non_natural_entry_sequence.trim(),
   entry_time_windows: cfg.entry_time_windows.trim(),
   auto_optimize_enabled: cfg.auto_optimize_enabled,
-  auto_optimize_provider: cfg.auto_optimize_provider.trim(),
   auto_optimize_model: cfg.auto_optimize_model.trim(),
-  auto_optimize_api_url: cfg.auto_optimize_api_url.trim(),
+  auto_optimize_api_key: cfg.auto_optimize_api_key.trim(),
 });

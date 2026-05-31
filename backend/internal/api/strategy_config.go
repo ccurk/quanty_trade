@@ -71,23 +71,14 @@ func normalizeStrategyConfigMap(cfg map[string]interface{}) map[string]interface
 	if _, ok := out["auto_optimize_enabled"].(bool); !ok {
 		out["auto_optimize_enabled"] = false
 	}
-	if _, ok := out["auto_optimize_provider"].(string); !ok {
-		out["auto_optimize_provider"] = conf.C().AI.Optimizer.Provider
-	}
-	if strings.TrimSpace(getStringValue(out["auto_optimize_provider"])) == "" {
-		out["auto_optimize_provider"] = conf.C().AI.Optimizer.Provider
-	}
 	if _, ok := out["auto_optimize_model"].(string); !ok {
 		out["auto_optimize_model"] = conf.C().AI.Optimizer.Model
 	}
 	if strings.TrimSpace(getStringValue(out["auto_optimize_model"])) == "" {
 		out["auto_optimize_model"] = conf.C().AI.Optimizer.Model
 	}
-	if _, ok := out["auto_optimize_api_url"].(string); !ok {
-		out["auto_optimize_api_url"] = conf.C().AI.Optimizer.APIURL
-	}
-	if strings.TrimSpace(getStringValue(out["auto_optimize_api_url"])) == "" {
-		out["auto_optimize_api_url"] = conf.C().AI.Optimizer.APIURL
+	if _, ok := out["auto_optimize_api_key"].(string); !ok {
+		out["auto_optimize_api_key"] = ""
 	}
 	if _, ok := out["auto_optimize_interval_minutes"].(float64); !ok {
 		out["auto_optimize_interval_minutes"] = 180.0
