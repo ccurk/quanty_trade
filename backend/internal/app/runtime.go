@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"quanty_trade/internal/api"
 	"quanty_trade/internal/bus"
@@ -49,8 +48,7 @@ func StartBackgroundJobs(ctx context.Context, mgr *strategy.Manager) {
 	if svc := telegram.Start(ctx, mgr); svc != nil {
 		telegram.NotifySystemEvent(
 			"后端服务重启",
-			fmt.Sprintf("服务：QuantyTrade Backend"),
-			fmt.Sprintf("时间：%s", time.Now().Format("2006-01-02 15:04:05")),
+			"服务：QuantyTrade Backend",
 			fmt.Sprintf("端口：%d", conf.C().Server.Port),
 			fmt.Sprintf("交易所：%s", conf.C().Exchange.Name),
 		)

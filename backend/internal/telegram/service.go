@@ -106,38 +106,40 @@ func NotifyBusinessEvent(category string, title string, lines ...string) {
 }
 
 func (s *Service) NotifyTradeOpened(ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, qty float64, price float64, takeProfit float64, stopLoss float64, status string) {
-	text := strings.Join([]string{
-		"📈 开仓通知",
-		"策略：" + displayValue(strategyName, strategyID),
-		"策略ID：" + displayValue(strategyID, "-"),
-		"交易所：" + displayValue(exchangeName, "-"),
-		"交易对：" + displayValue(symbol, "-"),
-		"方向：" + displayValue(side, "-"),
-		"数量：" + formatFloat(qty),
-		"成交价：" + formatFloat(price),
-		"止盈：" + formatFloat(takeProfit),
-		"止损：" + formatFloat(stopLoss),
-		"状态：" + displayValue(status, "-"),
-		"时间：" + time.Now().Format("2006-01-02 15:04:05"),
-	}, "\n")
-	s.broadcast(text)
+	notional := qty * price
+	lines := []string{
+		cardKV("策略", displayValue(strategyName, strategyID)),
+		cardKV("策略ID", displayValue(strategyID, "-")),
+		cardKV("交易所", displayValue(exchangeName, "-")),
+		cardKV("交易对", displayValue(symbol, "-")),
+		cardKV("方向", formatTradeSide(side)),
+		cardKV("状态", formatTradeStatus(status)),
+		"──── 交易信息 ────",
+		cardKV("数量", formatFloat(qty)),
+		cardKV("成交价", formatFloat(price)),
+		cardKV("名义价值", formatFloat(notional)),
+		cardKV("止盈", formatTargetPrice(takeProfit, price)),
+		cardKV("止损", formatTargetPrice(stopLoss, price)),
+	}
+	s.broadcast(buildTelegramCard("📈", "开仓成交", lines...))
 }
 
 func (s *Service) NotifyTradeClosed(ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, qty float64, price float64, status string, reason string) {
-	text := strings.Join([]string{
-		"📉 平仓通知",
-		"策略：" + displayValue(strategyName, strategyID),
-		"策略ID：" + displayValue(strategyID, "-"),
-		"交易所：" + displayValue(exchangeName, "-"),
-		"交易对：" + displayValue(symbol, "-"),
-		"方向：" + displayValue(side, "-"),
-		"数量：" + formatFloat(qty),
-		"成交价：" + formatFloat(price),
-		"状态：" + displayValue(status, "-"),
-		"原因：" + displayValue(reason, "close"),
-		"时间：" + time.Now().Format("2006-01-02 15:04:05"),
-	}, "\n")
-	s.broadcast(text)
+	notional := qty * price
+	lines := []string{
+		cardKV("策略", displayValue(strategyName, strategyID)),
+		cardKV("策略ID", displayValue(strategyID, "-")),
+		cardKV("交易所", displayValue(exchangeName, "-")),
+		cardKV("交易对", displayValue(symbol, "-")),
+		cardKV("方向", formatTradeSide(side)),
+		cardKV("状态", formatTradeStatus(status)),
+		cardKV("原因", formatCloseReason(reason)),
+		"──── 成交信息 ────",
+		cardKV("数量", formatFloat(qty)),
+		cardKV("成交价", formatFloat(price)),
+		cardKV("名义价值", formatFloat(notional)),
+	}
+	s.broadcast(buildTelegramCard("📉", "平仓成交", lines...))
 }
 
 func (s *Service) NotifyStrategyStatus(ownerID uint, strategyID string, strategyName string, status string) {
@@ -145,14 +147,12 @@ func (s *Service) NotifyStrategyStatus(ownerID uint, strategyID string, strategy
 	if status != "running" && status != "stopped" && status != "error" {
 		return
 	}
-	text := strings.Join([]string{
-		"🤖 策略状态通知",
-		"策略：" + displayValue(strategyName, strategyID),
-		"策略ID：" + displayValue(strategyID, "-"),
-		"状态：" + displayValue(status, "-"),
-		"时间：" + time.Now().Format("2006-01-02 15:04:05"),
-	}, "\n")
-	s.broadcast(text)
+	lines := []string{
+		cardKV("策略", displayValue(strategyName, strategyID)),
+		cardKV("策略ID", displayValue(strategyID, "-")),
+		cardKV("状态", formatStrategyStatus(status)),
+	}
+	s.broadcast(buildTelegramCard("🤖", "策略状态变更", lines...))
 }
 
 func (s *Service) NotifyAIOptimization(ownerID uint, strategyID string, strategyName string, status string, trigger string, summary string, detail string) {
@@ -172,34 +172,31 @@ func (s *Service) NotifyAIOptimization(ownerID uint, strategyID string, strategy
 		title = "AI优化失败"
 	}
 	lines := []string{
-		"🧠 " + title,
-		"策略：" + displayValue(strategyName, strategyID),
-		"策略ID：" + displayValue(strategyID, "-"),
-		"状态：" + displayValue(status, "-"),
-		"触发方式：" + displayValue(trigger, "-"),
+		cardKV("策略", displayValue(strategyName, strategyID)),
+		cardKV("策略ID", displayValue(strategyID, "-")),
+		cardKV("状态", formatAIOptimizeStatus(status)),
+		cardKV("触发方式", displayValue(trigger, "-")),
 	}
 	if trimmed := strings.TrimSpace(summary); trimmed != "" {
-		lines = append(lines, "摘要："+trimmed)
+		lines = append(lines, "──── 优化摘要 ────", trimmed)
 	}
 	if trimmed := strings.TrimSpace(detail); trimmed != "" {
-		lines = append(lines, "详情："+trimmed)
+		lines = append(lines, "──── 详细信息 ────", trimmed)
 	}
-	lines = append(lines, "时间："+time.Now().Format("2006-01-02 15:04:05"))
-	s.broadcast(strings.Join(lines, "\n"))
+	s.broadcast(buildTelegramCard("🧠", title, lines...))
 }
 
 func (s *Service) notifySystemEvent(title string, lines ...string) {
 	if s == nil {
 		return
 	}
-	all := []string{"🟦 系统通知", "标题：" + displayValue(strings.TrimSpace(title), "系统事件")}
+	all := []string{"分类：系统", "标题：" + displayValue(strings.TrimSpace(title), "系统事件")}
 	for _, line := range lines {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			all = append(all, trimmed)
 		}
 	}
-	all = append(all, "时间："+time.Now().Format("2006-01-02 15:04:05"))
-	s.broadcast(strings.Join(all, "\n"))
+	s.broadcast(buildTelegramCard("🟦", "系统通知", all...))
 }
 
 func (s *Service) notifyBusinessEvent(category string, title string, lines ...string) {
@@ -207,17 +204,15 @@ func (s *Service) notifyBusinessEvent(category string, title string, lines ...st
 		return
 	}
 	all := []string{
-		"🟨 业务通知",
-		"分类：" + displayValue(strings.TrimSpace(category), "business"),
-		"标题：" + displayValue(strings.TrimSpace(title), "业务事件"),
+		cardKV("分类", displayValue(strings.TrimSpace(category), "business")),
+		cardKV("标题", displayValue(strings.TrimSpace(title), "业务事件")),
 	}
 	for _, line := range lines {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			all = append(all, trimmed)
 		}
 	}
-	all = append(all, "时间："+time.Now().Format("2006-01-02 15:04:05"))
-	s.broadcast(strings.Join(all, "\n"))
+	s.broadcast(buildTelegramCard("🟨", "业务通知", all...))
 }
 
 func (s *Service) run(ctx context.Context) {
@@ -578,4 +573,110 @@ func displayValue(v string, fallback string) string {
 
 func formatFloat(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+func buildTelegramCard(icon string, title string, lines ...string) string {
+	out := []string{
+		fmt.Sprintf("%s %s", strings.TrimSpace(icon), displayValue(strings.TrimSpace(title), "通知")),
+		"━━━━━━━━━━━━",
+	}
+	for _, line := range lines {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	out = append(out, "━━━━━━━━━━━━")
+	out = append(out, "时间："+time.Now().Format("2006-01-02 15:04:05"))
+	return strings.Join(out, "\n")
+}
+
+func cardKV(key string, value string) string {
+	return fmt.Sprintf("%s：%s", strings.TrimSpace(key), displayValue(strings.TrimSpace(value), "-"))
+}
+
+func formatTradeSide(side string) string {
+	switch strings.ToLower(strings.TrimSpace(side)) {
+	case "buy", "long":
+		return "做多 / Buy"
+	case "sell", "short":
+		return "做空 / Sell"
+	default:
+		return displayValue(side, "-")
+	}
+}
+
+func formatTradeStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "filled":
+		return "已成交"
+	case "requested":
+		return "已提交"
+	case "partially_filled":
+		return "部分成交"
+	case "failed":
+		return "失败"
+	case "rejected":
+		return "已拒绝"
+	case "canceled", "cancelled":
+		return "已取消"
+	default:
+		return displayValue(status, "-")
+	}
+}
+
+func formatStrategyStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "running":
+		return "运行中"
+	case "stopped":
+		return "已停止"
+	case "error":
+		return "异常"
+	default:
+		return displayValue(status, "-")
+	}
+}
+
+func formatAIOptimizeStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "running":
+		return "执行中"
+	case "completed":
+		return "已完成"
+	case "skipped":
+		return "已跳过"
+	case "failed":
+		return "失败"
+	default:
+		return displayValue(status, "-")
+	}
+}
+
+func formatCloseReason(reason string) string {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "strategy_close":
+		return "策略主动平仓"
+	case "take_profit", "tp":
+		return "触发止盈"
+	case "stop_loss", "sl":
+		return "触发止损"
+	case "roi_guard":
+		return "ROI 风控平仓"
+	default:
+		return displayValue(reason, "close")
+	}
+}
+
+func formatTargetPrice(target float64, entry float64) string {
+	if target <= 0 {
+		return "-"
+	}
+	if entry <= 0 {
+		return formatFloat(target)
+	}
+	pct := ((target - entry) / entry) * 100
+	if pct >= 0 {
+		return fmt.Sprintf("%s (+%.2f%%)", formatFloat(target), pct)
+	}
+	return fmt.Sprintf("%s (%.2f%%)", formatFloat(target), pct)
 }
