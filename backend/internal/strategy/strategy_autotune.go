@@ -218,6 +218,7 @@ func (m *Manager) optimizeStrategyInstance(inst *StrategyInstance, trigger strin
 	}
 
 	emitStrategyLog(inst, "info", fmt.Sprintf("AI优化开始 trigger=%s lookback=%s", trigger, lookback))
+	m.notifyAIOptimization(inst, "running", trigger, fmt.Sprintf("lookback=%s model=%s", lookback, firstNonEmpty(model, "unknown")), "")
 
 	input, err := m.prepareOptimizationInput(inst, windowStart, now)
 	if err != nil {
@@ -647,14 +648,21 @@ func (m *Manager) finishOptimizationRun(inst *StrategyInstance, run *models.Stra
 			_ = database.DB.Save(run).Error
 		}
 	}
+	trigger := ""
+	if run != nil {
+		trigger = strings.TrimSpace(run.Trigger)
+	}
 	if err != nil {
 		if status == "skipped" {
+			m.notifyAIOptimization(inst, status, trigger, finalSummary, err.Error())
 			emitStrategyLog(inst, "info", fmt.Sprintf("AI优化跳过 status=%s reason=%v", status, err))
 			return
 		}
+		m.notifyAIOptimization(inst, status, trigger, finalSummary, err.Error())
 		emitStrategyLog(inst, "error", fmt.Sprintf("AI优化失败 status=%s err=%v", status, err))
 		return
 	}
+	m.notifyAIOptimization(inst, status, trigger, finalSummary, "")
 	if applied {
 		emitStrategyLog(inst, "info", fmt.Sprintf("AI优化完成 status=%s summary=%s", status, finalSummary))
 	} else {

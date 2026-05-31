@@ -137,6 +137,39 @@ func (s *Service) NotifyStrategyStatus(ownerID uint, strategyID string, strategy
 	s.broadcast(text)
 }
 
+func (s *Service) NotifyAIOptimization(ownerID uint, strategyID string, strategyName string, status string, trigger string, summary string, detail string) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return
+	}
+	title := "AI优化通知"
+	switch status {
+	case "running":
+		title = "AI优化开始"
+	case "completed":
+		title = "AI优化完成"
+	case "skipped":
+		title = "AI优化跳过"
+	case "failed":
+		title = "AI优化失败"
+	}
+	lines := []string{
+		"🧠 " + title,
+		"策略：" + displayValue(strategyName, strategyID),
+		"策略ID：" + displayValue(strategyID, "-"),
+		"状态：" + displayValue(status, "-"),
+		"触发方式：" + displayValue(trigger, "-"),
+	}
+	if trimmed := strings.TrimSpace(summary); trimmed != "" {
+		lines = append(lines, "摘要："+trimmed)
+	}
+	if trimmed := strings.TrimSpace(detail); trimmed != "" {
+		lines = append(lines, "详情："+trimmed)
+	}
+	lines = append(lines, "时间："+time.Now().Format("2006-01-02 15:04:05"))
+	s.broadcast(strings.Join(lines, "\n"))
+}
+
 func (s *Service) run(ctx context.Context) {
 	offset := s.loadOffset()
 	for {

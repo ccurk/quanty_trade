@@ -9,6 +9,7 @@ type RuntimeNotifier interface {
 	NotifyTradeOpened(ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, qty float64, price float64, takeProfit float64, stopLoss float64, status string)
 	NotifyTradeClosed(ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, qty float64, price float64, status string, reason string)
 	NotifyStrategyStatus(ownerID uint, strategyID string, strategyName string, status string)
+	NotifyAIOptimization(ownerID uint, strategyID string, strategyName string, status string, trigger string, summary string, detail string)
 }
 
 func (m *Manager) SetNotifier(notifier RuntimeNotifier) {
@@ -57,6 +58,19 @@ func (m *Manager) NotifyExternalTradeClosed(ownerID uint, strategyID string, str
 		return
 	}
 	notifier.NotifyTradeClosed(ownerID, strategyID, strategyName, exchangeName, symbol, side, qty, price, status, reason)
+}
+
+func (m *Manager) notifyAIOptimization(inst *StrategyInstance, status string, trigger string, summary string, detail string) {
+	if m == nil || inst == nil {
+		return
+	}
+	m.mu.RLock()
+	notifier := m.notifier
+	m.mu.RUnlock()
+	if notifier == nil {
+		return
+	}
+	notifier.NotifyAIOptimization(inst.OwnerID, inst.ID, inst.Name, status, trigger, summary, detail)
 }
 
 func (m *Manager) findStrategyForCommand(target string) (*StrategyInstance, error) {
