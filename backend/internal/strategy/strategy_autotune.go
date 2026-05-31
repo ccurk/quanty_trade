@@ -123,6 +123,19 @@ type optimizationPreparedInput struct {
 	payload    optimizationContextPayload
 }
 
+type optimizationPromptPayload struct {
+	StrategyID           string                           `json:"strategy_id"`
+	StrategyName         string                           `json:"strategy_name"`
+	WindowStart          time.Time                        `json:"window_start"`
+	WindowEnd            time.Time                        `json:"window_end"`
+	StrategyConfig       map[string]interface{}           `json:"strategy_config"`
+	Summary              optimizationWindowSummary        `json:"summary"`
+	Symbols              []optimizationSymbolTradeSummary `json:"symbols"`
+	Markets              []optimizationMarketSummary      `json:"markets"`
+	RecentPositionsBrief []optimizationPositionView       `json:"recent_positions_brief,omitempty"`
+	RecentOrdersBrief    []optimizationOrderView          `json:"recent_orders_brief,omitempty"`
+}
+
 type openAIChatRequest struct {
 	Model       string              `json:"model"`
 	Messages    []openAIChatMessage `json:"messages"`
@@ -502,10 +515,9 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 		return "", "", fmt.Errorf("missing optimization input")
 	}
 	provider := "openrouter"
-	apiURL := "https://openrouter.ai/api/v1/chat/completions"
-	apiURL = firstNonEmpty(
-		apiURL,
-		strings.TrimSpace(conf.C().AI.Optimizer.APIURL),
+	apiURL := firstNonEmpty(
+		sanitizeOptimizerURL(getString(inst.Config["auto_optimize_api_url"])),
+		sanitizeOptimizerURL(conf.C().AI.Optimizer.APIURL),
 		"https://openrouter.ai/api/v1/chat/completions",
 	)
 	apiKeyCandidates := []string{
@@ -529,75 +541,114 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	}
 	emitAIOptimizationLog(inst, "info", "REQUEST", "provider=%s model=%s api_url=%s inst_key=%t conf_key=%t env_openrouter_key=%t env_ai_key=%t", provider, model, apiURL, strings.TrimSpace(getString(inst.Config["auto_optimize_api_key"])) != "", strings.TrimSpace(conf.C().AI.Optimizer.APIKey) != "", strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "", strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_KEY")) != "")
 
-	ctxJSON, err := json.MarshalIndent(input.payload, "", "  ")
+	ctxJSON, err := json.MarshalIndent(buildOptimizationPromptPayload(input.payload), "", "  ")
 	if err != nil {
 		return "", "", err
 	}
 	systemPrompt := firstNonEmpty(
-		strings.TrimSpace(getString(inst.Config["auto_optimize_system_prompt"])),
-		strings.TrimSpace(conf.C().AI.Optimizer.SystemPrompt),
-		strings.TrimSpace(os.Getenv("AI_OPTIMIZER_SYSTEM_PROMPT")),
+		sanitizeOptionalPromptString(getString(inst.Config["auto_optimize_system_prompt"])),
+		sanitizeOptionalPromptString(conf.C().AI.Optimizer.SystemPrompt),
+		sanitizeOptionalPromptString(os.Getenv("AI_OPTIMIZER_SYSTEM_PROMPT")),
 		"你是资深量化交易策略工程师。请基于最近3小时的持仓、订单和合约行情摘要，优化现有Python策略代码。必须保留现有项目的 websocket/redis 运行协议、run() 入口、信号输出格式和风险控制接口。优先调整参数、过滤逻辑、仓位控制和评分机制，避免破坏项目集成。优先做最小必要修改，不要重写框架。只返回完整 Python 代码，不要解释。",
 	)
 	userPrompt := fmt.Sprintf("当前策略代码如下：\n```python\n%s\n```\n\n最近3小时的策略上下文如下（已做压缩摘要，优先使用 summary、symbols、markets，不要假设缺失的逐笔明细）：\n```json\n%s\n```\n\n请输出优化后的完整策略 Python 源码。要求：\n1. 保持与当前项目兼容，仍通过 websocket 行情驱动并输出相同信号结构。\n2. 如果没有足够理由，不要删除现有日志、风控和 run() 主循环。\n3. 优先最小修改而不是重写整个框架。\n4. 尽量通过参数、阈值、评分权重、过滤条件和仓位控制优化表现。\n5. 不要输出 markdown 解释，不要输出测试代码，只输出策略源码。", input.code, string(ctxJSON))
-
-	reqBody := openAIChatRequest{
-		Model: model,
-		Messages: []openAIChatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrompt},
-		},
-		Temperature: 0.2,
-		Reasoning:   &openAIReasoning{Enabled: true},
-	}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", "", err
-	}
-	emitAIOptimizationLog(inst, "info", "REQUEST_BODY", "body_preview=%s", summarizeOptimizationResponse(body))
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, apiURL, bytes.NewReader(body))
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	if provider == "openrouter" || strings.Contains(strings.ToLower(apiURL), "openrouter.ai") {
-		httpReferer := firstNonEmpty(
-			strings.TrimSpace(getString(inst.Config["auto_optimize_http_referer"])),
-			strings.TrimSpace(conf.C().AI.Optimizer.HTTPReferer),
-			strings.TrimSpace(os.Getenv("OPENROUTER_HTTP_REFERER")),
-			strings.TrimSpace(os.Getenv("AI_OPTIMIZER_HTTP_REFERER")),
-		)
-		xTitle := firstNonEmpty(
-			strings.TrimSpace(getString(inst.Config["auto_optimize_app_name"])),
-			strings.TrimSpace(conf.C().AI.Optimizer.AppName),
-			strings.TrimSpace(os.Getenv("OPENROUTER_APP_NAME")),
-			strings.TrimSpace(os.Getenv("AI_OPTIMIZER_APP_NAME")),
-			"QuantyTrade",
-		)
-		if httpReferer != "" {
-			req.Header.Set("HTTP-Referer", httpReferer)
-		}
-		if xTitle != "" {
-			req.Header.Set("X-Title", xTitle)
-		}
-	}
-	client := &http.Client{Timeout: 2 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-	emitAIOptimizationLog(inst, "info", "RESPONSE", "status=%d bytes=%d content_type=%s", resp.StatusCode, len(respBytes), strings.TrimSpace(resp.Header.Get("Content-Type")))
-	emitAIOptimizationLog(inst, "info", "RESPONSE_BODY", "body_preview=%s hex_preview=%s", summarizeOptimizationResponse(respBytes), summarizeOptimizationResponseHex(respBytes))
-	if resp.StatusCode >= 300 {
-		return "", "", fmt.Errorf("AI 接口返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(respBytes)))
-	}
 	var parsed openAIChatResponse
-	if err := json.Unmarshal(respBytes, &parsed); err != nil {
-		emitAIOptimizationLog(inst, "error", "RESPONSE_JSON", "err=%v body_preview=%s hex_preview=%s", err, summarizeOptimizationResponse(respBytes), summarizeOptimizationResponseHex(respBytes))
-		return "", "", err
+	var lastErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		reqBody := openAIChatRequest{
+			Model: model,
+			Messages: []openAIChatMessage{
+				{Role: "system", Content: systemPrompt},
+				{Role: "user", Content: userPrompt},
+			},
+			Temperature: 0.2,
+			Reasoning:   nil,
+		}
+		body, err := json.Marshal(reqBody)
+		if err != nil {
+			return "", "", err
+		}
+		emitAIOptimizationLog(inst, "info", "REQUEST_BODY", "attempt=%d body_preview=%s", attempt, summarizeOptimizationResponse(body))
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, apiURL, bytes.NewReader(body))
+		if err != nil {
+			return "", "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		if provider == "openrouter" || strings.Contains(strings.ToLower(apiURL), "openrouter.ai") {
+			httpReferer := firstNonEmpty(
+				sanitizeOptionalPromptString(getString(inst.Config["auto_optimize_http_referer"])),
+				sanitizeOptionalPromptString(conf.C().AI.Optimizer.HTTPReferer),
+				sanitizeOptionalPromptString(os.Getenv("OPENROUTER_HTTP_REFERER")),
+				sanitizeOptionalPromptString(os.Getenv("AI_OPTIMIZER_HTTP_REFERER")),
+			)
+			xTitle := firstNonEmpty(
+				sanitizeOptionalPromptString(getString(inst.Config["auto_optimize_app_name"])),
+				sanitizeOptionalPromptString(conf.C().AI.Optimizer.AppName),
+				sanitizeOptionalPromptString(os.Getenv("OPENROUTER_APP_NAME")),
+				sanitizeOptionalPromptString(os.Getenv("AI_OPTIMIZER_APP_NAME")),
+				"QuantyTrade",
+			)
+			if httpReferer != "" {
+				req.Header.Set("HTTP-Referer", httpReferer)
+			}
+			if xTitle != "" {
+				req.Header.Set("X-Title", xTitle)
+			}
+		}
+		client := &http.Client{Timeout: 2 * time.Minute}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < 2 {
+				emitAIOptimizationLog(inst, "error", "RETRY", "attempt=%d reason=request_error err=%v", attempt, err)
+				continue
+			}
+			return "", "", err
+		}
+		respBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			if attempt < 2 {
+				emitAIOptimizationLog(inst, "error", "RETRY", "attempt=%d reason=read_error err=%v", attempt, readErr)
+				continue
+			}
+			return "", "", readErr
+		}
+		emitAIOptimizationLog(inst, "info", "RESPONSE", "attempt=%d status=%d bytes=%d content_type=%s", attempt, resp.StatusCode, len(respBytes), strings.TrimSpace(resp.Header.Get("Content-Type")))
+		emitAIOptimizationLog(inst, "info", "RESPONSE_BODY", "attempt=%d body_preview=%s hex_preview=%s", attempt, summarizeOptimizationResponse(respBytes), summarizeOptimizationResponseHex(respBytes))
+		if resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("AI 接口返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(respBytes)))
+			if attempt < 2 {
+				emitAIOptimizationLog(inst, "error", "RETRY", "attempt=%d reason=http_status err=%v", attempt, lastErr)
+				continue
+			}
+			return "", "", lastErr
+		}
+		if isWhitespaceOnly(respBytes) {
+			lastErr = fmt.Errorf("AI 接口返回空白响应体")
+			emitAIOptimizationLog(inst, "error", "RESPONSE_JSON", "attempt=%d err=%v body_preview=%s hex_preview=%s", attempt, lastErr, summarizeOptimizationResponse(respBytes), summarizeOptimizationResponseHex(respBytes))
+			if attempt < 2 {
+				emitAIOptimizationLog(inst, "error", "RETRY", "attempt=%d reason=whitespace_body", attempt)
+				continue
+			}
+			return "", "", lastErr
+		}
+		if err := json.Unmarshal(respBytes, &parsed); err != nil {
+			lastErr = err
+			emitAIOptimizationLog(inst, "error", "RESPONSE_JSON", "attempt=%d err=%v body_preview=%s hex_preview=%s", attempt, err, summarizeOptimizationResponse(respBytes), summarizeOptimizationResponseHex(respBytes))
+			if attempt < 2 {
+				emitAIOptimizationLog(inst, "error", "RETRY", "attempt=%d reason=json_parse err=%v", attempt, err)
+				continue
+			}
+			return "", "", err
+		}
+		lastErr = nil
+		break
+	}
+	if lastErr != nil {
+		return "", "", lastErr
 	}
 	if parsed.Error != nil && strings.TrimSpace(parsed.Error.Message) != "" {
 		return "", "", errors.New(strings.TrimSpace(parsed.Error.Message))
@@ -750,6 +801,82 @@ func summarizeOptimizationResponseHex(body []byte) string {
 		return hexText + "...(truncated)"
 	}
 	return hexText
+}
+
+func buildOptimizationPromptPayload(payload optimizationContextPayload) optimizationPromptPayload {
+	recentPositions := payload.RecentPositions
+	if len(recentPositions) > 8 {
+		recentPositions = recentPositions[:8]
+	}
+	recentOrders := payload.RecentOrders
+	if len(recentOrders) > 12 {
+		recentOrders = recentOrders[:12]
+	}
+	return optimizationPromptPayload{
+		StrategyID:           payload.StrategyID,
+		StrategyName:         payload.StrategyName,
+		WindowStart:          payload.WindowStart,
+		WindowEnd:            payload.WindowEnd,
+		StrategyConfig:       compactOptimizationConfig(payload.Config),
+		Summary:              payload.Summary,
+		Symbols:              payload.Symbols,
+		Markets:              payload.Markets,
+		RecentPositionsBrief: recentPositions,
+		RecentOrdersBrief:    recentOrders,
+	}
+}
+
+func compactOptimizationConfig(config map[string]interface{}) map[string]interface{} {
+	if len(config) == 0 {
+		return map[string]interface{}{}
+	}
+	keys := []string{
+		"symbol",
+		"symbols",
+		"symbol_select_mode",
+		"select_limit",
+		"leverage",
+		"max_concurrent_positions",
+		"max_initial_margin_usdt",
+		"order_amount_mode",
+		"order_amount_pct",
+		"trade_amount",
+		"take_profit_pct",
+		"stop_loss_pct",
+		"warmup_bars",
+		"min_volatility",
+		"max_price",
+		"min_price",
+		"hunger_mode_enabled",
+		"hunger_take_profit_pct",
+		"hunger_stop_loss_pct",
+	}
+	out := make(map[string]interface{}, len(keys))
+	for _, key := range keys {
+		if v, ok := config[key]; ok {
+			out[key] = v
+		}
+	}
+	return out
+}
+
+func sanitizeOptionalPromptString(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.Trim(v, "`")
+	if strings.EqualFold(v, "<nil>") || strings.EqualFold(v, "nil") {
+		return ""
+	}
+	return strings.TrimSpace(v)
+}
+
+func sanitizeOptimizerURL(v string) string {
+	v = sanitizeOptionalPromptString(v)
+	v = strings.Trim(v, `"'`)
+	return strings.TrimSpace(v)
+}
+
+func isWhitespaceOnly(body []byte) bool {
+	return strings.TrimSpace(string(body)) == ""
 }
 
 func emitAIOptimizationLog(inst *StrategyInstance, level string, stage string, format string, args ...interface{}) {

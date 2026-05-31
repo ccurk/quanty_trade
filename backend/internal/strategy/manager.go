@@ -284,6 +284,9 @@ func getNumber(v interface{}) float64 {
 }
 
 func getString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
 	switch t := v.(type) {
 	case string:
 		return t
