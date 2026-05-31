@@ -179,7 +179,7 @@ func (m *Manager) runAutoOptimizeWorker() {
 				continue
 			}
 			if !inst.lastOptimizeAt.IsZero() && now.Sub(inst.lastOptimizeAt) < interval {
-				logger.Infof("[AI OPT] skip id=%s name=%s reason=interval_wait remaining=%s last_optimize_at=%s interval=%s", inst.ID, inst.Name, (interval-now.Sub(inst.lastOptimizeAt)).Truncate(time.Second), inst.lastOptimizeAt.Format(time.RFC3339), interval)
+				logger.Infof("[AI OPT] skip id=%s name=%s reason=interval_wait remaining=%s last_optimize_at=%s interval=%s", inst.ID, inst.Name, (interval - now.Sub(inst.lastOptimizeAt)).Truncate(time.Second), inst.lastOptimizeAt.Format(time.RFC3339), interval)
 				inst.mu.Unlock()
 				continue
 			}
@@ -226,7 +226,7 @@ func (m *Manager) optimizeStrategyInstance(inst *StrategyInstance, trigger strin
 		_ = database.DB.Create(&run).Error
 	}
 
-	emitStrategyLog(inst, "info", fmt.Sprintf("AI优化开始 trigger=%s lookback=%s", trigger, lookback))
+	emitAIOptimizationLog(inst, "info", "START", "trigger=%s lookback=%s", trigger, lookback)
 	m.notifyAIOptimization(inst, "running", trigger, fmt.Sprintf("lookback=%s model=%s", lookback, firstNonEmpty(model, "unknown")), "")
 	logger.Infof("[AI OPT] start id=%s name=%s trigger=%s lookback=%s model=%s auto_apply=%t dry_run=%t", inst.ID, inst.Name, trigger, lookback, firstNonEmpty(model, "unknown"), getBool(inst.Config["auto_optimize_apply"]), getBool(inst.Config["auto_optimize_dry_run"]))
 
@@ -242,12 +242,14 @@ func (m *Manager) optimizeStrategyInstance(inst *StrategyInstance, trigger strin
 		m.finishOptimizationRun(inst, &run, "failed", false, "", "", err)
 		return
 	}
+	emitAIOptimizationLog(inst, "info", "MODEL_DONE", "summary=%s", strings.TrimSpace(summary))
 	candidateCode = strings.TrimSpace(candidateCode)
 	if candidateCode == "" {
 		m.finishOptimizationRun(inst, &run, "failed", false, "", "", fmt.Errorf("AI 返回空策略代码"))
 		return
 	}
 	run.CandidateCodeHash = hashText(candidateCode)
+	emitAIOptimizationLog(inst, "info", "CANDIDATE", "base_hash=%s candidate_hash=%s code_bytes=%d", run.BaseCodeHash, run.CandidateCodeHash, len(candidateCode))
 
 	if strings.TrimSpace(candidateCode) == strings.TrimSpace(input.code) {
 		m.finishOptimizationRun(inst, &run, "skipped", false, summary, "", fmt.Errorf("AI 未生成新的策略变更"))
@@ -257,8 +259,10 @@ func (m *Manager) optimizeStrategyInstance(inst *StrategyInstance, trigger strin
 		m.finishOptimizationRun(inst, &run, "failed", false, summary, "", fmt.Errorf("候选策略语法校验失败: %w", err))
 		return
 	}
+	emitAIOptimizationLog(inst, "info", "VALIDATE", "candidate_hash=%s", run.CandidateCodeHash)
 
 	if getBool(inst.Config["auto_optimize_dry_run"]) || !getBool(inst.Config["auto_optimize_apply"]) {
+		emitAIOptimizationLog(inst, "info", "DRY_RUN", "dry-run or auto-apply disabled")
 		m.finishOptimizationRun(inst, &run, "completed", false, summary, "dry-run", nil)
 		return
 	}
@@ -267,6 +271,7 @@ func (m *Manager) optimizeStrategyInstance(inst *StrategyInstance, trigger strin
 	inst.mu.Lock()
 	wasRunning = inst.Status == StatusRunning || inst.Status == StatusStarting
 	inst.mu.Unlock()
+	emitAIOptimizationLog(inst, "info", "PREPARE_PUBLISH", "was_running=%t current_status=%s", wasRunning, inst.Status)
 
 	appliedPath, err := m.applyOptimizedCode(inst, input, candidateCode, &run, summary)
 	if err != nil {
@@ -274,15 +279,20 @@ func (m *Manager) optimizeStrategyInstance(inst *StrategyInstance, trigger strin
 		return
 	}
 	if wasRunning {
+		emitAIOptimizationLog(inst, "info", "RESTART_PREPARE", "stop old instance and switch to new version")
 		if err := m.StopStrategy(inst.ID, true); err != nil {
 			m.finishOptimizationRun(inst, &run, "failed", false, summary, appliedPath, fmt.Errorf("已写入新策略，但停止旧实例失败: %w", err))
 			return
 		}
+		emitAIOptimizationLog(inst, "info", "RESTART_STOPPED", "old instance stopped, waiting to start new version")
 		time.Sleep(2 * time.Second)
 		if err := m.StartStrategy(inst.ID); err != nil {
 			m.finishOptimizationRun(inst, &run, "failed", true, summary, appliedPath, fmt.Errorf("新策略已写入，但重启失败: %w", err))
 			return
 		}
+		emitAIOptimizationLog(inst, "info", "RESTART_STARTED", "path=%s", appliedPath)
+	} else {
+		emitAIOptimizationLog(inst, "info", "BOUND", "instance not running, next start uses path=%s", appliedPath)
 	}
 
 	m.finishOptimizationRun(inst, &run, "completed", true, summary, appliedPath, nil)
@@ -517,7 +527,7 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	if model == "" {
 		return "", "", fmt.Errorf("未配置 AI 优化模型名称")
 	}
-	emitStrategyLog(inst, "info", fmt.Sprintf("AI优化请求配置 provider=%s model=%s api_url=%s inst_key=%t conf_key=%t env_openrouter_key=%t env_ai_key=%t", provider, model, apiURL, strings.TrimSpace(getString(inst.Config["auto_optimize_api_key"])) != "", strings.TrimSpace(conf.C().AI.Optimizer.APIKey) != "", strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "", strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_KEY")) != ""))
+	emitAIOptimizationLog(inst, "info", "REQUEST", "provider=%s model=%s api_url=%s inst_key=%t conf_key=%t env_openrouter_key=%t env_ai_key=%t", provider, model, apiURL, strings.TrimSpace(getString(inst.Config["auto_optimize_api_key"])) != "", strings.TrimSpace(conf.C().AI.Optimizer.APIKey) != "", strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "", strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_KEY")) != "")
 
 	ctxJSON, err := json.MarshalIndent(input.payload, "", "  ")
 	if err != nil {
@@ -578,12 +588,13 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	}
 	defer resp.Body.Close()
 	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-	emitStrategyLog(inst, "info", fmt.Sprintf("AI优化响应 status=%d bytes=%d", resp.StatusCode, len(respBytes)))
+	emitAIOptimizationLog(inst, "info", "RESPONSE", "status=%d bytes=%d content_type=%s", resp.StatusCode, len(respBytes), strings.TrimSpace(resp.Header.Get("Content-Type")))
 	if resp.StatusCode >= 300 {
 		return "", "", fmt.Errorf("AI 接口返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(respBytes)))
 	}
 	var parsed openAIChatResponse
 	if err := json.Unmarshal(respBytes, &parsed); err != nil {
+		emitAIOptimizationLog(inst, "error", "RESPONSE_JSON", "err=%v body_preview=%s", err, summarizeOptimizationResponse(respBytes))
 		return "", "", err
 	}
 	if parsed.Error != nil && strings.TrimSpace(parsed.Error.Message) != "" {
@@ -617,6 +628,7 @@ func (m *Manager) applyOptimizedCode(inst *StrategyInstance, input *optimization
 	}
 	now := time.Now()
 	tpl := input.row.Template
+	emitAIOptimizationLog(inst, "info", "PUBLISH_START", "template_id=%d previous_version_id=%v source=%s", tpl.ID, input.row.StrategyVersionID, firstNonEmpty(input.sourcePath, "-"))
 	newVersion, appliedPath, err := m.recordStrategyVersionPublish(inst, input, code, "", run, summary)
 	if err != nil {
 		return "", fmt.Errorf("策略版本记录失败: %w", err)
@@ -630,13 +642,14 @@ func (m *Manager) applyOptimizedCode(inst *StrategyInstance, input *optimization
 	}).Error; err != nil {
 		return "", fmt.Errorf("策略实例绑定新版本失败: %w", err)
 	}
+	emitAIOptimizationLog(inst, "info", "PUBLISH_BIND", "strategy_version_id=%d", newVersion.ID)
 	inst.TemplateID = tpl.ID
 	inst.StrategyVersionID = &newVersion.ID
 	if strings.TrimSpace(appliedPath) == "" {
 		appliedPath = fmt.Sprintf("db://strategy_version/%d", newVersion.ID)
 	}
 	inst.Path = appliedPath
-	emitStrategyLog(inst, "info", fmt.Sprintf("AI优化已发布新版本 template_id=%d version_id=%d path=%s", tpl.ID, newVersion.ID, appliedPath))
+	emitAIOptimizationLog(inst, "info", "PUBLISH_DONE", "template_id=%d version_id=%d path=%s", tpl.ID, newVersion.ID, appliedPath)
 	return appliedPath, nil
 }
 
@@ -667,19 +680,15 @@ func (m *Manager) finishOptimizationRun(inst *StrategyInstance, run *models.Stra
 	if err != nil {
 		if status == "skipped" {
 			m.notifyAIOptimization(inst, status, trigger, finalSummary, err.Error())
-			emitStrategyLog(inst, "info", fmt.Sprintf("AI优化跳过 status=%s reason=%v", status, err))
+			emitAIOptimizationLog(inst, "info", "SKIPPED", "status=%s reason=%v", status, err)
 			return
 		}
 		m.notifyAIOptimization(inst, status, trigger, finalSummary, err.Error())
-		emitStrategyLog(inst, "error", fmt.Sprintf("AI优化失败 status=%s err=%v", status, err))
+		emitAIOptimizationLog(inst, "error", "FAILED", "status=%s err=%v", status, err)
 		return
 	}
 	m.notifyAIOptimization(inst, status, trigger, finalSummary, "")
-	if applied {
-		emitStrategyLog(inst, "info", fmt.Sprintf("AI优化完成 status=%s summary=%s", status, finalSummary))
-	} else {
-		emitStrategyLog(inst, "info", fmt.Sprintf("AI优化完成 status=%s summary=%s", status, finalSummary))
-	}
+	emitAIOptimizationLog(inst, "info", "DONE", "status=%s applied=%t summary=%s", status, applied, finalSummary)
 }
 
 func validatePythonStrategy(code string) error {
@@ -707,6 +716,27 @@ func validatePythonStrategy(code string) error {
 		return errors.New(msg)
 	}
 	return nil
+}
+
+func summarizeOptimizationResponse(body []byte) string {
+	text := strings.TrimSpace(string(body))
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.ReplaceAll(text, "\r", " ")
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) <= 800 {
+		return text
+	}
+	return text[:800] + "...(truncated)"
+}
+
+func emitAIOptimizationLog(inst *StrategyInstance, level string, stage string, format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	stage = strings.ToUpper(strings.TrimSpace(stage))
+	if stage == "" {
+		emitStrategyLog(inst, level, "[AI-OPT] "+msg)
+		return
+	}
+	emitStrategyLog(inst, level, fmt.Sprintf("[AI-OPT][%s] %s", stage, msg))
 }
 
 func extractPythonCode(raw string) string {
