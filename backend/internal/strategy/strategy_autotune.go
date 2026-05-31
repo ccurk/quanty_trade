@@ -20,6 +20,7 @@ import (
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
+	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 )
 
@@ -158,8 +159,13 @@ func (m *Manager) runAutoOptimizeWorker() {
 		}
 		m.mu.RUnlock()
 		now := time.Now()
+		logger.Infof("[AI OPT] scheduler tick instances=%d at=%s", len(instances), now.Format(time.RFC3339))
 		for _, inst := range instances {
-			if inst == nil || !getBool(inst.Config["auto_optimize_enabled"]) {
+			if inst == nil {
+				continue
+			}
+			if !getBool(inst.Config["auto_optimize_enabled"]) {
+				logger.Infof("[AI OPT] skip id=%s name=%s reason=disabled", inst.ID, inst.Name)
 				continue
 			}
 			interval := time.Duration(getNumber(inst.Config["auto_optimize_interval_minutes"])) * time.Minute
@@ -168,16 +174,19 @@ func (m *Manager) runAutoOptimizeWorker() {
 			}
 			inst.mu.Lock()
 			if inst.optimizeRunning || inst.stopping || inst.restarting {
+				logger.Infof("[AI OPT] skip id=%s name=%s reason=busy optimize_running=%t stopping=%t restarting=%t", inst.ID, inst.Name, inst.optimizeRunning, inst.stopping, inst.restarting)
 				inst.mu.Unlock()
 				continue
 			}
 			if !inst.lastOptimizeAt.IsZero() && now.Sub(inst.lastOptimizeAt) < interval {
+				logger.Infof("[AI OPT] skip id=%s name=%s reason=interval_wait remaining=%s last_optimize_at=%s interval=%s", inst.ID, inst.Name, (interval-now.Sub(inst.lastOptimizeAt)).Truncate(time.Second), inst.lastOptimizeAt.Format(time.RFC3339), interval)
 				inst.mu.Unlock()
 				continue
 			}
 			inst.optimizeRunning = true
 			inst.lastOptimizeAt = now
 			inst.mu.Unlock()
+			logger.Infof("[AI OPT] trigger id=%s name=%s trigger=schedule interval=%s", inst.ID, inst.Name, interval)
 			go m.optimizeStrategyInstance(inst, "schedule")
 		}
 	}
@@ -219,6 +228,7 @@ func (m *Manager) optimizeStrategyInstance(inst *StrategyInstance, trigger strin
 
 	emitStrategyLog(inst, "info", fmt.Sprintf("AI优化开始 trigger=%s lookback=%s", trigger, lookback))
 	m.notifyAIOptimization(inst, "running", trigger, fmt.Sprintf("lookback=%s model=%s", lookback, firstNonEmpty(model, "unknown")), "")
+	logger.Infof("[AI OPT] start id=%s name=%s trigger=%s lookback=%s model=%s auto_apply=%t dry_run=%t", inst.ID, inst.Name, trigger, lookback, firstNonEmpty(model, "unknown"), getBool(inst.Config["auto_optimize_apply"]), getBool(inst.Config["auto_optimize_dry_run"]))
 
 	input, err := m.prepareOptimizationInput(inst, windowStart, now)
 	if err != nil {
@@ -507,6 +517,7 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	if model == "" {
 		return "", "", fmt.Errorf("未配置 AI 优化模型名称")
 	}
+	emitStrategyLog(inst, "info", fmt.Sprintf("AI优化请求配置 provider=%s model=%s api_url=%s inst_key=%t conf_key=%t env_openrouter_key=%t env_ai_key=%t", provider, model, apiURL, strings.TrimSpace(getString(inst.Config["auto_optimize_api_key"])) != "", strings.TrimSpace(conf.C().AI.Optimizer.APIKey) != "", strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "", strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_KEY")) != ""))
 
 	ctxJSON, err := json.MarshalIndent(input.payload, "", "  ")
 	if err != nil {
@@ -567,6 +578,7 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	}
 	defer resp.Body.Close()
 	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	emitStrategyLog(inst, "info", fmt.Sprintf("AI优化响应 status=%d bytes=%d", resp.StatusCode, len(respBytes)))
 	if resp.StatusCode >= 300 {
 		return "", "", fmt.Errorf("AI 接口返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(respBytes)))
 	}

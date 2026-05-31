@@ -60,6 +60,7 @@ type telegramUser struct {
 func Start(ctx context.Context, mgr *strategy.Manager) *Service {
 	cfg := conf.C().Telegram
 	token := strings.TrimSpace(cfg.BotToken)
+	logger.Infof("telegram bootstrap enabled=%t token_present=%t token_len=%d poll_timeout=%d", cfg.Enabled, token != "", len(token), cfg.PollTimeoutSeconds)
 	if !cfg.Enabled {
 		logger.Infof("telegram disabled")
 		return nil
@@ -82,7 +83,7 @@ func Start(ctx context.Context, mgr *strategy.Manager) *Service {
 	if mgr != nil {
 		mgr.SetNotifier(svc)
 	}
-	logger.Infof("telegram service started poll_timeout=%d", pollTimeout)
+	logger.Infof("telegram service started poll_timeout=%d token_len=%d", pollTimeout, len(token))
 	go svc.run(ctx)
 	return svc
 }
@@ -230,6 +231,9 @@ func (s *Service) fetchUpdates(ctx context.Context, offset int64) ([]telegramUpd
 			nextOffset = upd.UpdateID + 1
 		}
 	}
+	if len(parsed.Result) > 0 {
+		logger.Infof("telegram fetched updates count=%d next_offset=%d", len(parsed.Result), nextOffset)
+	}
 	return parsed.Result, nextOffset, nil
 }
 
@@ -242,6 +246,7 @@ func (s *Service) handleUpdate(upd telegramUpdate) {
 	if text == "" {
 		return
 	}
+	logger.Infof("telegram handle update update_id=%d chat_id=%d text=%s", upd.UpdateID, msg.Chat.ID, previewTelegramText(text))
 	s.upsertSubscriber(msg)
 	reply := s.handleCommand(msg, text)
 	if strings.TrimSpace(reply) == "" {
@@ -385,6 +390,7 @@ func (s *Service) upsertSubscriber(msg *telegramMessage) {
 			"enabled":    true,
 			"updated_at": time.Now(),
 		}).Error
+		logger.Infof("telegram subscriber updated chat_id=%d username=%s enabled=true", msg.Chat.ID, username)
 		return
 	}
 	_ = database.DB.Create(&models.TelegramSubscriber{
@@ -393,6 +399,7 @@ func (s *Service) upsertSubscriber(msg *telegramMessage) {
 		FirstName: firstName,
 		Enabled:   true,
 	}).Error
+	logger.Infof("telegram subscriber created chat_id=%d username=%s enabled=true", msg.Chat.ID, username)
 }
 
 func (s *Service) setSubscriberEnabled(chatID int64, enabled bool) {
@@ -413,6 +420,7 @@ func (s *Service) broadcast(text string) {
 		logger.Errorf("telegram load subscribers failed err=%v", err)
 		return
 	}
+	logger.Infof("telegram broadcast subscribers=%d text=%s", len(rows), previewTelegramText(text))
 	for _, row := range rows {
 		if row.ChatID == 0 {
 			continue
@@ -454,7 +462,17 @@ func (s *Service) sendText(chatID int64, text string) error {
 	if !parsed.OK {
 		return fmt.Errorf("telegram sendMessage failed: %s", parsed.Description)
 	}
+	logger.Infof("telegram send success chat_id=%d text=%s", chatID, previewTelegramText(text))
 	return nil
+}
+
+func previewTelegramText(text string) string {
+	text = strings.TrimSpace(text)
+	text = strings.ReplaceAll(text, "\n", " | ")
+	if len(text) > 160 {
+		return text[:160] + "..."
+	}
+	return text
 }
 
 func (s *Service) loadOffset() int64 {

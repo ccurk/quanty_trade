@@ -630,6 +630,18 @@ func emitStrategyLog(inst *StrategyInstance, level string, msg string) {
 	if inst == nil || strings.TrimSpace(msg) == "" {
 		return
 	}
+	level = strings.ToLower(strings.TrimSpace(level))
+	logPrefix := fmt.Sprintf("[STRATEGY LOG] id=%s name=%s owner=%d level=%s msg=%s", inst.ID, inst.Name, inst.OwnerID, firstNonEmpty(level, "info"), msg)
+	switch level {
+	case "error":
+		logger.Errorf("%s", logPrefix)
+	case "warn", "warning":
+		logger.Warnf("%s", logPrefix)
+	case "debug":
+		logger.Debugf("%s", logPrefix)
+	default:
+		logger.Infof("%s", logPrefix)
+	}
 	if database.DB != nil {
 		_ = database.DB.Create(&models.StrategyLog{
 			StrategyID: inst.ID,
