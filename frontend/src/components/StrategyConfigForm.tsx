@@ -66,6 +66,54 @@ export function StrategyConfigForm({
             </div>
           </div>
 
+          {/* 推荐交易对快捷选择：基于 60 天历史数据复盘出的盈利子集（BILL/UB/PRL/TRUTH）。
+              即使 /api/markets/symbols 返回的 500 个 binance 实时列表里因 24h
+              交易量靠后被截掉，这里也能一键选上。点击会切换添加/移除。 */}
+          <div className={`mb-3 p-3 rounded-xl border ${isDarkMode ? 'border-blue-900/40 bg-blue-950/20' : 'border-blue-200 bg-blue-50/60'}`}>
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <div className={`text-xs font-bold ${isDarkMode ? 'text-blue-200' : 'text-blue-800'}`}>💡 推荐交易对（基于历史盈利复盘）</div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (config.auto_symbols) return;
+                  const recommended = ['BILLUSDT', 'UBUSDT', 'PRLUSDT', 'TRUTHUSDT'];
+                  const merged = Array.from(new Set([...selectedSymbols, ...recommended]));
+                  onChange({ ...config, symbols: merged.join(','), symbol: merged[0] || '' });
+                }}
+                disabled={config.auto_symbols}
+                className={`px-2 py-1 rounded text-xs font-bold border ${config.auto_symbols ? 'opacity-50 cursor-not-allowed' : ''} ${isDarkMode ? 'bg-blue-900/60 border-blue-700 text-blue-100 hover:bg-blue-800' : 'bg-blue-100 border-blue-300 text-blue-800 hover:bg-blue-200'}`}
+              >
+                一键全选 4 个
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {['BILLUSDT', 'UBUSDT', 'PRLUSDT', 'TRUTHUSDT'].map(sym => {
+                const checked = selectedSymbols.includes(sym);
+                return (
+                  <button
+                    type="button"
+                    key={sym}
+                    onClick={() => {
+                      if (config.auto_symbols) return;
+                      const next = checked ? selectedSymbols.filter(s => s !== sym) : [...selectedSymbols, sym];
+                      onChange({ ...config, symbols: next.join(','), symbol: next[0] || '' });
+                    }}
+                    disabled={config.auto_symbols}
+                    className={`px-3 py-1 rounded-lg text-xs font-mono font-bold border transition ${
+                      config.auto_symbols ? 'opacity-50 cursor-not-allowed' : ''
+                    } ${
+                      checked
+                        ? (isDarkMode ? 'bg-green-600 border-green-500 text-white' : 'bg-green-500 border-green-600 text-white')
+                        : (isDarkMode ? 'bg-gray-900 border-gray-700 text-gray-200 hover:bg-gray-800' : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-100')
+                    }`}
+                  >
+                    {checked ? '✓ ' : '+ '}{sym}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <input
             type="text"
             value={symbolSearch}
