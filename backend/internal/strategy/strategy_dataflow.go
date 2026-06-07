@@ -166,10 +166,19 @@ func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBu
 		}
 	}(append([]string(nil), symbols...))
 
-	for _, sym := range symbols {
+	// 启动抖动：每个 symbol 的 WS 订阅 goroutine 错开 250-400ms 触发，
+	// 防止 N 个 symbol 同时握手撞 binance 单 IP 限频（5/s 是软阈值，10/s 容易触发 ban）。
+	// 配合 binance.go 里的全局 dial token bucket（200ms/token）形成两层保护：
+	//   - 应用层抖动让请求队列稀释
+	//   - bucket 兜底拦截瞬时突发
+	for idx, sym := range symbols {
 		sym := sym
+		startDelay := time.Duration(idx)*300*time.Millisecond + time.Duration(idx*73)*time.Millisecond%200
 		go func() {
-			emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles start symbol=%s", sym))
+			if startDelay > 0 {
+				time.Sleep(startDelay)
+			}
+			emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles start symbol=%s (after %s stagger)", sym, startDelay))
 			pollCtx, pollCancel := context.WithCancel(context.Background())
 			go m.latestClosedCandleFallbackLoop(pollCtx, inst, redisBus, sym)
 

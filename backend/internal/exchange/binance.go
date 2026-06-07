@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -2402,6 +2403,48 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 	return created, firstErr
 }
 
+// wsDialTokens 限制全局 WS 握手速率。binance 单 IP 大概是 300 connect / 5min
+// 上限，超过会进 5-15min 软 ban。我们保守一点：每 200ms 一个 token =
+// 5 个握手/秒 = 300/分钟。容量 5 让启动期能 burst 一点。
+var wsDialTokens = make(chan struct{}, 5)
+
+func init() {
+	// 启动期初始 5 个 token，随后每 200ms 补 1 个
+	for i := 0; i < 5; i++ {
+		wsDialTokens <- struct{}{}
+	}
+	go func() {
+		t := time.NewTicker(200 * time.Millisecond)
+		defer t.Stop()
+		for range t.C {
+			select {
+			case wsDialTokens <- struct{}{}:
+			default:
+				// bucket 满了，跳过
+			}
+		}
+	}()
+}
+
+// wsDialTokenWait 在调用 dialer.DialContext 之前阻塞拿一个 token。
+func wsDialTokenWait() {
+	<-wsDialTokens
+}
+
+// sleepWithJitter 在 base 基础上加 [0, base/2) 的随机抖动再睡，防多个
+// goroutine 同步重连撞同一秒。stop 通道关闭则提前返回。
+func sleepWithJitter(base time.Duration, stop chan struct{}) {
+	if base <= 0 {
+		return
+	}
+	jitter := time.Duration(rand.Int63n(int64(base/2 + 1)))
+	total := base + jitter
+	select {
+	case <-time.After(total):
+	case <-stop:
+	}
+}
+
 func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle)) (func(), error) {
 	return b.SubscribeCandlesWithEvents(symbol, callback, nil)
 }
@@ -2411,13 +2454,30 @@ func (b *BinanceExchange) SubscribeCandlesWithEvents(symbol string, callback fun
 	stream := sym + "@kline_1m"
 	wsURL := b.wsBaseURL + "/ws/" + stream
 
+	// Throttle initial dial：每个 SubscribeCandlesWithEvents 调用都过这个全局
+	// token bucket，防止启动期 N 个 symbol 同时握手撞 binance 限频（最大 5/s）。
+	wsDialTokenWait()
+
 	stop := make(chan struct{})
 	go func() {
-		backoff := 1 * time.Second
-		maxBackoff := 30 * time.Second
+		// 两套 backoff：
+		// normalBackoff 处理握手失败/被动 disconnect，1s 起步翻倍封顶 30s。
+		// silentBackoff 专治 binance 软 ban——连接 OK 但不推数据，
+		//  探测到 N 秒无数据强制 close + 重连，按 silent 次数二次方退避到 5min。
+		// 关键修复：之前 dial 成功就 reset backoff，软 ban 时会立刻重连进死循环。
+		// 现在等到收到第一条 数据 才 reset。
+		const (
+			handshakeTimeout    = 10 * time.Second
+			readDeadline        = 90 * time.Second // 90s 没数据 = 软 ban 信号
+			normalMaxBackoff    = 30 * time.Second
+			silentBaseUnit      = 30 * time.Second
+			silentMaxBackoff    = 5 * time.Minute
+		)
+		normalBackoff := 1 * time.Second
+		silentDisconnects := 0
 		dialer := websocket.Dialer{
 			Proxy:            http.ProxyFromEnvironment,
-			HandshakeTimeout: 10 * time.Second,
+			HandshakeTimeout: handshakeTimeout,
 			NetDialContext: (&net.Dialer{
 				Timeout:   10 * time.Second,
 				KeepAlive: 30 * time.Second,
@@ -2440,10 +2500,10 @@ func (b *BinanceExchange) SubscribeCandlesWithEvents(symbol string, callback fun
 				if onStatus != nil {
 					onStatus("connect_failed", wsURL, err)
 				}
-				time.Sleep(backoff)
-				backoff *= 2
-				if backoff > maxBackoff {
-					backoff = maxBackoff
+				sleepWithJitter(normalBackoff, stop)
+				normalBackoff *= 2
+				if normalBackoff > normalMaxBackoff {
+					normalBackoff = normalMaxBackoff
 				}
 				continue
 			}
@@ -2451,7 +2511,8 @@ func (b *BinanceExchange) SubscribeCandlesWithEvents(symbol string, callback fun
 			if onStatus != nil {
 				onStatus("connected", wsURL, nil)
 			}
-			backoff = 1 * time.Second
+			// 注意：这里【不】重置 normalBackoff。等收到第一条 msg 才认为是
+			// 真正 "成功"，再 reset。
 			go func(c *websocket.Conn) {
 				<-stop
 				_ = c.Close()
@@ -2460,6 +2521,7 @@ func (b *BinanceExchange) SubscribeCandlesWithEvents(symbol string, callback fun
 			gotFirst := false
 			gotFirstClosed := false
 			gotRawFirst := false
+			gotAnyData := false
 			loggedUnmarshalErr := false
 			for {
 				select {
@@ -2468,19 +2530,47 @@ func (b *BinanceExchange) SubscribeCandlesWithEvents(symbol string, callback fun
 					return
 				default:
 				}
+				// 读超时探测：90s 内没收到任何 frame → 视为软 ban / 静默断连
+				_ = conn.SetReadDeadline(time.Now().Add(readDeadline))
 				_, msg, err := conn.ReadMessage()
 				if err != nil {
 					_ = conn.Close()
-					log.Printf("[BINANCE WS] kline disconnected symbol=%s err=%v (reconnect in %s)", symbol, err, backoff)
+					// 区分两种情况：
+					// 1) 读超时且从未收到数据 → 软 ban 模式
+					// 2) 正常网络断开 / 读到 err → 普通重连
+					isTimeout := false
+					if ne, ok := err.(net.Error); ok && ne.Timeout() {
+						isTimeout = true
+					}
+					if isTimeout && !gotAnyData {
+						silentDisconnects++
+						penalty := time.Duration(silentDisconnects*silentDisconnects) * silentBaseUnit
+						if penalty > silentMaxBackoff {
+							penalty = silentMaxBackoff
+						}
+						log.Printf("[BINANCE WS] silent disconnect (likely soft-ban) symbol=%s consecutive=%d wait=%s", symbol, silentDisconnects, penalty)
+						if onStatus != nil {
+							onStatus("silent_disconnect", fmt.Sprintf("consecutive=%d wait=%s", silentDisconnects, penalty), nil)
+						}
+						sleepWithJitter(penalty, stop)
+						break
+					}
+					log.Printf("[BINANCE WS] kline disconnected symbol=%s err=%v (reconnect in %s)", symbol, err, normalBackoff)
 					if onStatus != nil {
 						onStatus("disconnected", wsURL, err)
 					}
-					time.Sleep(backoff)
-					backoff *= 2
-					if backoff > maxBackoff {
-						backoff = maxBackoff
+					sleepWithJitter(normalBackoff, stop)
+					normalBackoff *= 2
+					if normalBackoff > normalMaxBackoff {
+						normalBackoff = normalMaxBackoff
 					}
 					break
+				}
+				if !gotAnyData {
+					gotAnyData = true
+					// 真正的"健康"信号，全部退避计数清零
+					normalBackoff = 1 * time.Second
+					silentDisconnects = 0
 				}
 				if onStatus != nil && !gotRawFirst {
 					gotRawFirst = true
