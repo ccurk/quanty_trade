@@ -347,9 +347,12 @@ const App: React.FC = () => {
   const [isLoadingMarketSymbols, setIsLoadingMarketSymbols] = useState(false);
   const [strategySymbolSearch, setStrategySymbolSearch] = useState('');
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
-  const [dashboardRange, setDashboardRange] = useState<'default' | '1m' | '5m' | '7d' | '1w' | '30d' | '1mo' | '1y' | 'custom'>('default');
-  const [dashboardStart, setDashboardStart] = useState('');
-  const [dashboardEnd, setDashboardEnd] = useState('');
+  // setters 去掉了：stats tab 现在只剩盈亏日历，不再有 range/自定义日期选择 UI。
+  // useState 留着是为了让 fetchDashboard 里读取这几个值的代码继续编译通过——
+  // 它们永远是初始值，相当于"默认 range"。
+  const [dashboardRange] = useState<'default' | '1m' | '5m' | '7d' | '1w' | '30d' | '1mo' | '1y' | 'custom'>('default');
+  const [dashboardStart] = useState('');
+  const [dashboardEnd] = useState('');
   const [dashboardCalendarMonth, setDashboardCalendarMonth] = useState(new Date().toISOString().slice(0, 7));
   
   // Backtest State
