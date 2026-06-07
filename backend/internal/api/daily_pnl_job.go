@@ -3,7 +3,10 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,8 +14,42 @@ import (
 	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 
+	"github.com/gin-gonic/gin"
 	"gorm.io/gorm/clause"
 )
+
+// BackfillDailyPnL is an admin-only handler that synchronously re-runs the
+// daily PnL aggregation for the past N days (default 400). Use after a first
+// deploy, after the daily_pn_ls table got truncated, or whenever you suspect
+// the nightly job has missed days.
+//
+// Query: ?days=N (1..3650, default 400)
+func BackfillDailyPnL(c *gin.Context) {
+	if database.DB == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "db not ready"})
+		return
+	}
+	days := 400
+	if v := strings.TrimSpace(c.Query("days")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 3650 {
+			days = n
+		}
+	}
+	startedAt := time.Now()
+	backfillDailyPnL(days)
+	// also force today's snapshot
+	runDailyPnLForYesterday()
+	now := time.Now()
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	runDailyPnLForRange(startOfToday.Format("2006-01-02"), startOfToday, now)
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":      "ok",
+		"days":        days,
+		"duration_ms": time.Since(startedAt).Milliseconds(),
+		"hint":        "前端「数据面板」刷新一下，应该能看到日历填充",
+	})
+}
 
 var dailyPnLOnce sync.Once
 

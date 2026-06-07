@@ -1685,123 +1685,18 @@ const App: React.FC = () => {
 
         {activeTab === 'stats' && (
           <div className="space-y-6">
+            {/* 顶部：仅保留更新时间 + 刷新按钮。range selector / 自定义日期 / overview cards / period cards / 月度表 / 策略状态卡片
+               全部移除，本 tab 现在只展示「盈亏日历」一项内容。 */}
             <div className="flex items-center justify-between">
               <div className="text-sm text-gray-500">
                 更新时间：{dashboard ? new Date(dashboard.updated_at).toLocaleString() : '--'}
               </div>
-              <div className="flex items-center gap-2">
-                <select
-                  value={dashboardRange}
-                  onChange={(e) => {
-                    const v = e.target.value as typeof dashboardRange;
-                    setDashboardRange(v);
-                    if (v !== 'custom') {
-                      setDashboardStart('');
-                      setDashboardEnd('');
-                    }
-                  }}
-                  className={`px-3 py-2 rounded-xl border text-sm font-bold ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
-                >
-                  <option value="default">默认</option>
-                  <option value="1m">近 1 分钟</option>
-                  <option value="5m">近 5 分钟</option>
-                  <option value="7d">近 7 天</option>
-                  <option value="1w">近 1 周</option>
-                  <option value="30d">近 30 天</option>
-                  <option value="1mo">近 1 个月</option>
-                  <option value="1y">近 1 年</option>
-                  <option value="custom">自定义</option>
-                </select>
-                {dashboardRange === 'custom' && (
-                  <>
-                    <input
-                      type="datetime-local"
-                      value={dashboardStart}
-                      onChange={(e) => setDashboardStart(e.target.value)}
-                      className={`px-3 py-2 rounded-xl border text-sm ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
-                    />
-                    <input
-                      type="datetime-local"
-                      value={dashboardEnd}
-                      onChange={(e) => setDashboardEnd(e.target.value)}
-                      className={`px-3 py-2 rounded-xl border text-sm ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
-                    />
-                    <button
-                      onClick={fetchDashboard}
-                      className="px-4 py-2 rounded-xl font-bold transition shadow-sm border bg-blue-600 hover:bg-blue-700 text-white border-blue-600"
-                    >
-                      应用
-                    </button>
-                  </>
-                )}
-                <button
-                  onClick={fetchDashboard}
-                  className={`px-4 py-2 rounded-xl font-bold transition shadow-sm border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
-                >
-                  刷新面板
-                </button>
-              </div>
-            </div>
-
-            {(() => {
-              const overviewCards = [
-                { title: '交易所', value: dashboard ? dashboard.account.exchange : '--', sub: dashboard ? dashboard.account.market.toUpperCase() : '--' },
-                { title: '持仓数量', value: dashboard ? String(dashboard.positions.open_count) : '--', sub: dashboard ? `${dashboard.strategies.running} 个策略运行中` : '--' },
-                { title: '持仓名义额', value: dashboard ? formatMoney(dashboard.positions.open_notional, 2) : '--', sub: '当前仓位规模' },
-                { title: '未实现盈亏', value: dashboard ? formatMoney(dashboard.positions.unrealized_pnl, 2) : '--', sub: dashboard ? `${dashboard.positions.open_symbols} 个交易对持仓中` : '--', tone: dashboard ? toneClass(dashboard.positions.unrealized_pnl) : '' },
-                { title: '近 7 天', value: dashboard ? formatMoney(dashboard.pnl.seven_day.total_pnl, 2) : '--', sub: dashboard ? `收益率 ${formatPct(dashboard.pnl.seven_day.realized_return_pct, 2)}` : '--', tone: dashboard ? toneClass(dashboard.pnl.seven_day.total_pnl) : '' },
-                { title: '近 30 天', value: dashboard ? formatMoney(dashboard.pnl.thirty_day.total_pnl, 2) : '--', sub: dashboard ? `收益率 ${formatPct(dashboard.pnl.thirty_day.realized_return_pct, 2)}` : '--', tone: dashboard ? toneClass(dashboard.pnl.thirty_day.total_pnl) : '' },
-                { title: '今年累计', value: dashboard ? formatMoney(dashboard.pnl.year.total_pnl, 2) : '--', sub: dashboard ? `收益率 ${formatPct(dashboard.pnl.year.realized_return_pct, 2)}` : '--', tone: dashboard ? toneClass(dashboard.pnl.year.total_pnl) : '' },
-              ];
-              return (
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-4">
-                  {overviewCards.map(card => (
-                    <div key={card.title} className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-                      <div className="text-xs text-gray-500 uppercase font-bold mb-2">{card.title}</div>
-                      <div className={`font-mono font-bold text-lg ${card.tone || ''}`}>{card.value}</div>
-                      <div className="text-xs text-gray-500 mt-2">{card.sub}</div>
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {(() => {
-                const cards: Array<{ key: string; title: string; p: PnLPeriodSummary | null }> = [];
-                if (dashboard?.pnl.custom) {
-                  cards.push({ key: 'custom', title: dashboard.pnl.custom_label || '自定义范围', p: dashboard.pnl.custom });
-                }
-                cards.push({ key: 'day', title: '今日收益', p: dashboard ? dashboard.pnl.day : null });
-                cards.push({ key: 'seven_day', title: '近 7 天收益', p: dashboard ? dashboard.pnl.seven_day : null });
-                cards.push({ key: 'week', title: '本周收益', p: dashboard ? dashboard.pnl.week : null });
-                cards.push({ key: 'thirty_day', title: '近 30 天收益', p: dashboard ? dashboard.pnl.thirty_day : null });
-                cards.push({ key: 'month', title: '本月收益', p: dashboard ? dashboard.pnl.month : null });
-                cards.push({ key: 'year', title: '今年收益', p: dashboard ? dashboard.pnl.year : null });
-                return cards.map(({ key, title, p }) => {
-                  const total = p ? p.total_pnl : 0;
-                  return (
-                    <div key={key} className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-                      <div className="flex justify-between items-center mb-3">
-                        <div className="font-bold">{title}</div>
-                        <div className={`font-mono font-bold ${toneClass(total)}`}>
-                          {p ? formatMoney(total, 2) : '--'}
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3 text-sm">
-                        <div className="text-gray-500">总收入</div>
-                        <div className="font-mono">{p ? formatMoney(p.gross_profit, 2) : '--'}</div>
-                        <div className="text-gray-500">已实现</div>
-                        <div className={`font-mono ${p ? toneClass(p.realized_pnl) : ''}`}>{p ? formatMoney(p.realized_pnl, 2) : '--'}</div>
-                        <div className="text-gray-500">未实现</div>
-                        <div className={`font-mono ${p ? toneClass(p.unrealized_pnl) : ''}`}>{p ? formatMoney(p.unrealized_pnl, 2) : '--'}</div>
-                        <div className="text-gray-500">回报率</div>
-                        <div className={`font-mono ${p ? toneClass(p.realized_return_pct) : ''}`}>{p ? formatPct(p.realized_return_pct, 2) : '--'}</div>
-                      </div>
-                    </div>
-                  );
-                });
-              })()}
+              <button
+                onClick={fetchDashboard}
+                className={`px-4 py-2 rounded-xl font-bold transition shadow-sm border ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700 border-gray-700' : 'bg-white hover:bg-gray-50 border-gray-200'}`}
+              >
+                刷新
+              </button>
             </div>
 
             <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
@@ -1939,92 +1834,6 @@ const App: React.FC = () => {
               })()}
             </div>
 
-            <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-              <div className="flex items-center justify-between mb-3">
-                <div className="font-bold">月度收益</div>
-                <div className="text-xs text-gray-500">按自然月聚合已实现收益</div>
-              </div>
-              {(() => {
-                const rows = [...(dashboard?.pnl.monthly || [])].sort((a, b) => b.month.localeCompare(a.month));
-                if (!rows.length) {
-                  return <div className="text-sm text-gray-500">暂无月度收益数据</div>;
-                }
-                return (
-                  <div className={`rounded-2xl border overflow-hidden ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
-                    <div className="max-h-[20rem] overflow-auto">
-                      <table className="w-full text-sm">
-                        <thead className={`${isDarkMode ? 'bg-gray-900/60 text-gray-400' : 'bg-white text-gray-500'}`}>
-                          <tr>
-                            <th className="px-4 py-3 text-left">月份</th>
-                            <th className="px-4 py-3 text-right">收益</th>
-                            <th className="px-4 py-3 text-right">收益率</th>
-                            <th className="px-4 py-3 text-right">交易数</th>
-                            <th className="px-4 py-3 text-right">盈利 / 亏损天数</th>
-                          </tr>
-                        </thead>
-                        <tbody className={`${isDarkMode ? 'divide-y divide-gray-800' : 'divide-y divide-gray-200'}`}>
-                          {rows.map((d) => (
-                            <tr key={`month-${d.month}`} className={isDarkMode ? 'hover:bg-gray-900/40' : 'hover:bg-white'}>
-                              <td className="px-4 py-3 font-mono">{d.month}</td>
-                              <td className={`px-4 py-3 text-right font-mono ${toneClass(d.realized_pnl)}`}>{formatMoney(d.realized_pnl, 2)}</td>
-                              <td className={`px-4 py-3 text-right font-mono ${toneClass(d.realized_return_pct)}`}>{formatPct(d.realized_return_pct, 2)}</td>
-                              <td className="px-4 py-3 text-right font-mono">{d.trades}</td>
-                              <td className="px-4 py-3 text-right font-mono"><span className="text-green-500">{d.positive_days}</span> / <span className="text-red-500">{d.negative_days}</span></td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-                <div className="text-xs text-gray-500 uppercase font-bold mb-2">策略状态</div>
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div className="text-gray-500">运行中</div>
-                  <div className="font-mono">{dashboard ? dashboard.strategies.running : '--'}</div>
-                  <div className="text-gray-500">已停止</div>
-                  <div className="font-mono">{dashboard ? dashboard.strategies.stopped : '--'}</div>
-                  <div className="text-gray-500">异常</div>
-                  <div className="font-mono">{dashboard ? dashboard.strategies.error : '--'}</div>
-                  <div className="text-gray-500">总数</div>
-                  <div className="font-mono">{dashboard ? dashboard.strategies.total : '--'}</div>
-                </div>
-              </div>
-              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-                <div className="text-xs text-gray-500 uppercase font-bold mb-2">订单状态</div>
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div className="text-gray-500">已成交</div>
-                  <div className="font-mono">{dashboard ? dashboard.orders.filled : '--'}</div>
-                  <div className="text-gray-500">新建</div>
-                  <div className="font-mono">{dashboard ? dashboard.orders.new : '--'}</div>
-                  <div className="text-gray-500">请求中</div>
-                  <div className="font-mono">{dashboard ? dashboard.orders.requested : '--'}</div>
-                  <div className="text-gray-500">失败</div>
-                  <div className="font-mono">{dashboard ? dashboard.orders.failed : '--'}</div>
-                  <div className="text-gray-500">拒绝</div>
-                  <div className="font-mono">{dashboard ? dashboard.orders.rejected : '--'}</div>
-                  <div className="text-gray-500">总数</div>
-                  <div className="font-mono">{dashboard ? dashboard.orders.total : '--'}</div>
-                </div>
-              </div>
-              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
-                <div className="text-xs text-gray-500 uppercase font-bold mb-2">持仓概览</div>
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div className="text-gray-500">开仓条目</div>
-                  <div className="font-mono">{dashboard ? dashboard.positions.open_count : '--'}</div>
-                  <div className="text-gray-500">交易对数</div>
-                  <div className="font-mono">{dashboard ? dashboard.positions.open_symbols : '--'}</div>
-                  <div className="text-gray-500">名义额</div>
-                  <div className="font-mono">{dashboard ? formatMoney(dashboard.positions.open_notional, 2) : '--'}</div>
-                  <div className="text-gray-500">未实现</div>
-                  <div className={`font-mono ${dashboard ? toneClass(dashboard.positions.unrealized_pnl) : ''}`}>{dashboard ? formatMoney(dashboard.positions.unrealized_pnl, 2) : '--'}</div>
-                </div>
-              </div>
-            </div>
           </div>
         )}
 

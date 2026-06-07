@@ -159,6 +159,9 @@ func main() {
 			admin.GET("/users", api.ListUsers)
 			admin.POST("/users", api.CreateUser)
 			admin.DELETE("/users/:id", api.DeleteUser)
+			// 强制回填 daily_pn_ls 表（默认 400 天）。在 daily PnL job 还没跑
+			// 完、或者首次部署、或者想立刻刷新历史数据时调一次。
+			admin.POST("/daily-pnl/backfill", api.BackfillDailyPnL)
 		}
 	}
 
