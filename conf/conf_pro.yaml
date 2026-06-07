@@ -27,6 +27,8 @@ admin:
 security:
   jwt_secret: "qt_jwt_secret_change_me_20260320"
   config_encryption_key: "b3e3c4f1a8d94b3a9c7f2e1d0a6b5c4d3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c"
+  allowed_origins:
+    - "*"
 
 exchange:
   name: "binance"
@@ -60,8 +62,3 @@ ai:
     http_referer: "https://quanty.qxyz.xyz"
     app_name: "QuantyTrade"
 
-security:
-  jwt_secret: "qt_jwt_secret_change_me_20260320"        # 你已有的，别改
-  config_encryption_key: "b3e3c4f1a8d94b3a9c7f2e1d0a6b5c4d3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c"  # 你已有的
-  allowed_origins:                                       # ← 加这两行
-    - "*"
