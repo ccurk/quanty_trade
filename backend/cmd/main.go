@@ -162,6 +162,10 @@ func main() {
 			// 强制回填 daily_pn_ls 表（默认 400 天）。在 daily PnL job 还没跑
 			// 完、或者首次部署、或者想立刻刷新历史数据时调一次。
 			admin.POST("/daily-pnl/backfill", api.BackfillDailyPnL)
+			// Cron-driven auto-optimize：context 给外部 LLM 用、apply 落地新
+			// template + rebind + restart。详见 internal/api/optimize_handlers.go
+			admin.GET("/optimize/context", api.GetOptimizeContext)
+			admin.POST("/optimize/apply", api.ApplyOptimization)
 		}
 	}
 

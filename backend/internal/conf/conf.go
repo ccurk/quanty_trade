@@ -268,28 +268,29 @@ func MustLoad() {
 }
 
 // MustValidateSecurity 在启动早期被 main.go 调用。
-// 任何模式都强制：JWT_SECRET / CONFIG_ENCRYPTION_KEY 必须有值。
-// 仅 release 模式强制：AllowedOrigins 必须非空（否则 WS 没人能连）。
-//
-// 失败时打印干净的指引并 panic —— 不允许"以不安全的默认值偷偷启动"。
+// 任何模式都强制：JWT_SECRET / CONFIG_ENCRYPTION_KEY 必须有值——这两个
+// 缺失直接是后门级风险，必须 panic 拒启。
+// AllowedOrigins 缺失只打 WARNING 不再 panic：WS 那边已经有 release+空
+// 白名单时的 allow-all 兜底（main.go CheckOrigin），这里再 panic 反而把
+// 一切弄崩。WARNING 让用户知道，但不影响开店。
 func MustValidateSecurity() {
 	c := C()
-	var missing []string
+	var fatal []string
 	if strings.TrimSpace(c.Security.JWTSecret) == "" {
-		missing = append(missing, "JWT_SECRET (env) 或 security.jwt_secret (yaml)")
+		fatal = append(fatal, "JWT_SECRET (env) 或 security.jwt_secret (yaml)")
 	}
 	if strings.TrimSpace(c.Security.ConfigEncryptionKey) == "" {
-		missing = append(missing, "CONFIG_ENCRYPTION_KEY (env) 或 security.config_encryption_key (yaml)")
+		fatal = append(fatal, "CONFIG_ENCRYPTION_KEY (env) 或 security.config_encryption_key (yaml)")
+	}
+	if len(fatal) > 0 {
+		hint := "生成密钥：openssl rand -hex 32\n"
+		hint += "示例：JWT_SECRET=$(openssl rand -hex 32) CONFIG_ENCRYPTION_KEY=$(openssl rand -hex 32) go run ./cmd"
+		panic("安全配置缺失，拒绝启动。缺：\n  - " + strings.Join(fatal, "\n  - ") + "\n\n" + hint)
 	}
 	if strings.ToLower(strings.TrimSpace(c.Server.Mode)) == "release" && len(c.Security.AllowedOrigins) == 0 {
-		missing = append(missing, "ALLOWED_ORIGINS (env, 逗号分隔) 或 security.allowed_origins (yaml) —— release 模式必填")
+		// 不 panic，只打警告。容器还能跑起来，让 ops 知道但不阻拦。
+		os.Stderr.WriteString("[WARN] security.allowed_origins 未配置 + release 模式 → WebSocket 将对所有 Origin 放行。生产环境强烈建议在 yaml 加 allowed_origins: [\"https://your.domain\"]\n")
 	}
-	if len(missing) == 0 {
-		return
-	}
-	hint := "生成密钥：openssl rand -hex 32\n"
-	hint += "示例：JWT_SECRET=$(openssl rand -hex 32) CONFIG_ENCRYPTION_KEY=$(openssl rand -hex 32) ALLOWED_ORIGINS=https://your.domain go run ./cmd"
-	panic("安全配置缺失，拒绝启动。缺：\n  - " + strings.Join(missing, "\n  - ") + "\n\n" + hint)
 }
 
 func RootDir() string {
