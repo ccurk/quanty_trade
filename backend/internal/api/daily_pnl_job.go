@@ -10,6 +10,8 @@ import (
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
+
+	"gorm.io/gorm/clause"
 )
 
 var dailyPnLOnce sync.Once
@@ -112,25 +114,10 @@ func upsertDailyPnL(uid uint, day string, start time.Time, end time.Time) error 
 	}
 
 	now := time.Now()
-	var existing models.DailyPnL
-	findTx := database.DB.Where("owner_id = ? AND day = ?", uid, day).Limit(1).Find(&existing)
-	if findTx.Error != nil {
-		return findTx.Error
-	}
-	if findTx.RowsAffected > 0 && existing.ID > 0 {
-		return database.DB.Model(&models.DailyPnL{}).Where("id = ?", existing.ID).Updates(map[string]interface{}{
-			"start_time":        start,
-			"end_time":          end,
-			"gross_profit":      row.GrossProfit,
-			"gross_loss":        row.GrossLoss,
-			"realized_pn_l":     row.RealizedPnL,
-			"realized_notional": row.RealizedNotional,
-			"trades":            int(row.Trades),
-			"updated_at":        now,
-		}).Error
-	}
-
-	return database.DB.Create(&models.DailyPnL{
+	// Atomic upsert keyed on the (owner_id, day) unique index. The previous
+	// Find -> Update / Create split could lose data or duplicate-key under
+	// concurrent runs (e.g. backfill racing the 00:05 scheduled job).
+	record := models.DailyPnL{
 		OwnerID:          uid,
 		Day:              day,
 		StartTime:        start,
@@ -142,7 +129,20 @@ func upsertDailyPnL(uid uint, day string, start time.Time, end time.Time) error 
 		Trades:           int(row.Trades),
 		CreatedAt:        now,
 		UpdatedAt:        now,
-	}).Error
+	}
+	return database.DB.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "owner_id"}, {Name: "day"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"start_time":        start,
+			"end_time":          end,
+			"gross_profit":      row.GrossProfit,
+			"gross_loss":        row.GrossLoss,
+			"realized_pn_l":     row.RealizedPnL,
+			"realized_notional": row.RealizedNotional,
+			"trades":            int(row.Trades),
+			"updated_at":        now,
+		}),
+	}).Create(&record).Error
 }
 
 func loadDailyPnLCalendar(uid uint, days int) []DailyPnLEntry {

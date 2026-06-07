@@ -76,58 +76,66 @@ func (m *Manager) tpslGuardTick() {
 				continue
 			}
 
-			algoOrders, err := bx.ListUSDMTPSLOpenOrders(uid, row.Symbol)
-			if err != nil {
-				emitStrategyLog(inst, "error", fmt.Sprintf("查询交易所止盈止损失败 symbol=%s err=%v", row.Symbol, err))
-				continue
-			}
-			hasTP := false
-			hasSL := false
-			for _, ord := range algoOrders {
-				typ := strings.ToUpper(strings.TrimSpace(ord.Type))
-				if strings.Contains(typ, "TAKE_PROFIT") {
-					hasTP = true
+			// Serialize with the entry-side placement path so we don't race
+			// in between Place and storeLinkedTPSLOrders. Held across the
+			// list -> decide -> cancel -> re-place window because all of
+			// those decisions hinge on the current set of algo orders.
+			tpslUnlock := m.lockTPSL(uid, row.Symbol)
+			func() {
+				defer tpslUnlock()
+				algoOrders, err := bx.ListUSDMTPSLOpenOrders(uid, row.Symbol)
+				if err != nil {
+					emitStrategyLog(inst, "error", fmt.Sprintf("查询交易所止盈止损失败 symbol=%s err=%v", row.Symbol, err))
+					return
 				}
-				if typ == "STOP" || strings.Contains(typ, "STOP") {
-					hasSL = true
+				hasTP := false
+				hasSL := false
+				for _, ord := range algoOrders {
+					typ := strings.ToUpper(strings.TrimSpace(ord.Type))
+					if strings.Contains(typ, "TAKE_PROFIT") {
+						hasTP = true
+					}
+					if typ == "STOP" || strings.Contains(typ, "STOP") {
+						hasSL = true
+					}
 				}
-			}
 
-			tp := row.TakeProfit
-			sl := row.StopLoss
-			side := "buy"
-			if strings.EqualFold(active.Direction, "short") {
-				side = "sell"
-			}
-			if tp <= 0 || sl <= 0 {
-				tp, sl = resolveTPSLFromROI(inst, side, active.Price, tp, sl)
-				_ = database.DB.Model(&models.StrategyPosition{}).
-					Where("id = ?", row.ID).
-					Updates(map[string]interface{}{"take_profit": tp, "stop_loss": sl, "updated_at": time.Now()}).Error
-			}
-			if tp <= 0 || sl <= 0 {
-				emitStrategyLog(inst, "error", fmt.Sprintf("仓位缺少有效止盈止损配置 symbol=%s tp=%v sl=%v", row.Symbol, tp, sl))
-				continue
-			}
-			if hasTP && hasSL {
-				continue
-			}
+				tp := row.TakeProfit
+				sl := row.StopLoss
+				side := "buy"
+				if strings.EqualFold(active.Direction, "short") {
+					side = "sell"
+				}
+				if tp <= 0 || sl <= 0 {
+					tp, sl = resolveTPSLFromROI(inst, side, active.Price, tp, sl)
+					_ = database.DB.Model(&models.StrategyPosition{}).
+						Where("id = ?", row.ID).
+						Updates(map[string]interface{}{"take_profit": tp, "stop_loss": sl, "updated_at": time.Now()}).Error
+				}
+				if tp <= 0 || sl <= 0 {
+					emitStrategyLog(inst, "error", fmt.Sprintf("仓位缺少有效止盈止损配置 symbol=%s tp=%v sl=%v", row.Symbol, tp, sl))
+					return
+				}
+				if hasTP && hasSL {
+					return
+				}
 
-			if len(algoOrders) > 0 {
-				_ = bx.CancelUSDMAlgoOpenOrders(uid, row.Symbol)
-			}
-			baseClientOrderID := models.GenerateUUID()
-			created, err := bx.PlaceUSDMTPStopOrders(uid, baseClientOrderID, row.Symbol, tp, sl)
-			if err != nil {
-				emitStrategyLog(inst, "error", fmt.Sprintf("补设交易所止盈止损失败 symbol=%s tp=%v sl=%v err=%v", row.Symbol, tp, sl, err))
-				continue
-			}
-			m.storeLinkedTPSLOrders(inst, row.ID, row.Symbol, baseClientOrderID, created)
-			refs := make([]string, 0, len(created))
-			for _, ref := range created {
-				refs = append(refs, fmt.Sprintf("%s order_id=%d client_order_id=%s trigger=%s price=%s", ref.Kind, ref.AlgoID, ref.ClientAlgoID, ref.TriggerPrice, ref.ExecutionPrice))
-			}
-			emitStrategyLog(inst, "info", fmt.Sprintf("已补设交易所止盈止损 symbol=%s tp=%v sl=%v %s", row.Symbol, tp, sl, strings.Join(refs, " | ")))
+				if len(algoOrders) > 0 {
+					_ = bx.CancelUSDMAlgoOpenOrders(uid, row.Symbol)
+				}
+				baseClientOrderID := models.GenerateUUID()
+				created, err := bx.PlaceUSDMTPStopOrders(uid, baseClientOrderID, row.Symbol, tp, sl)
+				if err != nil {
+					emitStrategyLog(inst, "error", fmt.Sprintf("补设交易所止盈止损失败 symbol=%s tp=%v sl=%v err=%v", row.Symbol, tp, sl, err))
+					return
+				}
+				m.storeLinkedTPSLOrders(inst, row.ID, row.Symbol, baseClientOrderID, created)
+				refs := make([]string, 0, len(created))
+				for _, ref := range created {
+					refs = append(refs, fmt.Sprintf("%s order_id=%d client_order_id=%s trigger=%s price=%s", ref.Kind, ref.AlgoID, ref.ClientAlgoID, ref.TriggerPrice, ref.ExecutionPrice))
+				}
+				emitStrategyLog(inst, "info", fmt.Sprintf("已补设交易所止盈止损 symbol=%s tp=%v sl=%v %s", row.Symbol, tp, sl, strings.Join(refs, " | ")))
+			}()
 		}
 	}
 }

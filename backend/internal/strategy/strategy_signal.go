@@ -718,6 +718,12 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 		}
 		return
 	}
+	// Symbol blacklist (config: symbol_blacklist = ["SAHARAUSDT","..."]).
+	// 用于过去 60 天数据分析里证明持续亏钱的标的，独立于 symbols 白名单。
+	if isBlacklistedSymbol(inst, symbol) {
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过信号：交易对在 blacklist symbol=%s", symbol))
+		return
+	}
 	action := strings.ToLower(strings.TrimSpace(s.Action))
 	if action == "" {
 		action = "open"
@@ -744,6 +750,13 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 		if logSignal {
 			emitStrategyLog(inst, "info", fmt.Sprintf("跳过信号：方向无效 side=%s", side))
 		}
+		return
+	}
+	// Side whitelist (config: allowed_sides = ["sell"] / ["buy"] / ["buy","sell"]).
+	// 60 天分析显示 long 净亏 -60.78 USDT，short 净赚 +22.92。
+	// 配置 ["sell"] 即可关掉所有 long 信号。
+	if !isAllowedSide(inst, side) {
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过信号：方向不在 allowed_sides symbol=%s side=%s", symbol, side))
 		return
 	}
 	amount := clampOrderAmount(inst, s.Amount)

@@ -667,7 +667,36 @@ func UpdateTemplate(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, template)
+
+	// 提示前端：哪些运行中的实例会"在下次重启时"用上新模板。
+	// 已绑定 StrategyVersionID 的实例不会跟随模板（用 version 代码），排除掉。
+	// 这里只读 DB 状态，不调 Manager（避免在 HTTP 处理路径触发 stop/start）。
+	type affectedInstance struct {
+		ID                string `json:"id"`
+		Name              string `json:"name"`
+		Status            string `json:"status"`
+		StrategyVersionID *uint  `json:"strategy_version_id,omitempty"`
+	}
+	var affectedRows []models.StrategyInstance
+	_ = database.DB.
+		Select("id, name, status, strategy_version_id").
+		Where("template_id = ? AND status IN ?", template.ID, []string{"running", "starting"}).
+		Find(&affectedRows).Error
+	affecting := make([]affectedInstance, 0, len(affectedRows))
+	pinnedToVersion := make([]affectedInstance, 0)
+	for _, r := range affectedRows {
+		item := affectedInstance{ID: r.ID, Name: r.Name, Status: r.Status, StrategyVersionID: r.StrategyVersionID}
+		if r.StrategyVersionID != nil {
+			pinnedToVersion = append(pinnedToVersion, item)
+		} else {
+			affecting = append(affecting, item)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"template":                 template,
+		"running_will_pick_up":     affecting,        // 这些实例 stop+start 后会用上新代码
+		"running_pinned_to_version": pinnedToVersion, // 这些已被 AI 优化绑定 version，不会跟随
+	})
 }
 
 type TestCodeRequest struct {

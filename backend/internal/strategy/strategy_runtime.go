@@ -141,6 +141,14 @@ func (m *Manager) requestRestart(inst *StrategyInstance, reason string) {
 	})
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Errorf("[STRATEGY HEALTH] id=%s owner=%d action=restart_panic reason=%s panic=%v", id, ownerID, reason, r)
+				inst.mu.Lock()
+				inst.restarting = false
+				inst.mu.Unlock()
+			}
+		}()
 		_ = m.StopStrategy(id, true)
 		time.Sleep(2 * time.Second)
 		if err := m.StartStrategy(id); err != nil {

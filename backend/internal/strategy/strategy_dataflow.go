@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"quanty_trade/internal/bus"
@@ -26,7 +27,7 @@ func (m *Manager) attachRedisIO(inst *StrategyInstance, redisBus *bus.RedisBus, 
 	inst.redisCancel = cancel
 	inst.mu.Unlock()
 
-	_ = redisBus.SubscribeSignals(ctx, inst.ID, func(s bus.SignalMessage) {
+	if err := redisBus.SubscribeSignals(ctx, inst.ID, func(s bus.SignalMessage) {
 		if strings.TrimSpace(s.StrategyID) == "" {
 			s.StrategyID = inst.ID
 		}
@@ -34,8 +35,11 @@ func (m *Manager) attachRedisIO(inst *StrategyInstance, redisBus *bus.RedisBus, 
 			return
 		}
 		m.handleRedisSignal(inst, s)
-	})
-	_ = redisBus.SubscribeState(ctx, inst.ID, func(st bus.StateMessage) {
+	}); err != nil {
+		logger.Errorf("[STRATEGY REDIS] id=%s owner=%d action=subscribe_signals_failed err=%v", inst.ID, inst.OwnerID, err)
+		emitStrategyLog(inst, "error", fmt.Sprintf("Redis signal subscribe failed: %v (健康检查会触发重启)", err))
+	}
+	if err := redisBus.SubscribeState(ctx, inst.ID, func(st bus.StateMessage) {
 		if st.StrategyID != inst.ID {
 			return
 		}
@@ -75,7 +79,10 @@ func (m *Manager) attachRedisIO(inst *StrategyInstance, redisBus *bus.RedisBus, 
 			inst.lastHB = now
 		}
 		inst.mu.Unlock()
-	})
+	}); err != nil {
+		logger.Errorf("[STRATEGY REDIS] id=%s owner=%d action=subscribe_state_failed err=%v", inst.ID, inst.OwnerID, err)
+		emitStrategyLog(inst, "error", fmt.Sprintf("Redis state subscribe failed: %v (健康检查会触发重启)", err))
+	}
 
 	go func() {
 		time.Sleep(10 * time.Second)
@@ -163,25 +170,55 @@ func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBu
 		sym := sym
 		go func() {
 			emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles start symbol=%s", sym))
-			var (
-				stop func()
-				err  error
-			)
 			pollCtx, pollCancel := context.WithCancel(context.Background())
 			go m.latestClosedCandleFallbackLoop(pollCtx, inst, redisBus, sym)
+
+			// stopFn is registered into candleStops up-front so a concurrent
+			// StopStrategy sweep can cancel us even while SubscribeCandles is
+			// still dialing the WS. Once dial returns, we wire subscribeStop
+			// in; if a sweep already fired, we tear the new WS down here.
+			var (
+				stopMu        sync.Mutex
+				subscribeStop func()
+				stopRequested bool
+			)
+			stopFn := func() {
+				stopMu.Lock()
+				stopRequested = true
+				s := subscribeStop
+				stopMu.Unlock()
+				pollCancel()
+				if s != nil {
+					s()
+				}
+			}
+			inst.mu.Lock()
+			if inst.candleStops == nil {
+				inst.candleStops = map[string]func(){}
+			}
+			if prev, ok := inst.candleStops[sym]; ok && prev != nil {
+				prev()
+			}
+			inst.candleStops[sym] = stopFn
+			inst.mu.Unlock()
+
+			var (
+				ws  func()
+				err error
+			)
 			if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok {
-				stop, err = bx.SubscribeCandlesWithEvents(sym, func(candle exchange.Candle) {
+				ws, err = bx.SubscribeCandlesWithEvents(sym, func(candle exchange.Candle) {
 					m.onExchangeCandle(inst, redisBus, sym, candle)
 				}, func(event string, detail string, err error) {
 					m.onCandleStreamEvent(inst, sym, event, detail, err)
 				})
 			} else {
-				stop, err = inst.exchange.SubscribeCandles(sym, func(candle exchange.Candle) {
+				ws, err = inst.exchange.SubscribeCandles(sym, func(candle exchange.Candle) {
 					m.onExchangeCandle(inst, redisBus, sym, candle)
 				})
 			}
 			if err != nil {
-				pollCancel()
+				stopFn()
 				logger.Errorf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, err)
 				database.DB.Create(&models.StrategyLog{
 					StrategyID: inst.ID,
@@ -197,22 +234,18 @@ func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBu
 				})
 				return
 			}
-			emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles ok symbol=%s", sym))
-			combinedStop := func() {
-				pollCancel()
-				if stop != nil {
-					stop()
+
+			stopMu.Lock()
+			if stopRequested {
+				stopMu.Unlock()
+				if ws != nil {
+					ws()
 				}
+				return
 			}
-			inst.mu.Lock()
-			if inst.candleStops == nil {
-				inst.candleStops = map[string]func(){}
-			}
-			if prev, ok := inst.candleStops[sym]; ok && prev != nil {
-				prev()
-			}
-			inst.candleStops[sym] = combinedStop
-			inst.mu.Unlock()
+			subscribeStop = ws
+			stopMu.Unlock()
+			emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles ok symbol=%s", sym))
 		}()
 	}
 	return nil

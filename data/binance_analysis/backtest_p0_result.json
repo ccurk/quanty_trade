@@ -1,0 +1,98 @@
+{
+  "baseline": {
+    "label": "BASELINE (\u65e0\u8fc7\u6ee4,\u7b49\u4ef7\u4e8e\u5386\u53f2\u5b9e\u9645)",
+    "n": 733,
+    "wins": 194,
+    "gross": -10.882820690000003,
+    "comm": 27.3858114,
+    "net": -38.268632090000004
+  },
+  "sym_only": {
+    "label": "\u4ec5 symbols=\u767d\u540d\u5355(BILL/UB/PRL/TRUTH)",
+    "n": 118,
+    "wins": 36,
+    "gross": 40.68392204,
+    "comm": 6.86560215,
+    "net": 33.81831989
+  },
+  "blk_only": {
+    "label": "\u4ec5 symbol_blacklist (7\u4e2a\u9ed1\u540d\u5355)",
+    "n": 595,
+    "wins": 170,
+    "gross": 31.599823349999998,
+    "comm": 17.4938543,
+    "net": 14.105969049999999
+  },
+  "side_only": {
+    "label": "\u4ec5 allowed_sides=[sell] (\u5173 long)",
+    "n": 191,
+    "wins": 51,
+    "gross": 36.39911614,
+    "comm": 7.46338317,
+    "net": 28.935732969999997
+  },
+  "time_only": {
+    "label": "\u4ec5 entry_time_windows 00:00-18:00 UTC",
+    "n": 596,
+    "wins": 168,
+    "gross": 9.647902369999997,
+    "comm": 21.71598391,
+    "net": -12.068081540000001
+  },
+  "hold_only": {
+    "label": "\u4ec5 hunger>=5min (\u5047\u8bbe\u6ca1\u5728 0-5min \u88ab\u780d)",
+    "n": 458,
+    "wins": 151,
+    "gross": 32.77981845,
+    "comm": 17.24072159,
+    "net": 15.53909686
+  },
+  "combo_full": {
+    "label": "P0 \u5168\u96c6 (\u4e0a\u9762 + \u6301\u4ed3>=5min)",
+    "n": 13,
+    "wins": 7,
+    "gross": 41.2406948,
+    "comm": 3.0569718,
+    "net": 38.183723
+  },
+  "long_only": {
+    "label": "long-only",
+    "n": 542,
+    "wins": 143,
+    "gross": -47.28193683,
+    "comm": 19.92242823,
+    "net": -67.20436506
+  },
+  "short_only": {
+    "label": "short-only",
+    "n": 191,
+    "wins": 51,
+    "gross": 36.39911614,
+    "comm": 7.46338317,
+    "net": 28.935732969999997
+  },
+  "bill_only": {
+    "label": "BILLUSDT only",
+    "n": 35,
+    "wins": 10,
+    "gross": 17.408230019999998,
+    "comm": 2.3110588,
+    "net": 15.097171219999998
+  },
+  "ub_only": {
+    "label": "UBUSDT only",
+    "n": 41,
+    "wins": 12,
+    "gross": 14.844169949999998,
+    "comm": 2.07987206,
+    "net": 12.764297889999998
+  },
+  "bill_ub_short": {
+    "label": "BILL+UB short-only",
+    "n": 22,
+    "wins": 7,
+    "gross": 32.378739849999995,
+    "comm": 2.45436899,
+    "net": 29.924370859999996
+  }
+}

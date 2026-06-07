@@ -10,16 +10,17 @@ import (
 )
 
 func jwtSecretBytes() []byte {
-	c, err := func() (conf.Config, error) {
-		if err := conf.Load(); err != nil {
-			return conf.Config{}, err
-		}
-		return conf.C(), nil
-	}()
-	if err == nil && c.Security.JWTSecret != "" {
-		return []byte(c.Security.JWTSecret)
+	// 启动期 conf.MustValidateSecurity() 已经保证 JWTSecret 非空。
+	// 这里仍按防御性编程检查：万一被绕过，直接 panic 让进程崩，
+	// 比偷偷用默认密钥（任何人都能伪造 token）安全得多。
+	if err := conf.Load(); err != nil {
+		panic("jwt: conf load failed: " + err.Error())
 	}
-	return []byte("your-default-secret-key-for-development")
+	c := conf.C()
+	if c.Security.JWTSecret == "" {
+		panic("jwt: JWT_SECRET 未配置，拒绝签发/校验 token。请检查启动期 conf.MustValidateSecurity() 是否被调用。")
+	}
+	return []byte(c.Security.JWTSecret)
 }
 
 type Claims struct {

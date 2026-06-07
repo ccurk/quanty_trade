@@ -37,7 +37,11 @@ func keyBytes() ([]byte, bool) {
 func EncryptString(plaintext string) (string, error) {
 	key, ok := keyBytes()
 	if !ok {
-		return plaintext, nil
+		// 关键修复：原来这里静默返回明文，意味着启动期没设
+		// CONFIG_ENCRYPTION_KEY 时所有 API key/secret 都裸放进 DB。
+		// 现在改为直接报错。启动期 conf.MustValidateSecurity() 已经
+		// 强制要求该 key 存在，这条路径正常不应该到。
+		return "", errors.New("missing CONFIG_ENCRYPTION_KEY: refusing to store secret in plaintext")
 	}
 
 	block, err := aes.NewCipher(key)

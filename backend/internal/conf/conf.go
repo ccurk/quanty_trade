@@ -57,8 +57,11 @@ type AdminConfig struct {
 }
 
 type SecurityConfig struct {
-	JWTSecret           string `yaml:"jwt_secret"`
-	ConfigEncryptionKey string `yaml:"config_encryption_key"`
+	JWTSecret           string   `yaml:"jwt_secret"`
+	ConfigEncryptionKey string   `yaml:"config_encryption_key"`
+	// AllowedOrigins 用于 WebSocket Origin 校验，逗号分隔。
+	// 在生产模式下必须设置；非生产模式留空时退回 allow-all（便于本地开发）。
+	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
 type ExchangeConfig struct {
@@ -264,6 +267,31 @@ func MustLoad() {
 	}
 }
 
+// MustValidateSecurity 在启动早期被 main.go 调用。
+// 任何模式都强制：JWT_SECRET / CONFIG_ENCRYPTION_KEY 必须有值。
+// 仅 release 模式强制：AllowedOrigins 必须非空（否则 WS 没人能连）。
+//
+// 失败时打印干净的指引并 panic —— 不允许"以不安全的默认值偷偷启动"。
+func MustValidateSecurity() {
+	c := C()
+	var missing []string
+	if strings.TrimSpace(c.Security.JWTSecret) == "" {
+		missing = append(missing, "JWT_SECRET (env) 或 security.jwt_secret (yaml)")
+	}
+	if strings.TrimSpace(c.Security.ConfigEncryptionKey) == "" {
+		missing = append(missing, "CONFIG_ENCRYPTION_KEY (env) 或 security.config_encryption_key (yaml)")
+	}
+	if strings.ToLower(strings.TrimSpace(c.Server.Mode)) == "release" && len(c.Security.AllowedOrigins) == 0 {
+		missing = append(missing, "ALLOWED_ORIGINS (env, 逗号分隔) 或 security.allowed_origins (yaml) —— release 模式必填")
+	}
+	if len(missing) == 0 {
+		return
+	}
+	hint := "生成密钥：openssl rand -hex 32\n"
+	hint += "示例：JWT_SECRET=$(openssl rand -hex 32) CONFIG_ENCRYPTION_KEY=$(openssl rand -hex 32) ALLOWED_ORIGINS=https://your.domain go run ./cmd"
+	panic("安全配置缺失，拒绝启动。缺：\n  - " + strings.Join(missing, "\n  - ") + "\n\n" + hint)
+}
+
 func RootDir() string {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -435,6 +463,18 @@ func applyEnvOverrides(c *Config) {
 	}
 	if v := os.Getenv("CONFIG_ENCRYPTION_KEY"); v != "" {
 		c.Security.ConfigEncryptionKey = v
+	}
+	if v := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS")); v != "" {
+		parts := strings.Split(v, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if t := strings.TrimSpace(p); t != "" {
+				out = append(out, t)
+			}
+		}
+		if len(out) > 0 {
+			c.Security.AllowedOrigins = out
+		}
 	}
 
 	if v := strings.TrimSpace(os.Getenv("EXCHANGE")); v != "" {

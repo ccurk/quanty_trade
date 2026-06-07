@@ -1,6 +1,8 @@
 package database
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"quanty_trade/internal/auth"
@@ -13,6 +15,25 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+// generateRandomPassword 生成 n 字符长度的随机密码（base64-url-safe，无填充）。
+// 用 crypto/rand 保证不可预测。n 至少 24，否则 base64 截断后熵不足。
+func generateRandomPassword(n int) string {
+	if n < 24 {
+		n = 24
+	}
+	// base64 输出 4/3 倍长度，输入字节数取上整后再截到目标长度。
+	b := make([]byte, (n*3+3)/4)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand 失败极罕见，但发生时绝不退回弱密码。
+		log.Fatalf("crypto/rand.Read failed: %v", err)
+	}
+	s := base64.RawURLEncoding.EncodeToString(b)
+	if len(s) > n {
+		s = s[:n]
+	}
+	return s
+}
 
 var DB *gorm.DB
 
@@ -73,18 +94,41 @@ func InitDB() {
 	var admin models.User
 	if err := DB.Where("username = ?", adminUsername).First(&admin).Error; err != nil {
 		pw := adminPassword
+		pwSource := "ADMIN_PASSWORD/conf.admin.password"
 		if pw == "" {
-			pw = "admin123"
+			// 关键修复：原来默认 "admin123"。现在生成 32 字符随机密码，
+			// 一次性打到 log 里（启动者 grep 一下就能拿到），并大声告警
+			// 让用户立刻通过 UI 改密。
+			pw = generateRandomPassword(32)
+			pwSource = "auto-generated (random)"
 		}
-		hashedPassword, _ := auth.HashPassword(pw)
+		hashedPassword, herr := auth.HashPassword(pw)
+		if herr != nil {
+			log.Fatalf("Failed to hash initial admin password: %v", herr)
+		}
 		admin = models.User{
 			Username: adminUsername,
 			Password: hashedPassword,
 			Role:     models.RoleAdmin,
 		}
-		DB.Create(&admin)
+		if err := DB.Create(&admin).Error; err != nil {
+			log.Fatalf("Failed to create initial admin user: %v", err)
+		}
+		if pwSource == "auto-generated (random)" {
+			log.Printf("============================================================")
+			log.Printf("[SECURITY] 已创建初始管理员账号 username=%s", adminUsername)
+			log.Printf("[SECURITY] 自动生成的密码（仅本次启动可见）: %s", pw)
+			log.Printf("[SECURITY] 请立刻登录后通过 UI 改掉这个密码。")
+			log.Printf("[SECURITY] 后续重启不会再打印；需要重置请设置环境变量 ADMIN_PASSWORD 重启。")
+			log.Printf("============================================================")
+		} else {
+			logger.Infof("Created initial admin user=%s password_source=%s", adminUsername, pwSource)
+		}
 	} else if adminPassword != "" {
-		hashedPassword, _ := auth.HashPassword(adminPassword)
+		hashedPassword, herr := auth.HashPassword(adminPassword)
+		if herr != nil {
+			log.Fatalf("Failed to hash admin password update: %v", herr)
+		}
 		DB.Model(&admin).Updates(map[string]interface{}{
 			"password": hashedPassword,
 			"role":     models.RoleAdmin,

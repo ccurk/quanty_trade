@@ -433,6 +433,10 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 							}
 						}
 					}
+					// Serialize with tpslGuardTick to prevent the guard from
+					// racing in between Place and storeLinkedTPSLOrders and
+					// re-cancelling/re-placing the same TP/SL pair.
+					tpslUnlock := m.lockTPSL(inst.OwnerID, symbol)
 					created, e := bx.PlaceUSDMTPStopOrders(inst.OwnerID, baseClientOrderID, symbol, takeProfit, stopLoss)
 					lastErr = e
 					if lastErr == nil {
@@ -446,6 +450,7 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 						if pos.ID > 0 {
 							m.storeLinkedTPSLOrders(inst, pos.ID, symbol, baseClientOrderID, created)
 						}
+						tpslUnlock()
 						if len(created) == 0 {
 							emitStrategyLog(inst, "info", fmt.Sprintf("已设置止盈止损 symbol=%s tp=%v sl=%v", symbol, takeProfit, stopLoss))
 						} else {
@@ -465,6 +470,7 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 							emitStrategyLog(inst, "info", fmt.Sprintf("设置止盈止损部分成功后已清理残留订单 symbol=%s created=%d", symbol, len(created)))
 						}
 					}
+					tpslUnlock()
 					level := "error"
 					msg := lastErr.Error()
 					if strings.Contains(msg, "\"code\":-2021") || strings.Contains(msg, "immediately trigger") {
@@ -476,6 +482,14 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 						return
 					}
 					emitStrategyLog(inst, level, fmt.Sprintf("设置止盈止损失败，回退为本地监控 symbol=%s tp=%v sl=%v err=%v", symbol, takeProfit, stopLoss, lastErr))
+					// 二次通知：交易所侧 TP/SL 没挂上，只剩本地监控。这是用户
+					// 实际止损口径变化的信号，必须告知。第一次 notifyTradeOpened
+					// 在 placeOrderForInstance 里已发出（带最初的 tp/sl 意图）。
+					fallbackSide := "buy"
+					if positionAmt < 0 {
+						fallbackSide = "sell"
+					}
+					m.notifyTradeOpened(inst, symbol, fallbackSide, math.Abs(positionAmt), entryPx, takeProfit, stopLoss, "tpsl_local_fallback")
 					m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
 					return
 				}
@@ -487,6 +501,9 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 				return
 			}
 			emitStrategyLog(inst, "info", fmt.Sprintf("开仓单在等待期内未形成有效持仓，回退为本地监控止盈止损 symbol=%s client_order_id=%s", symbol, baseClientOrderID))
+			// 见上：交易所 TP/SL 未生效，告知用户已退化到本地监控。
+			// 此处不知道实际方向（仓位都没起来），用 sell 占位让通知含义"未明确"。
+			m.notifyTradeOpened(inst, symbol, "", 0, 0, takeProfit, stopLoss, "tpsl_local_fallback")
 			m.monitorPositionTPStop(inst, symbol, takeProfit, stopLoss, signalID)
 			return
 		}

@@ -230,3 +230,60 @@ func DeleteStrategy(c *gin.Context) {
 	stratMgr.RemoveStrategy(id)
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
+
+// UnbindStrategyVersion 把实例的 StrategyVersionID 置空，让它回到
+// "跟随 Template.Code 最新版本"的状态。下次 stop+start 时 resolveStrategySource
+// 会走 template.Code 分支。
+//
+// 不主动重启实例 —— 调用方决定何时重启（避免 HTTP 请求里隐含 stop/start）。
+func UnbindStrategyVersion(c *gin.Context) {
+	id := c.Param("id")
+	userIDValue, ok := c.Get("user_id")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	userID, ok := userIDValue.(uint)
+	if !ok || userID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	userRole, _ := c.Get("role")
+
+	var instance models.StrategyInstance
+	if err := database.DB.Where("id = ?", id).First(&instance).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Strategy not found"})
+		return
+	}
+	if instance.OwnerID != userID && userRole != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Permission denied"})
+		return
+	}
+	if instance.StrategyVersionID == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"status":     "already_unbound",
+			"id":         instance.ID,
+			"hint":       "实例当前未绑定任何版本，已经在跟随 Template.Code",
+			"needs_restart": false,
+		})
+		return
+	}
+	prevVersionID := *instance.StrategyVersionID
+	// 显式置 NULL —— GORM 对指针字段 Updates 传 nil 才会写入 NULL，
+	// Save() 在 zero value 时不会更新指针。
+	if err := database.DB.Model(&models.StrategyInstance{}).
+		Where("id = ?", instance.ID).
+		Update("strategy_version_id", nil).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	needsRestart := instance.Status == "running" || instance.Status == "starting"
+	c.JSON(http.StatusOK, gin.H{
+		"status":           "unbound",
+		"id":               instance.ID,
+		"previous_version_id": prevVersionID,
+		"current_status":   instance.Status,
+		"needs_restart":    needsRestart,
+		"hint":             "已解除版本绑定。如实例在运行中，需 stop+start 才会用上最新模板代码。",
+	})
+}

@@ -265,6 +265,87 @@ func isAllowedSymbol(inst *StrategyInstance, symbol string) bool {
 	return true
 }
 
+// isBlacklistedSymbol 返回 true 表示该 symbol 在 inst.Config["symbol_blacklist"]
+// 黑名单里。黑名单独立于 symbols 白名单，用于"白名单内但历史亏钱"的标的。
+// 配置形式：JSON 数组 ["SAHARAUSDT","XYZUSDT"] 或逗号分隔字符串。
+func isBlacklistedSymbol(inst *StrategyInstance, symbol string) bool {
+	if inst == nil {
+		return false
+	}
+	xs := parseSymbolsValue(inst.Config["symbol_blacklist"])
+	if len(xs) == 0 {
+		return false
+	}
+	sym := exchange.NormalizeSymbol(symbol)
+	if sym == "" {
+		return false
+	}
+	for _, s := range xs {
+		if exchange.NormalizeSymbol(s) == sym {
+			return true
+		}
+	}
+	return false
+}
+
+// isAllowedSide 返回 true 表示该方向在 inst.Config["allowed_sides"] 白名单里。
+// 配置缺省（空数组或不存在）→ buy/sell 都放行（保持向后兼容）。
+// 60 天分析显示 long 严重亏钱、short 净盈利，可用 ["sell"] 关掉所有 long。
+func isAllowedSide(inst *StrategyInstance, side string) bool {
+	if inst == nil {
+		return false
+	}
+	raw, ok := inst.Config["allowed_sides"]
+	if !ok || raw == nil {
+		return true
+	}
+	var sides []string
+	switch v := raw.(type) {
+	case []interface{}:
+		for _, it := range v {
+			if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
+				sides = append(sides, strings.ToLower(strings.TrimSpace(s)))
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if strings.TrimSpace(s) != "" {
+				sides = append(sides, strings.ToLower(strings.TrimSpace(s)))
+			}
+		}
+	case string:
+		for _, p := range strings.FieldsFunc(v, func(r rune) bool {
+			return r == ',' || r == ' ' || r == ';' || r == '|'
+		}) {
+			if strings.TrimSpace(p) != "" {
+				sides = append(sides, strings.ToLower(strings.TrimSpace(p)))
+			}
+		}
+	}
+	if len(sides) == 0 {
+		return true
+	}
+	target := strings.ToLower(strings.TrimSpace(side))
+	// 同义词归一：long/buy 和 short/sell 互相等价
+	if target == "long" {
+		target = "buy"
+	} else if target == "short" {
+		target = "sell"
+	}
+	for _, s := range sides {
+		canonical := s
+		if canonical == "long" {
+			canonical = "buy"
+		} else if canonical == "short" {
+			canonical = "sell"
+		}
+		if canonical == target {
+			return true
+		}
+	}
+	return false
+}
+
 func getNumber(v interface{}) float64 {
 	switch t := v.(type) {
 	case float64:
@@ -439,6 +520,12 @@ type Manager struct {
 	quickCloseMu sync.Mutex
 	quickCloseAt map[string]time.Time
 
+	// tpslLocks serializes TP/SL placement per (owner_id, symbol) so the
+	// periodic guard tick and the entry-side placement path can't both
+	// cancel-and-replace algo orders at the same time. See #10 audit.
+	tpslMu    sync.Mutex
+	tpslLocks map[string]*sync.Mutex
+
 	notifier RuntimeNotifier
 
 	orderCh chan orderReq
@@ -541,12 +628,24 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 			countByStrategy := map[string]int64{}
 			countedSymbols := map[string]struct{}{}
 			now := time.Now()
+			// instLookup 让 stale-position 自动关闭路径能拿到 hub / Name / exchange，
+			// 用于即时广播 + Telegram 通知，缩小 "DB closed 但前端还看到 open" 的窗口。
+			instLookup := map[string]*StrategyInstance{}
+			for _, in := range insts {
+				if in != nil {
+					instLookup[in.ID] = in
+				}
+			}
 			for _, row := range openRows {
 				symKey := exchange.NormalizeSymbol(row.Symbol)
 				if symKey == "" {
 					continue
 				}
 				if _, ok := activePositions[symKey]; !ok {
+					closeTime := row.CloseTime
+					if closeTime.IsZero() {
+						closeTime = now
+					}
 					updates := map[string]interface{}{
 						"amount":     0,
 						"status":     "closed",
@@ -560,6 +659,50 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 						_, _ = rb.ReleaseOpenSlot(ctx, row.StrategyID)
 					}
 					logger.Infof("[REDIS OPEN COUNT] auto close stale open position owner=%d strategy=%s symbol=%s", ownerID, row.StrategyID, row.Symbol)
+
+					// 即时通知：交易所 TP/SL 触发 / 用户在交易所手工平仓时，
+					// 这里是后端第一次"知道"的地方。早一秒把 closed 状态推
+					// 给前端 + 触发器外部通知（Telegram 等）。
+					inst := instLookup[strings.TrimSpace(row.StrategyID)]
+					side := "sell"
+					if strings.EqualFold(row.Direction, "short") {
+						side = "buy"
+					}
+					exitPrice := row.AvgClosePrice
+					if exitPrice <= 0 {
+						exitPrice = row.AvgPrice
+					}
+					closeRow := row
+					closeRow.Amount = 0
+					closeRow.Status = "closed"
+					closeRow.CloseTime = closeTime
+					closeRow.UpdatedAt = now
+					if inst != nil && inst.hub != nil {
+						inst.hub.BroadcastJSON(map[string]interface{}{
+							"type":   "position",
+							"reason": "external_close_detected",
+							"data":   closeRow,
+						})
+					} else if m.hub != nil {
+						m.hub.BroadcastJSON(map[string]interface{}{
+							"type":   "position",
+							"reason": "external_close_detected",
+							"data":   closeRow,
+						})
+					}
+					exchangeName := ""
+					strategyName := row.StrategyName
+					if inst != nil {
+						strategyName = inst.Name
+						if inst.exchange != nil {
+							exchangeName = inst.exchange.GetName()
+						}
+					}
+					if exchangeName == "" {
+						exchangeName = row.Exchange
+					}
+					metrics := BuildTradeCloseMetricsFromPosition(&closeRow, closeRow.ClosedQty, exitPrice, closeTime)
+					m.NotifyExternalTradeClosed(ownerID, row.StrategyID, strategyName, exchangeName, row.Symbol, side, row.Amount, exitPrice, "closed", "external_close_detected", metrics)
 					continue
 				}
 				if strings.TrimSpace(row.StrategyID) != "" {
@@ -617,7 +760,11 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 	}
 
 	syncOnce()
-	ticker := time.NewTicker(10 * time.Second)
+	// 2s 间隔：把交易所 TP/SL 成交的发现窗口从 10s 压到 ~2s。Binance USDM
+	// 没有 user data stream（EnsureUserDataStream 对 usdm 直接 return），
+	// 这条同步链是发现服务器侧平仓的唯一渠道。每个 owner 一次 FetchPositions
+	// REST 调用，30 个用户 * 30 次/min = 900/min，远低于 2400/min 的 IP 上限。
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -691,10 +838,33 @@ func NewManager(hub *ws.Hub, ex exchange.Exchange) *Manager {
 		pendingSignals:  make(map[string][]bus.SignalMessage),
 		signalBatchWait: 500 * time.Millisecond,
 		quickCloseAt:    make(map[string]time.Time),
+		tpslLocks:       make(map[string]*sync.Mutex),
 		orderCh:         make(chan orderReq, 256),
 		startCh:         make(chan string, 128),
 		stopCh:          make(chan stopReq, 128),
 	}
+}
+
+// lockTPSL acquires a per-(uid, symbol) mutex so that the periodic guard
+// tick and the entry placement path serialize their cancel + place ops
+// against each other. Returns the unlock function (suitable for defer).
+func (m *Manager) lockTPSL(uid uint, symbol string) func() {
+	if m == nil {
+		return func() {}
+	}
+	key := fmt.Sprintf("%d|%s", uid, strings.ToUpper(strings.TrimSpace(symbol)))
+	m.tpslMu.Lock()
+	if m.tpslLocks == nil {
+		m.tpslLocks = map[string]*sync.Mutex{}
+	}
+	mu, ok := m.tpslLocks[key]
+	if !ok {
+		mu = &sync.Mutex{}
+		m.tpslLocks[key] = mu
+	}
+	m.tpslMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
 }
 
 type orderReq struct {
@@ -971,12 +1141,15 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 	if direction == "short" {
 		realized = executedQty * (pos.AvgPrice - avgPrice)
 	}
-	newRealizedPnL := pos.RealizedPnL + realized
-	newRealizedNotional := pos.RealizedNotional + (executedQty * pos.AvgPrice)
+	// Round at the persistence boundary to bound long-run float64 drift.
+	// Per-fill accumulation across thousands of trades otherwise lets
+	// IEEE-754 error creep into PnL and notional totals.
+	newRealizedPnL := roundMoney8(pos.RealizedPnL + realized)
+	newRealizedNotional := roundMoney8(pos.RealizedNotional + (executedQty * pos.AvgPrice))
 	newClosedQty := pos.ClosedQty + executedQty
 	newAvgClose := pos.AvgClosePrice
 	if newClosedQty > 0 {
-		newAvgClose = ((pos.AvgClosePrice * pos.ClosedQty) + (avgPrice * executedQty)) / newClosedQty
+		newAvgClose = roundMoney8(((pos.AvgClosePrice * pos.ClosedQty) + (avgPrice * executedQty)) / newClosedQty)
 	}
 	if newAmt <= 0 {
 		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).

@@ -82,6 +82,10 @@ func main() {
 	initLogging()
 	logger.Infof("Runtime config db_type=%s db_host=%s db_name=%s exchange=%s binance_market=%s redis_enabled=%t redis_addr=%s telegram_enabled=%t", conf.C().DB.Type, conf.C().DB.Host, conf.C().DB.Name, conf.C().Exchange.Name, conf.C().Exchange.Binance.Market, conf.C().Redis.Enabled, conf.C().Redis.Addr, conf.C().Telegram.Enabled)
 
+	// Fail-fast: 没有 JWT_SECRET / CONFIG_ENCRYPTION_KEY 时拒绝启动。
+	// release 模式下还要求 ALLOWED_ORIGINS 非空。
+	conf.MustValidateSecurity()
+
 	// Initialize Database
 	database.InitDB()
 
@@ -123,6 +127,9 @@ func main() {
 		protected.PUT("/strategies/:id/config", api.UpdateStrategyConfig)
 		protected.GET("/strategies/:id/logs", api.GetStrategyLogs)
 		protected.DELETE("/strategies/:id", api.DeleteStrategy)
+		// 解除实例与 StrategyVersion 的绑定，让它回到跟随 Template.Code 的状态。
+		// 用于"AI 优化过后想用回手动模板"的场景。
+		protected.POST("/strategies/:id/unbind-version", api.UnbindStrategyVersion)
 
 		// Positions
 		protected.GET("/positions", api.ListPositions)
@@ -155,9 +162,44 @@ func main() {
 		}
 	}
 
+	// CheckOrigin 校验：release 模式下严格白名单（MustValidateSecurity
+	// 已保证非空）。非 release 模式且白名单空 → allow-all（开发友好）。
+	// 白名单匹配方式：精确字符串相等，大小写敏感（按 RFC 6454 Origin 序列化）。
+	// 通配项 "*" 视为允许所有（便于本地开发环境显式声明）。
+	allowedOrigins := conf.C().Security.AllowedOrigins
+	releaseMode := strings.ToLower(strings.TrimSpace(conf.C().Server.Mode)) == "release"
+	originAllowAll := false
+	for _, o := range allowedOrigins {
+		if strings.TrimSpace(o) == "*" {
+			originAllowAll = true
+			break
+		}
+	}
+	if !releaseMode && len(allowedOrigins) == 0 {
+		originAllowAll = true
+		log.Println("[WS] non-release mode + no ALLOWED_ORIGINS configured → allow-all (do NOT use in production)")
+	}
+	originSet := make(map[string]struct{}, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		t := strings.TrimSpace(o)
+		if t != "" && t != "*" {
+			originSet[t] = struct{}{}
+		}
+	}
 	var upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
-			return true
+			if originAllowAll {
+				return true
+			}
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				// 无 Origin 头：通常是非浏览器客户端（curl、桌面 App）。
+				// 同时配合 Authorization 校验时是可以接受的；这里保守地
+				// 仅在 allow-all 时放行，否则拒绝。
+				return false
+			}
+			_, ok := originSet[origin]
+			return ok
 		},
 	}
 
