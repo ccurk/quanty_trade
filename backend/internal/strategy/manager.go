@@ -77,7 +77,10 @@ func resolveStrategyPath(p string) (string, error) {
 	return "", fmt.Errorf("invalid strategy path: %s", p)
 }
 
-func loadLatestDiskStrategySource(inst *StrategyInstance, row *models.StrategyInstance) (string, string, bool) {
+// loadLatestDiskStrategySource 在 strategies/ 目录里找匹配 template 名/path 的
+// .py 文件，返回 mtime 最新的那个。
+// 返回值: (路径, 代码内容, ModTime, 找到?)
+func loadLatestDiskStrategySource(inst *StrategyInstance, row *models.StrategyInstance) (string, string, time.Time, bool) {
 	candidates := make([]string, 0, 2)
 	names := make([]string, 0, 3)
 	if row != nil {
@@ -154,9 +157,9 @@ func loadLatestDiskStrategySource(inst *StrategyInstance, row *models.StrategyIn
 		}
 	}
 	if bestCode != "" {
-		return bestPath, bestCode, true
+		return bestPath, bestCode, bestAt, true
 	}
-	return "", "", false
+	return "", "", time.Time{}, false
 }
 
 func resolveStrategySource(inst *StrategyInstance, row *models.StrategyInstance) (string, string, *uint, error) {
@@ -174,15 +177,36 @@ func resolveStrategySource(inst *StrategyInstance, row *models.StrategyInstance)
 		}
 	}
 
-	code := strings.TrimSpace(row.Template.Code)
+	dbCode := strings.TrimSpace(row.Template.Code)
+	code := dbCode
 	sourcePath := strings.TrimSpace(row.Template.Path)
-	if diskPath, diskCode, ok := loadLatestDiskStrategySource(inst, row); ok {
-		sourcePath = diskPath
-		code = diskCode
-		if row.Template.ID > 0 && row.StrategyVersionID == nil && diskCode != strings.TrimSpace(row.Template.Code) {
-			_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
-				Updates(map[string]interface{}{"code": diskCode, "path": diskPath, "updated_at": time.Now()}).Error
+	if sourcePath == "" && row.Template.ID > 0 {
+		sourcePath = fmt.Sprintf("db://template/%d", row.Template.ID)
+	}
+	// 决定 DB code 还是磁盘 code 用：
+	// 比较 template.UpdatedAt（DB 改动时间）vs 磁盘文件 ModTime，谁新用谁。
+	// 这样修 disk 覆盖 DB 的旧坑：用户在 UI 粘新代码 → DB UpdatedAt 刷新 →
+	// DB 比磁盘新 → 用 DB。反过来，直接编辑 disk 文件，disk mtime 刷新 → 用 disk。
+	if diskPath, diskCode, diskMTime, ok := loadLatestDiskStrategySource(inst, row); ok {
+		dbUpdatedAt := row.Template.UpdatedAt
+		useDisk := false
+		if dbCode == "" {
+			// DB 没代码 → 只能用 disk
+			useDisk = true
+		} else if !diskMTime.IsZero() && diskMTime.After(dbUpdatedAt) {
+			// disk 比 DB 新
+			useDisk = true
 		}
+		if useDisk {
+			sourcePath = diskPath
+			code = diskCode
+			// 用 disk 时把它反写回 DB template，保持 DB 是 source-of-truth
+			if row.Template.ID > 0 && row.StrategyVersionID == nil && diskCode != dbCode {
+				_ = database.DB.Model(&models.StrategyTemplate{}).Where("id = ?", row.Template.ID).
+					Updates(map[string]interface{}{"code": diskCode, "path": diskPath, "updated_at": time.Now()}).Error
+			}
+		}
+		// 否则保持用 DB code，不动磁盘。
 	}
 	if code == "" {
 		return "", "", row.StrategyVersionID, fmt.Errorf("current strategy code is empty")

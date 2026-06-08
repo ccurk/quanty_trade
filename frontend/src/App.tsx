@@ -528,8 +528,11 @@ const App: React.FC = () => {
   const updateStrategyConfig = async () => {
     if (!strategyToEdit) return;
     try {
+      // 关键：第二个参数传入实例当前的 raw config，这样保存时
+      // form 不认识的字段（如 allowed_sides / symbol_blacklist）不会被抹掉。
+      const rawConfig = strategyToEdit.config as Record<string, unknown> | undefined;
       await axios.put(`/api/strategies/${strategyToEdit.id}/config`, {
-        config: JSON.stringify(buildStrategyConfigPayload(newStratConfig))
+        config: JSON.stringify(buildStrategyConfigPayload(newStratConfig, rawConfig))
       });
       fetchStrategies();
       setShowEditConfigModal(false);

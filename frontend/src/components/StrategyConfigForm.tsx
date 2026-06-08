@@ -195,13 +195,20 @@ export function StrategyConfigForm({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">最大价格</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">最大价格 <span className="text-orange-500 font-normal">(0=屏蔽所有)</span></label>
               <input
                 type="number"
                 value={config.max_price}
                 onChange={(e) => onChange({ ...config, max_price: Number(e.target.value) })}
-                className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+                className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${
+                  config.max_price === 0
+                    ? (isDarkMode ? 'bg-red-900/30 border-red-700 text-red-200' : 'bg-red-50 border-red-300 text-red-700')
+                    : (isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900')
+                }`}
               />
+              <div className="mt-1 text-[10px] text-gray-500">
+                {config.max_price === 0 ? '⚠️ 当前 0 = 任何 symbol 都被过滤掉，请改成大于 0 的值（例如 1）' : '价格 ≤ 此值的 symbol 才允许交易'}
+              </div>
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">最小精度</label>

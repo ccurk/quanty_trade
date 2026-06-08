@@ -161,37 +161,58 @@ export const strategyConfigFromExisting = (cfg: Record<string, unknown>): Strate
   };
 };
 
-export const buildStrategyConfigPayload = (cfg: StrategyFormConfig) => ({
-  symbol: cfg.symbol.trim(),
-  symbols: cfg.symbols.trim(),
-  leverage: Number(cfg.leverage) || 20,
-  order_amount_mode: cfg.order_amount_mode,
-  trade_amount: Number(cfg.trade_amount) || 0,
-  order_amount_pct: (Number(cfg.order_amount_pct) || 0) / 100,
-  max_initial_margin_usdt: Number(cfg.max_initial_margin_usdt) || 0,
-  take_profit_pct: (Number(cfg.take_profit_pct) || 0) / 100,
-  stop_loss_pct: (Number(cfg.stop_loss_pct) || 0) / 100,
-  max_concurrent_positions: Number(cfg.max_concurrent_positions) || 1,
-  max_consecutive_entries_per_symbol: Number(cfg.max_consecutive_entries_per_symbol) || 0,
-  symbol_reentry_cooldown_minutes: Number(cfg.symbol_reentry_cooldown_minutes) || 0,
-  max_trades_per_day: Number(cfg.max_trades_per_day) || 0,
-  warmup_bars: Number(cfg.warmup_bars) || 0,
-  auto_symbols: cfg.auto_symbols,
-  symbol_select_mode: cfg.symbol_select_mode,
-  min_price: Number(cfg.min_price) || 0,
-  max_price: Number(cfg.max_price) || 0,
-  min_precision: Number(cfg.min_precision) || 0,
-  min_volatility: Number(cfg.min_volatility) || 0,
-  select_limit: Number(cfg.select_limit) || 20,
-  non_natural_entry_enabled: cfg.non_natural_entry_enabled,
-  non_natural_entry_sequence: cfg.non_natural_entry_sequence.trim(),
-  entry_time_windows: cfg.entry_time_windows.trim(),
-  auto_optimize_enabled: cfg.auto_optimize_enabled,
-  auto_optimize_model: cfg.auto_optimize_model.trim(),
-  auto_optimize_api_key: cfg.auto_optimize_api_key.trim(),
-  log_level: cfg.log_level || 'normal',
-  min_confidence: Number(cfg.min_confidence) || 0.35,
-  atr_tp_mult: Number(cfg.atr_tp_mult) || 2.0,
-  atr_sl_mult: Number(cfg.atr_sl_mult) || 1.0,
-  volume_ratio_min: Number(cfg.volume_ratio_min) || 1.2,
-});
+/**
+ * 构造发给 backend 的 config payload。
+ *
+ * rawConfig: 编辑现有实例时传入"原 config"，用于**保留所有 form 不认识的
+ * 自定义字段**（比如 allowed_sides / symbol_blacklist / 任何用户/SQL 加的字段）。
+ * 不传或传 undefined → 仅 form 字段（用于新建实例）。
+ *
+ * 合并语义：rawConfig 先铺底，再用 form 字段覆盖。form 没动的自定义字段保留。
+ */
+export const buildStrategyConfigPayload = (
+  cfg: StrategyFormConfig,
+  rawConfig?: Record<string, unknown>,
+): Record<string, unknown> => {
+  const formFields: Record<string, unknown> = {
+    symbol: cfg.symbol.trim(),
+    symbols: cfg.symbols.trim(),
+    leverage: Number(cfg.leverage) || 20,
+    order_amount_mode: cfg.order_amount_mode,
+    trade_amount: Number(cfg.trade_amount) || 0,
+    order_amount_pct: (Number(cfg.order_amount_pct) || 0) / 100,
+    max_initial_margin_usdt: Number(cfg.max_initial_margin_usdt) || 0,
+    take_profit_pct: (Number(cfg.take_profit_pct) || 0) / 100,
+    stop_loss_pct: (Number(cfg.stop_loss_pct) || 0) / 100,
+    max_concurrent_positions: Number(cfg.max_concurrent_positions) || 1,
+    max_consecutive_entries_per_symbol: Number(cfg.max_consecutive_entries_per_symbol) || 0,
+    symbol_reentry_cooldown_minutes: Number(cfg.symbol_reentry_cooldown_minutes) || 0,
+    max_trades_per_day: Number(cfg.max_trades_per_day) || 0,
+    warmup_bars: Number(cfg.warmup_bars) || 0,
+    auto_symbols: cfg.auto_symbols,
+    symbol_select_mode: cfg.symbol_select_mode,
+    min_price: Number(cfg.min_price) || 0,
+    max_price: Number(cfg.max_price) || 0,
+    min_precision: Number(cfg.min_precision) || 0,
+    min_volatility: Number(cfg.min_volatility) || 0,
+    select_limit: Number(cfg.select_limit) || 20,
+    non_natural_entry_enabled: cfg.non_natural_entry_enabled,
+    non_natural_entry_sequence: cfg.non_natural_entry_sequence.trim(),
+    entry_time_windows: cfg.entry_time_windows.trim(),
+    auto_optimize_enabled: cfg.auto_optimize_enabled,
+    auto_optimize_model: cfg.auto_optimize_model.trim(),
+    auto_optimize_api_key: cfg.auto_optimize_api_key.trim(),
+    log_level: cfg.log_level || 'normal',
+    min_confidence: Number(cfg.min_confidence) || 0.35,
+    atr_tp_mult: Number(cfg.atr_tp_mult) || 2.0,
+    atr_sl_mult: Number(cfg.atr_sl_mult) || 1.0,
+    volume_ratio_min: Number(cfg.volume_ratio_min) || 1.2,
+  };
+  if (rawConfig && typeof rawConfig === 'object') {
+    // 关键修复：合并 rawConfig 先（保留所有未知字段如 allowed_sides /
+    // symbol_blacklist），再用 form 字段覆盖。这样用户通过 SQL 加的字段
+    // 不会因为 form 保存而丢失。
+    return { ...rawConfig, ...formFields };
+  }
+  return formFields;
+};
