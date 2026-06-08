@@ -389,6 +389,66 @@ export function StrategyConfigForm({
       </div>
 
       <div>
+        <label className="block text-sm font-medium text-gray-500 mb-2">策略阈值（meme 引擎内部参数）</label>
+        <div className={`rounded-2xl border p-4 space-y-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+          <div className="text-xs text-gray-500">
+            这些是 Python 信号生成的核心阈值。不确定就保持默认。
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">最低置信度 min_confidence</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                max="1"
+                value={config.min_confidence}
+                onChange={(e) => onChange({ ...config, min_confidence: Number(e.target.value) || 0 })}
+                className={`w-full px-4 py-2.5 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+              />
+              <div className="mt-1 text-xs text-gray-500">默认 0.35。降到 0.30 = 信号更频繁但质量低；升到 0.45 = 极少但更稳。</div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">量比阈值 volume_ratio_min</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0"
+                value={config.volume_ratio_min}
+                onChange={(e) => onChange({ ...config, volume_ratio_min: Number(e.target.value) || 0 })}
+                className={`w-full px-4 py-2.5 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+              />
+              <div className="mt-1 text-xs text-gray-500">默认 1.2。当前量需 ≥ 均量 × 此值才算放量。降低 = 量不放也能开仓。</div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">ATR 止盈倍数 atr_tp_mult</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0"
+                value={config.atr_tp_mult}
+                onChange={(e) => onChange({ ...config, atr_tp_mult: Number(e.target.value) || 0 })}
+                className={`w-full px-4 py-2.5 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+              />
+              <div className="mt-1 text-xs text-gray-500">默认 2.0。TP = 入场价 ± ATR × 此倍数。</div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">ATR 止损倍数 atr_sl_mult</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0"
+                value={config.atr_sl_mult}
+                onChange={(e) => onChange({ ...config, atr_sl_mult: Number(e.target.value) || 0 })}
+                className={`w-full px-4 py-2.5 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+              />
+              <div className="mt-1 text-xs text-gray-500">默认 1.0。SL = 入场价 ∓ ATR × 此倍数。TP/SL 比 = atr_tp_mult / atr_sl_mult。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
         <label className="block text-sm font-medium text-gray-500 mb-2">日志详细程度</label>
         <div className={`rounded-2xl border p-4 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
           <select

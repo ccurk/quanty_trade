@@ -27,6 +27,11 @@ export type StrategyFormConfig = {
   auto_optimize_model: string;
   auto_optimize_api_key: string;
   log_level: 'quiet' | 'normal' | 'verbose' | 'debug';
+  // === 策略阈值（meme contract engine 内部参数）===
+  min_confidence: number;     // 0-1，触发信号的最低置信度（默认 0.35）
+  atr_tp_mult: number;        // 动态止盈 = ATR × 此倍数（默认 2.0）
+  atr_sl_mult: number;        // 动态止损 = ATR × 此倍数（默认 1.0）
+  volume_ratio_min: number;   // 量比阈值（默认 1.2）
 };
 
 export type StrategyConfigMarketSymbol = {
@@ -109,6 +114,10 @@ export const createDefaultStrategyConfig = (): StrategyFormConfig => ({
   auto_optimize_model: 'anthropic/claude-opus-4.8-fast',
   auto_optimize_api_key: '',
   log_level: 'normal',
+  min_confidence: 0.35,
+  atr_tp_mult: 2.0,
+  atr_sl_mult: 1.0,
+  volume_ratio_min: 1.2,
 });
 
 export const strategyConfigFromExisting = (cfg: Record<string, unknown>): StrategyFormConfig => {
@@ -145,6 +154,10 @@ export const strategyConfigFromExisting = (cfg: Record<string, unknown>): Strate
       const raw = String(cfg?.log_level ?? '').toLowerCase().trim();
       return (raw === 'quiet' || raw === 'verbose' || raw === 'debug') ? raw : 'normal';
     })(),
+    min_confidence: getCfgNumber(cfg, 'min_confidence', 0.35),
+    atr_tp_mult: getCfgNumber(cfg, 'atr_tp_mult', 2.0),
+    atr_sl_mult: getCfgNumber(cfg, 'atr_sl_mult', 1.0),
+    volume_ratio_min: getCfgNumber(cfg, 'volume_ratio_min', 1.2),
   };
 };
 
@@ -177,4 +190,8 @@ export const buildStrategyConfigPayload = (cfg: StrategyFormConfig) => ({
   auto_optimize_model: cfg.auto_optimize_model.trim(),
   auto_optimize_api_key: cfg.auto_optimize_api_key.trim(),
   log_level: cfg.log_level || 'normal',
+  min_confidence: Number(cfg.min_confidence) || 0.35,
+  atr_tp_mult: Number(cfg.atr_tp_mult) || 2.0,
+  atr_sl_mult: Number(cfg.atr_sl_mult) || 1.0,
+  volume_ratio_min: Number(cfg.volume_ratio_min) || 1.2,
 });
