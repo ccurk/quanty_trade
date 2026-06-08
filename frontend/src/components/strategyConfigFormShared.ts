@@ -26,6 +26,7 @@ export type StrategyFormConfig = {
   auto_optimize_enabled: boolean;
   auto_optimize_model: string;
   auto_optimize_api_key: string;
+  log_level: 'quiet' | 'normal' | 'verbose' | 'debug';
 };
 
 export type StrategyConfigMarketSymbol = {
@@ -107,6 +108,7 @@ export const createDefaultStrategyConfig = (): StrategyFormConfig => ({
   auto_optimize_enabled: false,
   auto_optimize_model: 'anthropic/claude-opus-4.8-fast',
   auto_optimize_api_key: '',
+  log_level: 'normal',
 });
 
 export const strategyConfigFromExisting = (cfg: Record<string, unknown>): StrategyFormConfig => {
@@ -139,6 +141,10 @@ export const strategyConfigFromExisting = (cfg: Record<string, unknown>): Strate
     auto_optimize_enabled: getCfgBool(cfg, 'auto_optimize_enabled', false),
     auto_optimize_model: getCfgString(cfg, 'auto_optimize_model', ''),
     auto_optimize_api_key: getCfgString(cfg, 'auto_optimize_api_key', ''),
+    log_level: ((): 'quiet' | 'normal' | 'verbose' | 'debug' => {
+      const raw = String(cfg?.log_level ?? '').toLowerCase().trim();
+      return (raw === 'quiet' || raw === 'verbose' || raw === 'debug') ? raw : 'normal';
+    })(),
   };
 };
 
@@ -170,4 +176,5 @@ export const buildStrategyConfigPayload = (cfg: StrategyFormConfig) => ({
   auto_optimize_enabled: cfg.auto_optimize_enabled,
   auto_optimize_model: cfg.auto_optimize_model.trim(),
   auto_optimize_api_key: cfg.auto_optimize_api_key.trim(),
+  log_level: cfg.log_level || 'normal',
 });

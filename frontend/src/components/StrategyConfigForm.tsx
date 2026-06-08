@@ -388,6 +388,26 @@ export function StrategyConfigForm({
         </div>
       </div>
 
+      <div>
+        <label className="block text-sm font-medium text-gray-500 mb-2">日志详细程度</label>
+        <div className={`rounded-2xl border p-4 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+          <select
+            value={config.log_level}
+            onChange={(e) => onChange({ ...config, log_level: e.target.value as 'quiet' | 'normal' | 'verbose' | 'debug' })}
+            className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+          >
+            <option value="quiet">Quiet — 只打错误，几乎不发决策日志</option>
+            <option value="normal">Normal — 默认，每小时几条（log_every=60）</option>
+            <option value="verbose">Verbose — 每 10 分钟一条评估日志</option>
+            <option value="debug">Debug — 每根 K 线都打全部细节（排查问题用）</option>
+          </select>
+          <div className="mt-2 text-xs text-gray-500">
+            "Debug" 等同于一次性开 <code>debug + log_every=1 + log_decisions + log_signal + log_rx</code>。
+            生产长跑选 Normal 即可；排查"为什么不开仓"时切到 Debug。
+          </div>
+        </div>
+      </div>
+
       {showTemplateSelector && (
         <div>
           <label className="block text-sm font-medium text-gray-500 mb-2">选择模板</label>

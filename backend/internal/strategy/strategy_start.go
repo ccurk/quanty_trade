@@ -152,12 +152,66 @@ func (m *Manager) buildStrategyStartPlan(inst *StrategyInstance) (*strategyStart
 			runCfg["symbol"] = feedSymbols[0]
 		}
 	}
+
+	// log_level 翻译：把人类可读的等级展开成 Python 实际用的细粒度 flags。
+	// 用户显式设的 log_every / log_decisions 等如果已经在 inst.Config 里有了，
+	// 这里【不】覆盖（让显式配置生效优先），只填补未指定的字段。
+	applyLogLevelPreset(inst.Config, runCfg)
+
 	return &strategyStartPlan{
 		redisBus:    rb,
 		runCfg:      runCfg,
 		feedSymbols: feedSymbols,
 		logTrace:    logTrace,
 	}, nil
+}
+
+// applyLogLevelPreset 把 config.log_level 翻译成 Python 实际识别的细粒度
+// 日志 flags（log_every / log_decisions / log_rx / debug）。
+//
+// 优先级：用户在 config 里显式设置的字段 > 本函数填充的预设值。
+// 这样 log_level=debug 但同时 log_every=30 → log_every 取 30。
+//
+// 支持的 log_level：
+//   - "quiet"   极少日志（适合稳态生产）
+//   - "normal"  默认（每小时几条决策日志）
+//   - "verbose" 每 10 分钟一条
+//   - "debug"   每根 K 线全打（debug=true 让 Python 强制 trace 模式）
+//   - 其它 / 未设置 → 等同 "normal"
+func applyLogLevelPreset(cfg map[string]interface{}, runCfg map[string]interface{}) {
+	if cfg == nil || runCfg == nil {
+		return
+	}
+	level := strings.ToLower(strings.TrimSpace(getString(cfg["log_level"])))
+	if level == "" {
+		return // 没设 log_level，啥都不改
+	}
+	// 已显式设置的字段不覆盖
+	setIfMissing := func(key string, val interface{}) {
+		if _, has := cfg[key]; has {
+			return
+		}
+		runCfg[key] = val
+	}
+	switch level {
+	case "quiet":
+		setIfMissing("log_every", 300)
+		setIfMissing("log_decisions", false)
+		setIfMissing("log_rx", false)
+	case "verbose":
+		setIfMissing("log_every", 10)
+		setIfMissing("log_decisions", true)
+	case "debug":
+		setIfMissing("debug", true)
+		setIfMissing("log_every", 1)
+		setIfMissing("log_decisions", true)
+		setIfMissing("log_signal", true)
+		setIfMissing("log_rx", true)
+	case "normal":
+		// 默认就是 normal，啥都不填，Python 端取自己的默认（log_every=60）
+	}
+	// 把 log_level 本身也透传给 Python（不影响逻辑，但便于 Python log 出来知道当前档位）
+	runCfg["log_level"] = level
 }
 
 func (m *Manager) resolveFeedSymbols(inst *StrategyInstance, logTrace bool) ([]string, error) {
