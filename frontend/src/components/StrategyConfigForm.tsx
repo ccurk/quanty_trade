@@ -396,6 +396,56 @@ export function StrategyConfigForm({
       </div>
 
       <div>
+        <label className="block text-sm font-medium text-gray-500 mb-2">信号过滤（Go backend）</label>
+        <div className={`rounded-2xl border p-4 space-y-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+          <div className="text-xs text-gray-500">
+            这些是 backend 在 Python 发信号之后的二次过滤，独立于策略代码本身。
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">允许方向</label>
+              <select
+                value={config.allowed_sides}
+                onChange={(e) => onChange({ ...config, allowed_sides: e.target.value as 'both' | 'buy' | 'sell' })}
+                className={`w-full px-3 py-2 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+              >
+                <option value="both">双向（多空都开）</option>
+                <option value="sell">仅做空（short-only）</option>
+                <option value="buy">仅做多（long-only）</option>
+              </select>
+              <div className="mt-1 text-xs text-gray-500">基于历史数据，meme 币 short 胜率更高</div>
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs font-medium text-gray-500 mb-1">Symbol 黑名单（逗号分隔）</label>
+              <input
+                type="text"
+                value={config.symbol_blacklist}
+                onChange={(e) => onChange({ ...config, symbol_blacklist: e.target.value })}
+                placeholder="SAHARAUSDT,WIFUSDT,AIOUSDT,..."
+                className={`w-full px-3 py-2 rounded-xl border text-sm font-mono transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+              />
+              <div className="mt-1 text-xs text-gray-500">即使 symbols 白名单允许，黑名单里的也绝对不开仓</div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">交易所托管 TP/SL</label>
+              <button
+                type="button"
+                onClick={() => onChange({ ...config, use_exchange_tpsl: !config.use_exchange_tpsl })}
+                className={`w-full px-3 py-2 rounded-xl text-sm font-bold border transition ${
+                  config.use_exchange_tpsl
+                    ? (isDarkMode ? 'bg-green-900/30 border-green-700 text-green-200' : 'bg-green-50 border-green-300 text-green-800')
+                    : (isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-400' : 'bg-white border-gray-200 text-gray-600')
+                }`}
+              >
+                {config.use_exchange_tpsl ? '✓ 已开启' : '关闭'}
+              </button>
+              <div className="mt-1 text-xs text-gray-500">推荐开启：TP/SL 挂到 binance 服务器，不依赖你 backend 在线</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
         <label className="block text-sm font-medium text-gray-500 mb-2">策略阈值（meme 引擎内部参数）</label>
         <div className={`rounded-2xl border p-4 space-y-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
           <div className="text-xs text-gray-500">

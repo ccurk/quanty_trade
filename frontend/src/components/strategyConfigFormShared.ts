@@ -32,6 +32,10 @@ export type StrategyFormConfig = {
   atr_tp_mult: number;        // 动态止盈 = ATR × 此倍数（默认 2.0）
   atr_sl_mult: number;        // 动态止损 = ATR × 此倍数（默认 1.0）
   volume_ratio_min: number;   // 量比阈值（默认 1.2）
+  // === 信号方向 / 黑名单（Go backend isAllowedSide / isBlacklistedSymbol）===
+  allowed_sides: 'both' | 'buy' | 'sell'; // 'both'=多空双开 / 'buy'=只多 / 'sell'=只空
+  symbol_blacklist: string;   // 逗号分隔的 symbol 黑名单
+  use_exchange_tpsl: boolean; // 是否强制在交易所挂 TP/SL（推荐 true）
 };
 
 export type StrategyConfigMarketSymbol = {
@@ -118,6 +122,9 @@ export const createDefaultStrategyConfig = (): StrategyFormConfig => ({
   atr_tp_mult: 2.0,
   atr_sl_mult: 1.0,
   volume_ratio_min: 1.2,
+  allowed_sides: 'both',
+  symbol_blacklist: '',
+  use_exchange_tpsl: true,
 });
 
 export const strategyConfigFromExisting = (cfg: Record<string, unknown>): StrategyFormConfig => {
@@ -158,6 +165,27 @@ export const strategyConfigFromExisting = (cfg: Record<string, unknown>): Strate
     atr_tp_mult: getCfgNumber(cfg, 'atr_tp_mult', 2.0),
     atr_sl_mult: getCfgNumber(cfg, 'atr_sl_mult', 1.0),
     volume_ratio_min: getCfgNumber(cfg, 'volume_ratio_min', 1.2),
+    allowed_sides: ((): 'both' | 'buy' | 'sell' => {
+      const raw = cfg?.allowed_sides;
+      if (Array.isArray(raw)) {
+        const sides = raw.map(s => String(s).toLowerCase().trim());
+        if (sides.includes('buy') && sides.includes('sell')) return 'both';
+        if (sides.includes('sell') && !sides.includes('buy')) return 'sell';
+        if (sides.includes('buy') && !sides.includes('sell')) return 'buy';
+      }
+      if (typeof raw === 'string') {
+        const v = raw.toLowerCase().trim();
+        if (v === 'buy' || v === 'sell' || v === 'both') return v;
+      }
+      return 'both'; // 默认双向
+    })(),
+    symbol_blacklist: ((): string => {
+      const raw = cfg?.symbol_blacklist;
+      if (Array.isArray(raw)) return raw.map(s => String(s).trim()).filter(Boolean).join(',');
+      if (typeof raw === 'string') return raw.trim();
+      return '';
+    })(),
+    use_exchange_tpsl: getCfgBool(cfg, 'use_exchange_tpsl', true),
   };
 };
 
@@ -207,6 +235,19 @@ export const buildStrategyConfigPayload = (
     atr_tp_mult: Number(cfg.atr_tp_mult) || 2.0,
     atr_sl_mult: Number(cfg.atr_sl_mult) || 1.0,
     volume_ratio_min: Number(cfg.volume_ratio_min) || 1.2,
+    // allowed_sides 序列化：UI 是 'both' | 'buy' | 'sell'，写到 config 用数组
+    // 这样和 Go backend 的 isAllowedSide 解析逻辑兼容
+    allowed_sides:
+      cfg.allowed_sides === 'both'
+        ? ['buy', 'sell']
+        : cfg.allowed_sides === 'sell'
+          ? ['sell']
+          : ['buy'],
+    symbol_blacklist: cfg.symbol_blacklist
+      .split(',')
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean),
+    use_exchange_tpsl: cfg.use_exchange_tpsl,
   };
   if (rawConfig && typeof rawConfig === 'object') {
     // 关键修复：合并 rawConfig 先（保留所有未知字段如 allowed_sides /
