@@ -125,6 +125,9 @@ func main() {
 		protected.GET("/backtests", api.ListBacktests)
 		protected.GET("/backtests/:id", api.GetBacktest)
 		protected.PUT("/strategies/:id/config", api.UpdateStrategyConfig)
+		// 单字段（部分）更新：body 直接是要 merge 的 object，自动 routine / cron 用。
+		// 例：PATCH /strategies/<id>/config  body: {"order_amount_pct": 0.3}
+		protected.PATCH("/strategies/:id/config", api.PatchStrategyConfig)
 		protected.GET("/strategies/:id/logs", api.GetStrategyLogs)
 		protected.DELETE("/strategies/:id", api.DeleteStrategy)
 		// 解除实例与 StrategyVersion 的绑定，让它回到跟随 Template.Code 的状态。

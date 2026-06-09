@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -188,6 +189,111 @@ func UpdateStrategyConfig(c *gin.Context) {
 	database.DB.Save(&instance)
 
 	c.JSON(http.StatusOK, gin.H{"status": "updated"})
+}
+
+// PatchStrategyConfig 只更新传入的字段，其余字段保持不变（JSON merge patch 语义）。
+// 自动化优化路径用：cron / routine 每次只想动 1-2 个字段，但又不想拉全量再回写。
+//
+// Body 直接就是要 merge 的 object（不需要包 {"config": ...}）：
+//   {"order_amount_pct": 0.3, "symbol_blacklist": ["ALLOUSDT", "MOVEUSDT"]}
+//
+// 显式传 null 会删除字段（标准 JSON merge patch 语义）。
+func PatchStrategyConfig(c *gin.Context) {
+	id := c.Param("id")
+
+	// 解析 patch（任意 JSON object）
+	var patch map[string]interface{}
+	if err := c.ShouldBindJSON(&patch); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON patch: " + err.Error()})
+		return
+	}
+	if len(patch) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "empty patch"})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+	userRole, _ := c.Get("role")
+	var instance models.StrategyInstance
+	if err := database.DB.Where("id = ?", id).First(&instance).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Strategy not found"})
+		return
+	}
+	if instance.OwnerID != userID.(uint) && userRole != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Permission denied"})
+		return
+	}
+
+	// 拉当前 config
+	var current map[string]interface{}
+	if strings.TrimSpace(instance.Config) != "" {
+		if err := json.Unmarshal([]byte(instance.Config), &current); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "current config corrupted: " + err.Error()})
+			return
+		}
+	}
+	if current == nil {
+		current = map[string]interface{}{}
+	}
+
+	// merge：patch 的字段覆盖 current，null 删字段
+	changed := make(map[string]interface{}, len(patch))
+	for k, v := range patch {
+		if v == nil {
+			if _, existed := current[k]; existed {
+				delete(current, k)
+				changed[k] = nil
+			}
+			continue
+		}
+		old, hadOld := current[k]
+		current[k] = v
+		if !hadOld || !jsonEqual(old, v) {
+			changed[k] = v
+		}
+	}
+
+	if len(changed) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "no_change",
+			"changed": map[string]interface{}{},
+		})
+		return
+	}
+
+	// 走和 PUT 同一条规整化路径
+	merged, err := json.Marshal(current)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	configJSON, normCfg, err := normalizeStrategyConfigJSON(string(merged))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "merged config invalid: " + err.Error()})
+		return
+	}
+
+	if err := stratMgr.UpdateStrategyConfig(id, normCfg); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	instance.Config = configJSON
+	if err := database.DB.Save(&instance).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "patched",
+		"changed": changed,
+	})
+}
+
+func jsonEqual(a, b interface{}) bool {
+	ja, _ := json.Marshal(a)
+	jb, _ := json.Marshal(b)
+	return string(ja) == string(jb)
 }
 
 func GetStrategyLogs(c *gin.Context) {
