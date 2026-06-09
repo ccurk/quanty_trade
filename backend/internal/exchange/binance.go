@@ -2636,3 +2636,176 @@ func (b *BinanceExchange) SubscribeCandlesWithEvents(symbol string, callback fun
 		}
 	}, nil
 }
+
+// ===========================================================================
+// USDM history helpers — 给 optimize/context endpoint 用，
+// 让远端 cron routine 不用 IP 白名单也能拉到币安真实成交数据。
+// ===========================================================================
+
+// USDMIncomeEvent 是 /fapi/v1/income 返回的单条事件。
+type USDMIncomeEvent struct {
+	Symbol     string  `json:"symbol"`
+	IncomeType string  `json:"income_type"` // REALIZED_PNL / COMMISSION / FUNDING_FEE / TRANSFER ...
+	Income     float64 `json:"income"`
+	Asset      string  `json:"asset"`
+	Time       int64   `json:"time_ms"`
+	Info       string  `json:"info,omitempty"`
+	TranID     int64   `json:"tran_id,omitempty"`
+	TradeID    string  `json:"trade_id,omitempty"`
+}
+
+// USDMIncomeHistory 拉 /fapi/v1/income，支持时间区间。
+// limit 上限是 1000；如果区间内事件超过 1000，会被截断。
+func (b *BinanceExchange) USDMIncomeHistory(ownerID uint, startTime, endTime time.Time, limit int) ([]USDMIncomeEvent, error) {
+	if b.market != "usdm" {
+		return nil, fmt.Errorf("not usdm market")
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	params := url.Values{}
+	if !startTime.IsZero() {
+		params.Set("startTime", strconv.FormatInt(startTime.UnixMilli(), 10))
+	}
+	if !endTime.IsZero() {
+		params.Set("endTime", strconv.FormatInt(endTime.UnixMilli(), 10))
+	}
+	params.Set("limit", strconv.Itoa(limit))
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/income", params)
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		Symbol     string `json:"symbol"`
+		IncomeType string `json:"incomeType"`
+		Income     string `json:"income"`
+		Asset      string `json:"asset"`
+		Time       int64  `json:"time"`
+		Info       string `json:"info"`
+		TranID     int64  `json:"tranId"`
+		TradeID    string `json:"tradeId"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("parse income: %w; body=%s", err, truncateForErr(body))
+	}
+	out := make([]USDMIncomeEvent, 0, len(raw))
+	for _, r := range raw {
+		inc, _ := strconv.ParseFloat(strings.TrimSpace(r.Income), 64)
+		out = append(out, USDMIncomeEvent{
+			Symbol:     r.Symbol,
+			IncomeType: r.IncomeType,
+			Income:     inc,
+			Asset:      r.Asset,
+			Time:       r.Time,
+			Info:       r.Info,
+			TranID:     r.TranID,
+			TradeID:    r.TradeID,
+		})
+	}
+	return out, nil
+}
+
+// USDMUserTrade 是 /fapi/v1/userTrades 返回的单条成交。
+type USDMUserTrade struct {
+	Symbol          string  `json:"symbol"`
+	ID              int64   `json:"trade_id"`
+	OrderID         int64   `json:"order_id"`
+	Side            string  `json:"side"`         // BUY / SELL
+	PositionSide    string  `json:"position_side"`// LONG / SHORT / BOTH
+	Qty             float64 `json:"qty"`
+	Price           float64 `json:"price"`
+	QuoteQty        float64 `json:"quote_qty"`
+	RealizedPnL     float64 `json:"realized_pnl"`
+	Commission      float64 `json:"commission"`
+	CommissionAsset string  `json:"commission_asset"`
+	Maker           bool    `json:"maker"`
+	Time            int64   `json:"time_ms"`
+}
+
+// USDMUserTrades 拉单个 symbol 的成交流水。Binance 强制要求 symbol。
+func (b *BinanceExchange) USDMUserTrades(ownerID uint, symbol string, startTime, endTime time.Time, limit int) ([]USDMUserTrade, error) {
+	if b.market != "usdm" {
+		return nil, fmt.Errorf("not usdm market")
+	}
+	symbol = strings.TrimSpace(symbol)
+	if symbol == "" {
+		return nil, fmt.Errorf("symbol required")
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	// Binance 要求 symbol 是不带分隔符的形式（BTCUSDT），如果传进来是 BTC/USDT 帮转换一下。
+	sym := strings.ReplaceAll(strings.ToUpper(symbol), "/", "")
+	params := url.Values{}
+	params.Set("symbol", sym)
+	if !startTime.IsZero() {
+		params.Set("startTime", strconv.FormatInt(startTime.UnixMilli(), 10))
+	}
+	if !endTime.IsZero() {
+		params.Set("endTime", strconv.FormatInt(endTime.UnixMilli(), 10))
+	}
+	params.Set("limit", strconv.Itoa(limit))
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/userTrades", params)
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		Symbol          string `json:"symbol"`
+		ID              int64  `json:"id"`
+		OrderID         int64  `json:"orderId"`
+		Side            string `json:"side"`
+		PositionSide    string `json:"positionSide"`
+		Qty             string `json:"qty"`
+		Price           string `json:"price"`
+		QuoteQty        string `json:"quoteQty"`
+		RealizedPnl     string `json:"realizedPnl"`
+		Commission      string `json:"commission"`
+		CommissionAsset string `json:"commissionAsset"`
+		Maker           bool   `json:"maker"`
+		Time            int64  `json:"time"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("parse userTrades: %w; body=%s", err, truncateForErr(body))
+	}
+	out := make([]USDMUserTrade, 0, len(raw))
+	for _, r := range raw {
+		qty, _ := strconv.ParseFloat(strings.TrimSpace(r.Qty), 64)
+		price, _ := strconv.ParseFloat(strings.TrimSpace(r.Price), 64)
+		quote, _ := strconv.ParseFloat(strings.TrimSpace(r.QuoteQty), 64)
+		pnl, _ := strconv.ParseFloat(strings.TrimSpace(r.RealizedPnl), 64)
+		fee, _ := strconv.ParseFloat(strings.TrimSpace(r.Commission), 64)
+		out = append(out, USDMUserTrade{
+			Symbol:          r.Symbol,
+			ID:              r.ID,
+			OrderID:         r.OrderID,
+			Side:            r.Side,
+			PositionSide:    r.PositionSide,
+			Qty:             qty,
+			Price:           price,
+			QuoteQty:        quote,
+			RealizedPnL:     pnl,
+			Commission:      fee,
+			CommissionAsset: r.CommissionAsset,
+			Maker:           r.Maker,
+			Time:            r.Time,
+		})
+	}
+	return out, nil
+}
+
+func truncateForErr(body []byte) string {
+	const max = 200
+	s := string(body)
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
+}
