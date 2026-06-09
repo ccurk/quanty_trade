@@ -377,6 +377,56 @@ def calc_ema_trend(closes: list[float], fast: int = 20, slow: int = 60) -> Optio
     return None
 
 
+def calc_trend_confirm_bars(closes: list[float], fast: int, slow: int, confirm_bars: int) -> int:
+    """
+    返回最近多少根 K 线的 EMA fast/slow 关系与"现在方向"一致。
+    用于过滤刚刚翻转的 whipsaw 信号（17.5% 历史胜率主要来自这种短命反向）。
+
+    返回值越大越可靠：
+    - 0：刚反转 / 数据不足
+    - >= confirm_bars：方向已经持续稳定，允许放行
+    """
+    if confirm_bars <= 0 or len(closes) < slow + confirm_bars:
+        return 0
+    fast_series = ema_series(closes, fast)
+    slow_series = ema_series(closes, slow)
+    if not fast_series or not slow_series:
+        return 0
+    n = min(len(fast_series), len(slow_series), confirm_bars + 5)
+    # 当前方向
+    last_dir = 1 if fast_series[-1] > slow_series[-1] else (-1 if fast_series[-1] < slow_series[-1] else 0)
+    if last_dir == 0:
+        return 0
+    count = 0
+    for i in range(1, n + 1):
+        f = fast_series[-i]; s = slow_series[-i]
+        if last_dir == 1 and f > s:
+            count += 1
+        elif last_dir == -1 and f < s:
+            count += 1
+        else:
+            break
+    return count
+
+
+def is_choppy(closes: list[float], lookback: int = 6) -> bool:
+    """
+    检测最近 N 根 K 线是不是震荡走势（来回穿越中位）。
+    7 天回测显示：<1min 持仓 0% 胜率、12 笔都被秒止损 — 主因之一是开仓时正在震荡的 noise bar。
+    """
+    if len(closes) < lookback + 1:
+        return False
+    sub = closes[-lookback - 1:]
+    sign_changes = 0
+    for i in range(2, len(sub)):
+        d1 = sub[i] - sub[i-1]
+        d2 = sub[i-1] - sub[i-2]
+        if d1 * d2 < 0:
+            sign_changes += 1
+    # 6 根 K 线里 >= 3 次方向变化 = 震荡
+    return sign_changes >= max(3, lookback // 2)
+
+
 def calc_volume_ratio(volumes: list[float], period: int = 20) -> float:
     """
     计算当前成交量与近期均量的比值。
@@ -436,6 +486,12 @@ class Config:
     COOLDOWN_SEC = 300             # 默认冷却 300 秒，避免频繁开仓
     MAX_BARS = 400                 # 增加缓存上限，保证 EMA60 计算充分
     WARMUP_BARS = 80               # 提高预热要求，保证 EMA60 稳定
+    # —— 基于 7 天实盘回测（胜率 17.5%）新增的硬过滤 ——
+    TREND_CONFIRM_BARS = 3         # EMA fast/slow 方向必须已稳定的 K 线数，过滤 whipsaw
+    CHOP_LOOKBACK = 6              # 震荡判定回看的 K 线数
+    REJECT_ON_CHOP = True          # 震荡时不开仓
+    MAX_ATR_PCT = 8.0              # ATR% > 此值时拒绝开仓（极端波动）
+    MIN_ATR_PCT_FOR_TRADE = 0.15   # ATR% < 此值时拒绝开仓（死水行情，TP/SL 距离没意义）
 
 
 @dataclass
@@ -754,6 +810,36 @@ def analyze_with_detail(
         volume_ratio,
     )
 
+    # —— 基于历史回测加的硬过滤（在得分通过 MIN_CONFIDENCE 后还要再守一道）——
+    reject_reason: Optional[str] = None
+    if direction is not None:
+        # 1) 极端波动两端：太死或太疯都拒
+        if atr_pct > Config.MAX_ATR_PCT:
+            reject_reason = f"ATR%过高({atr_pct:.2f}>{Config.MAX_ATR_PCT})"
+        elif atr_pct < Config.MIN_ATR_PCT_FOR_TRADE:
+            reject_reason = f"ATR%过低({atr_pct:.2f}<{Config.MIN_ATR_PCT_FOR_TRADE})"
+        # 2) EMA fast/slow 关系刚翻转：whipsaw 主要来源
+        elif Config.TREND_CONFIRM_BARS > 0:
+            stable = calc_trend_confirm_bars(closes, Config.EMA_FAST, Config.EMA_SLOW, Config.TREND_CONFIRM_BARS)
+            if stable < Config.TREND_CONFIRM_BARS:
+                reject_reason = f"趋势未稳定({stable}<{Config.TREND_CONFIRM_BARS})"
+            else:
+                # 方向必须和当下 EMA 趋势一致（不允许逆趋势）
+                if direction == "long" and ema_trend != "up":
+                    reject_reason = "做多但EMA非up"
+                elif direction == "short" and ema_trend != "down":
+                    reject_reason = "做空但EMA非down"
+        # 3) 震荡过滤
+        if reject_reason is None and Config.REJECT_ON_CHOP and is_choppy(closes, Config.CHOP_LOOKBACK):
+            reject_reason = "震荡走势"
+
+    if reject_reason is not None:
+        # 触发了硬过滤：放弃方向，置 confidence 为 0 让上层日志能看到
+        detail = dict(detail)
+        detail["hard_filter_reject"] = reject_reason
+        direction = None
+        confidence = 0.0
+
     tp, sl = (0.0, 0.0)
     if direction is not None:
         tp, sl = _calc_tp_sl(price, direction, atr_abs)
@@ -932,6 +1018,12 @@ class Strategy:
         Config.COOLDOWN_SEC = max(0, _i(self.cfg.get("cooldown_sec"), Config.COOLDOWN_SEC))
         Config.MAX_BARS = max(100, _i(self.cfg.get("max_bars"), Config.MAX_BARS))
         Config.WARMUP_BARS = max(35, _i(self.cfg.get("warmup_bars"), Config.WARMUP_BARS))
+        # —— 历史回测新增的硬过滤旋钮 ——
+        Config.TREND_CONFIRM_BARS = max(0, _i(self.cfg.get("trend_confirm_bars"), Config.TREND_CONFIRM_BARS))
+        Config.CHOP_LOOKBACK = max(2, _i(self.cfg.get("chop_lookback"), Config.CHOP_LOOKBACK))
+        Config.REJECT_ON_CHOP = bool(self.cfg.get("reject_on_chop", Config.REJECT_ON_CHOP))
+        Config.MAX_ATR_PCT = max(0.0, _f(self.cfg.get("max_atr_pct"), Config.MAX_ATR_PCT))
+        Config.MIN_ATR_PCT_FOR_TRADE = max(0.0, _f(self.cfg.get("min_atr_pct_for_trade"), Config.MIN_ATR_PCT_FOR_TRADE))
         Config.MAX_PRICE = max(0.0, _f(self.cfg.get("max_price"), Config.MAX_PRICE))
         Config.MIN_PRECISION = max(0, _i(self.cfg.get("min_precision"), Config.MIN_PRECISION))
         Config.MIN_VOLATILITY = max(0.0, _f(self.cfg.get("min_volatility"), Config.MIN_VOLATILITY))
@@ -1142,10 +1234,17 @@ class Strategy:
             return
         if r.direction is None:
             if tick_log:
-                self._log(
-                    f"未触发信号 sym={symbol} 置信度={r.confidence:.3f} 多头分={_f(sc.get('ls'), 0.0):.3f} "
-                    f"空头分={_f(sc.get('ss'), 0.0):.3f} 最低置信度={_f(sc.get('min_confidence'), Config.MIN_CONFIDENCE):.3f} 时间={_now()}"
-                )
+                hard_reject = _s(sc.get("hard_filter_reject"))
+                if hard_reject:
+                    self._log(
+                        f"硬过滤拦截 sym={symbol} 原因={hard_reject} 置信度={r.confidence:.3f} "
+                        f"多头分={_f(sc.get('ls'), 0.0):.3f} 空头分={_f(sc.get('ss'), 0.0):.3f} 时间={_now()}"
+                    )
+                else:
+                    self._log(
+                        f"未触发信号 sym={symbol} 置信度={r.confidence:.3f} 多头分={_f(sc.get('ls'), 0.0):.3f} "
+                        f"空头分={_f(sc.get('ss'), 0.0):.3f} 最低置信度={_f(sc.get('min_confidence'), Config.MIN_CONFIDENCE):.3f} 时间={_now()}"
+                    )
             return
 
         now = time.time()

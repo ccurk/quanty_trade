@@ -130,6 +130,18 @@ func (s *Service) NotifyTradeClosed(ownerID uint, strategyID string, strategyNam
 	if metrics != nil && metrics.ExitPrice > 0 {
 		exitPrice = metrics.ExitPrice
 	}
+	// 胜负标签放标题，第一眼就能看到结果
+	icon, title := "📉", "平仓成交"
+	if metrics != nil {
+		switch {
+		case metrics.RealizedPnL > 0:
+			icon, title = "🟢", "盈利平仓"
+		case metrics.RealizedPnL < 0:
+			icon, title = "🔴", "亏损平仓"
+		case metrics.RealizedPnL == 0 && (metrics.EntryPrice > 0 || metrics.ExitPrice > 0):
+			icon, title = "⚪", "持平平仓"
+		}
+	}
 	lines := []string{
 		cardKV("策略", displayValue(strategyName, strategyID)),
 		cardKV("策略ID", displayValue(strategyID, "-")),
@@ -147,13 +159,28 @@ func (s *Service) NotifyTradeClosed(ownerID uint, strategyID string, strategyNam
 		lines = append(lines,
 			"──── 收益信息 ────",
 			cardKV("开仓价", formatFloat(metrics.EntryPrice)),
-			cardKV("已实现收益", formatSignedFloat(metrics.RealizedPnL)),
-			cardKV("收益率", formatPercent(metrics.RealizedReturnPct)),
-			cardKV("入场本金", formatFloat(metrics.RealizedNotional)),
-			cardKV("持仓时长", formatDuration(metrics.HoldingDuration)),
+			cardKV("平仓价", formatFloat(metrics.ExitPrice)),
+			cardKV("已实现收益（毛）", formatSignedFloat(metrics.RealizedPnL)),
+			cardKV("收益率（仓位）", formatPercent(metrics.RealizedReturnPct)),
 		)
+		if metrics.Leverage > 0 {
+			lines = append(lines,
+				cardKV("杠杆", fmt.Sprintf("%dx", int(metrics.Leverage))),
+				cardKV("保证金", formatFloat(metrics.Margin)),
+				cardKV("ROI（保证金）", formatPercent(metrics.MarginReturnPct)),
+			)
+		} else {
+			lines = append(lines, cardKV("入场本金", formatFloat(metrics.RealizedNotional)))
+		}
+		if metrics.FeeEstimate > 0 {
+			lines = append(lines,
+				cardKV("手续费(预估)", "-"+formatFloat(metrics.FeeEstimate)),
+				cardKV("净收益(预估)", formatSignedFloat(metrics.NetPnL)),
+			)
+		}
+		lines = append(lines, cardKV("持仓时长", formatDuration(metrics.HoldingDuration)))
 	}
-	s.broadcast(buildTelegramCard("📉", "平仓成交", lines...))
+	s.broadcast(buildTelegramCard(icon, title, lines...))
 }
 
 func (s *Service) NotifyStrategyStatus(ownerID uint, strategyID string, strategyName string, status string) {

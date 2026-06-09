@@ -259,8 +259,18 @@ export function StrategyConfigForm({
           <input type="number" value={config.order_amount_mode === 'percent_balance' ? config.order_amount_pct : config.trade_amount} onChange={(e) => onChange({ ...config, [config.order_amount_mode === 'percent_balance' ? 'order_amount_pct' : 'trade_amount']: Number(e.target.value) })} className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`} />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-500 mb-2">最大初始保证金 USDT</label>
-          <input type="number" value={config.max_initial_margin_usdt} onChange={(e) => onChange({ ...config, max_initial_margin_usdt: Number(e.target.value) })} className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`} />
+          <label className="block text-sm font-medium text-gray-500 mb-2">最大初始保证金 USDT <span className="text-xs text-gray-400 font-normal">(0=不限)</span></label>
+          <input
+            type="number"
+            value={config.max_initial_margin_usdt}
+            onChange={(e) => onChange({ ...config, max_initial_margin_usdt: Number(e.target.value) })}
+            className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`}
+          />
+          <div className="mt-1 text-[10px] text-gray-500">
+            {config.max_initial_margin_usdt === 0
+              ? '⚠️ 当前 0 = 不限制单笔保证金（按 pct/notional 全额下单，谨慎）'
+              : `单笔最多 $${config.max_initial_margin_usdt} 保证金。${config.order_amount_mode === 'percent_balance' ? '即使 pct=1.0 也被此 cap 限住' : ''}`}
+          </div>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-500 mb-2">止盈收益率(%)</label>

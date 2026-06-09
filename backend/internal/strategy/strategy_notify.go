@@ -13,11 +13,50 @@ type TradeCloseMetrics struct {
 	EntryPrice        float64
 	ExitPrice         float64
 	RealizedPnL       float64
-	RealizedReturnPct float64
+	RealizedReturnPct float64 // PnL / notional, 不带杠杆口径
 	RealizedNotional  float64
 	OpenTime          time.Time
 	CloseTime         time.Time
 	HoldingDuration   time.Duration
+	// 杠杆 & 保证金口径（在 notify 阶段由策略配置补全）
+	Leverage        float64 // 实际生效杠杆
+	Margin          float64 // 入场名义 / 杠杆 = 占用的保证金
+	MarginReturnPct float64 // PnL / margin，反映带杠杆后的真实回报
+	// 手续费 + 净收益（taker round-trip 预估）
+	FeeRate     float64 // 单边 taker 费率（默认 0.0005 = 0.05%）
+	FeeEstimate float64 // 双边手续费预估 = notional × feeRate × 2
+	NetPnL      float64 // RealizedPnL - FeeEstimate
+}
+
+// DefaultTakerFeeRate 是币安 U 本位合约 taker 默认费率（单边），用于平仓通知的费用预估。
+// 实际费率因 VIP 等级、BNB 抵扣会更低；这里给一个保守上限。
+const DefaultTakerFeeRate = 0.0005
+
+// EnrichMetricsWithLeverage 用杠杆补全 margin/MarginReturnPct/FeeEstimate/NetPnL。
+// 反复调用是幂等的：只在字段为零时回填。
+func EnrichMetricsWithLeverage(m *TradeCloseMetrics, leverage float64) {
+	if m == nil {
+		return
+	}
+	if leverage > 0 && m.Leverage <= 0 {
+		m.Leverage = leverage
+	}
+	if m.Leverage > 0 && m.Margin <= 0 && m.RealizedNotional > 0 {
+		m.Margin = m.RealizedNotional / m.Leverage
+	}
+	if m.MarginReturnPct == 0 && m.Margin > 0 {
+		m.MarginReturnPct = (m.RealizedPnL / m.Margin) * 100
+	}
+	if m.FeeRate <= 0 {
+		m.FeeRate = DefaultTakerFeeRate
+	}
+	if m.FeeEstimate <= 0 && m.RealizedNotional > 0 {
+		// 假设开仓 + 平仓都是 taker；如有部分 maker，实际更低。
+		m.FeeEstimate = m.RealizedNotional * m.FeeRate * 2
+	}
+	if m.NetPnL == 0 {
+		m.NetPnL = m.RealizedPnL - m.FeeEstimate
+	}
 }
 
 func BuildTradeCloseMetricsFromPosition(pos *models.StrategyPosition, qty float64, exitPrice float64, closeTime time.Time) *TradeCloseMetrics {
@@ -142,6 +181,9 @@ func (m *Manager) notifyTradeClosed(inst *StrategyInstance, symbol string, side 
 	if notifier == nil {
 		return
 	}
+	if metrics != nil {
+		EnrichMetricsWithLeverage(metrics, getNumber(inst.Config["leverage"]))
+	}
 	notifier.NotifyTradeClosed(inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, side, qty, price, status, reason, metrics)
 }
 
@@ -151,9 +193,13 @@ func (m *Manager) NotifyExternalTradeClosed(ownerID uint, strategyID string, str
 	}
 	m.mu.RLock()
 	notifier := m.notifier
+	inst := m.instances[strategyID]
 	m.mu.RUnlock()
 	if notifier == nil {
 		return
+	}
+	if metrics != nil && inst != nil {
+		EnrichMetricsWithLeverage(metrics, getNumber(inst.Config["leverage"]))
 	}
 	notifier.NotifyTradeClosed(ownerID, strategyID, strategyName, exchangeName, symbol, side, qty, price, status, reason, metrics)
 }
