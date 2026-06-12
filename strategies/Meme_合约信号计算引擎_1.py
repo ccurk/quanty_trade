@@ -999,6 +999,9 @@ class Strategy:
         self.pub = MiniRedis(host=host, port=int(port), password=self.redis_password, db=self.redis_db).connect()
 
         self._load_config()
+        # 恢复重启前的冷却状态（防止 routine 每次 stop/start 都把冷却清零→秒重开同方向单）
+        # 必须在 _load_config 之后（COOLDOWN_SEC 已生效），但在 run() 启动 subscribe 之前调用
+        self._restore_cooldown_state()
 
     def _load_config(self):
         Config.MIN_CONFIDENCE = _parse_ratio(self.cfg.get("min_confidence"), Config.MIN_CONFIDENCE)
@@ -1046,6 +1049,58 @@ class Strategy:
 
     def _state_ch(self):
         return f"{self.prefix}:state:{self.strategy_id}"
+
+    def _cooldown_key(self):
+        # 一个 strategy 一个 HASH，字段是 symbol，值是 "<unix_ts>|<direction>"
+        # 重启后 _restore_cooldown_state 一次 HGETALL 全部读回，避免冷却清零导致的高频重开问题
+        return f"{self.prefix}:cooldown:{self.strategy_id}"
+
+    def _persist_cooldown(self, symbol: str, ts: float, direction: str):
+        # 写入失败不要影响主信号流程；记录即可。
+        # TTL 用 max(COOLDOWN_SEC*2, 3600) 兜底，避免 strategy 长期不重启时 hash 永不过期。
+        try:
+            ttl = max(int(Config.COOLDOWN_SEC) * 2, 3600)
+            payload = f"{ts:.3f}|{(direction or '').strip().lower()}"
+            self.pub.execute("HSET", self._cooldown_key(), symbol, payload)
+            self.pub.execute("EXPIRE", self._cooldown_key(), ttl)
+        except Exception as e:
+            self._log(f"warn 冷却持久化失败 sym={symbol} err={e}")
+
+    def _restore_cooldown_state(self):
+        # __init__ 末尾调用一次。读完直接灌进 self.last_signal_ts / last_signal_dir
+        # 任何错误都吞掉：恢复不成功最多回到"无记忆"状态，跟原 bug 等价，不会变差。
+        try:
+            raw = self.pub.execute("HGETALL", self._cooldown_key())
+        except Exception as e:
+            self._log(f"warn 冷却恢复失败 err={e}")
+            return
+        if not raw or not isinstance(raw, list):
+            return
+        restored = 0
+        now = time.time()
+        # raw 是 [field1, val1, field2, val2, ...]
+        it = iter(raw)
+        for sym in it:
+            val = next(it, None)
+            if not isinstance(sym, str) or not isinstance(val, str):
+                continue
+            parts = val.split("|", 1)
+            if len(parts) < 1:
+                continue
+            try:
+                ts = float(parts[0])
+            except Exception:
+                continue
+            direction = parts[1] if len(parts) > 1 else ""
+            # 如果时间戳早已过了 cooldown 窗口，直接跳过（不灌脏数据）
+            if now - ts > float(max(Config.COOLDOWN_SEC, 60)):
+                continue
+            self.last_signal_ts[sym] = ts
+            if direction:
+                self.last_signal_dir[sym] = direction
+            restored += 1
+        if restored > 0:
+            self._log(f"冷却状态已恢复 strategy={self.strategy_id} 条数={restored} 时间={_now()}")
 
     def _log(self, msg: str):
         sys.stdout.write(json.dumps({"type": "log", "data": msg}) + "\n")
@@ -1257,9 +1312,12 @@ class Strategy:
                     f"跳过-冷却中 sym={symbol} 上次方向={last_dir or '-'} 本次方向={_s(r.direction).strip().lower()} remaining={remaining:.1f}s 时间={_now()}"
                 )
             return
+        direction_lower = _s(r.direction).strip().lower()
         self.last_signal_ts[symbol] = now
-        self.last_signal_dir[symbol] = _s(r.direction).strip().lower()
-        self._emit_signal(symbol, _s(r.direction).strip().lower(), r.entry_price, r.tp_price, r.sl_price, r.confidence)
+        self.last_signal_dir[symbol] = direction_lower
+        # 持久化到 Redis，重启后能恢复（避免 routine 改 config 重启导致冷却被清零）
+        self._persist_cooldown(symbol, now, direction_lower)
+        self._emit_signal(symbol, direction_lower, r.entry_price, r.tp_price, r.sl_price, r.confidence)
 
     def run(self):
         if not self.strategy_id:

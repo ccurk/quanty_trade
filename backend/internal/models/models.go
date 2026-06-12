@@ -306,12 +306,56 @@ type StrategyOptimizationRun struct {
 	BaseCodeHash      string `gorm:"type:varchar(64)" json:"base_code_hash"`
 	CandidateCodeHash string `gorm:"type:varchar(64)" json:"candidate_code_hash"`
 	Applied           bool   `json:"applied"`
+	// PreviousTemplateID 记录这次 apply 之前 instance 绑定的 template_id，
+	// 用于 POST /strategies/:id/rollback 回滚。
+	PreviousTemplateID uint `gorm:"index" json:"previous_template_id"`
+	// NewTemplateID 记录这次 apply 新建的 template_id（== instance 切到的目标）。
+	// 跟 PreviousTemplateID 一起使 rollback 不依赖 hash 字符串匹配。
+	NewTemplateID uint `gorm:"index" json:"new_template_id"`
 
 	Summary      string `gorm:"type:text" json:"summary"`
 	ErrorMessage string `gorm:"type:text" json:"error_message"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// StrategyAuditLog 是给"bot/admin 改策略"系列动作的统一审计流。
+// 任何修改性 endpoint（PUT/PATCH/POST 改动 config 或代码、平仓、取消订单、rollback）
+// 都自动 INSERT 一行，以便事后追溯"是谁、什么时候、改了什么"。
+type StrategyAuditLog struct {
+	ID uint `gorm:"primaryKey" json:"id"`
+
+	StrategyID string `gorm:"type:varchar(64);index" json:"strategy_id"`
+	OwnerID    uint   `gorm:"index" json:"owner_id"`
+
+	// Actor 是触发动作的用户名（claude_cron / admin / ...）
+	Actor string `gorm:"type:varchar(64);index" json:"actor"`
+	// ActorID 是上面 Actor 的 user_id
+	ActorID uint `gorm:"index" json:"actor_id"`
+
+	// Action 是高层动作分类：patch_config / put_config / apply_code / rollback /
+	// blacklist_remove / cancel_orders / close_position / patch_meta / ...
+	Action string `gorm:"type:varchar(48);index" json:"action"`
+
+	// Endpoint 是 HTTP 路径（含 method 前缀），用于精准定位走的哪条接口
+	Endpoint string `gorm:"type:varchar(160)" json:"endpoint"`
+
+	// BeforeJSON / AfterJSON 是动作前后的关键字段快照（不必全量 config，只放变化部分）
+	BeforeJSON string `gorm:"type:text" json:"before_json"`
+	AfterJSON  string `gorm:"type:text" json:"after_json"`
+
+	// Summary 是给人类看的一句话总结
+	Summary string `gorm:"type:varchar(512)" json:"summary"`
+
+	// Success 标识动作是否成功（4xx/5xx 都算失败）
+	Success bool `gorm:"index" json:"success"`
+	// HTTPStatus 实际返回的状态码
+	HTTPStatus int `json:"http_status"`
+	// ErrorMessage 失败时的错误说明
+	ErrorMessage string `gorm:"type:text" json:"error_message"`
+
+	CreatedAt time.Time `gorm:"index" json:"created_at"`
 }
 
 // StrategyVersion stores one versioned snapshot of a strategy template/code for a strategy instance.

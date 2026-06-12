@@ -658,17 +658,19 @@ func ApplyOptimization(c *gin.Context) {
 			summary = "cron auto-optimize"
 		}
 		_ = tx.Create(&models.StrategyOptimizationRun{
-			StrategyID:        req.StrategyID,
-			OwnerID:           row.OwnerID,
-			Status:            "applied",
-			Trigger:           "cron_auto",
-			Model:             "claude-cron",
-			BaseCodeHash:      oldHash,
-			CandidateCodeHash: newHash,
-			Applied:           true,
-			Summary:           summary,
-			CreatedAt:         time.Now(),
-			UpdatedAt:         time.Now(),
+			StrategyID:         req.StrategyID,
+			OwnerID:            row.OwnerID,
+			Status:             "applied",
+			Trigger:            "cron_auto",
+			Model:              "claude-cron",
+			BaseCodeHash:       oldHash,
+			CandidateCodeHash:  newHash,
+			Applied:            true,
+			PreviousTemplateID: previousTemplateID, // 让 rollback 能精准找回这次之前的 template
+			NewTemplateID:      newTemplateID,
+			Summary:            summary,
+			CreatedAt:          time.Now(),
+			UpdatedAt:          time.Now(),
 		}).Error
 		return nil
 	})

@@ -133,6 +133,11 @@ func main() {
 		// 解除实例与 StrategyVersion 的绑定，让它回到跟随 Template.Code 的状态。
 		// 用于"AI 优化过后想用回手动模板"的场景。
 		protected.POST("/strategies/:id/unbind-version", api.UnbindStrategyVersion)
+		// Bot/admin 用：精细化操控 strategy。每个动作都自动写 strategy_audit_logs。
+		protected.PATCH("/strategies/:id", api.PatchStrategyMeta)                          // 改 name 等顶层字段
+		protected.DELETE("/strategies/:id/blacklist/:symbol", api.RemoveSymbolFromBlacklist) // 释放单个黑名单
+		protected.POST("/strategies/:id/rollback", api.RollbackStrategyTemplate)            // 回滚到上一版 template
+		protected.POST("/strategies/:id/cancel-orders", api.CancelStrategyOrders)           // 紧急取消委托
 
 		// Positions
 		protected.GET("/positions", api.ListPositions)
@@ -169,6 +174,11 @@ func main() {
 			// template + rebind + restart。详见 internal/api/optimize_handlers.go
 			admin.GET("/optimize/context", api.GetOptimizeContext)
 			admin.POST("/optimize/apply", api.ApplyOptimization)
+			// Audit log 读接口（写是自动的）
+			admin.GET("/strategies/:id/audit", api.ListStrategyAudit)
+			// 一键迁移：export 出 JSON bundle，import 创建新 template + 新 instance
+			admin.POST("/strategies/:id/export", api.ExportStrategy)
+			admin.POST("/strategies/import", api.ImportStrategy)
 		}
 	}
 

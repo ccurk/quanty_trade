@@ -146,6 +146,7 @@ func InitDB() {
 		&models.StrategyOrder{},
 		&models.StrategyPosition{},
 		&models.StrategyOptimizationRun{},
+		&models.StrategyAuditLog{},
 		&models.StrategyVersion{},
 		&models.StrategyPublishRecord{},
 		&models.DailyPnL{},

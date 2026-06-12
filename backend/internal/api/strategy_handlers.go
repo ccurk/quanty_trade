@@ -274,6 +274,11 @@ func PatchStrategyConfig(c *gin.Context) {
 	}
 
 	if err := stratMgr.UpdateStrategyConfig(id, normCfg); err != nil {
+		writeAudit(c, auditCtx{
+			StrategyID: id, OwnerID: instance.OwnerID,
+			Action: "patch_config", Endpoint: "PATCH /strategies/:id/config",
+			After: changed, Summary: "patch failed at manager",
+		}, false, http.StatusInternalServerError, err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -283,6 +288,12 @@ func PatchStrategyConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	writeAudit(c, auditCtx{
+		StrategyID: id, OwnerID: instance.OwnerID,
+		Action: "patch_config", Endpoint: "PATCH /strategies/:id/config",
+		After: changed, Summary: fmt.Sprintf("patched %d fields", len(changed)),
+	}, true, http.StatusOK, "")
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "patched",
