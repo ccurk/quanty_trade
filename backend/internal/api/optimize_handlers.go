@@ -50,6 +50,10 @@ type optimizeTradesSummary struct {
 	ShortCount  int                                     `json:"short_count"`
 	LongPnL     float64                                 `json:"long_pnl"`
 	ShortPnL    float64                                 `json:"short_pnl"`
+	// DataSource 标记本字段实际是哪儿来的：
+	//   "binance" — 币安实时拉的（最准）
+	//   "db"      — 我们 DB 的 StrategyPosition 表（fallback，可能有遗漏）
+	DataSource string `json:"data_source"`
 }
 
 type optimizeAccountSnapshot struct {
@@ -191,7 +195,7 @@ func GetOptimizeContext(c *gin.Context) {
 		row.OwnerID, strategyID, "closed", since,
 	).Find(&positions).Error
 
-	trades := optimizeTradesSummary{BySymbol: map[string]optimizeContextSymbolSummary{}}
+	trades := optimizeTradesSummary{BySymbol: map[string]optimizeContextSymbolSummary{}, DataSource: "db"}
 	for _, p := range positions {
 		trades.Count++
 		trades.RealizedPnL += p.RealizedPnL
@@ -265,9 +269,128 @@ func GetOptimizeContext(c *gin.Context) {
 	}
 	if includeBinance {
 		resp.Binance = fetchBinanceContext(row.OwnerID, hours)
+
+		// 关键升级：如果 binance 拉成功，就用 binance 数据**覆盖** trades_window 和 daily_pnl_7d。
+		// 原因：DB 里的 StrategyPosition 表可能漏记（重启、TP/SL 由交易所触发但 strategy 没监听到、
+		// 部分平仓累计逻辑等）。币安那边是 source of truth。
+		if resp.Binance != nil && strings.TrimSpace(resp.Binance.FetchError) == "" {
+			resp.TradesWindow = buildTradesWindowFromBinance(resp.Binance)
+			if daily := fetchBinanceDailyPnL(row.OwnerID, 7); len(daily) > 0 {
+				resp.DailyPnL7d = daily
+			}
+		}
 	}
 
 	c.JSON(http.StatusOK, resp)
+}
+
+// buildTradesWindowFromBinance 把币安端算好的 paired_trades + by_symbol 重新打包成
+// 跟 DB 路径同结构的 optimizeTradesSummary，让 cron prompt 不必关心字段是哪儿来的。
+func buildTradesWindowFromBinance(b *optimizeBinanceContext) optimizeTradesSummary {
+	pt := b.PairedTrades
+	out := optimizeTradesSummary{
+		Count:       pt.PairCount,
+		WinCount:    pt.Wins,
+		LossCount:   pt.Losses,
+		WinRatePct:  pt.WinRatePct,
+		RealizedPnL: pt.GrossPnL,
+		LongCount:   pt.LongCount,
+		ShortCount:  pt.ShortCount,
+		LongPnL:     pt.LongNetPnL,
+		ShortPnL:    pt.ShortNetPnL,
+		BySymbol:    map[string]optimizeContextSymbolSummary{},
+		DataSource:  "binance",
+	}
+	for _, s := range b.BySymbol {
+		// 简化映射：用 net_pnl 当 PnL，trade_count 当 Count；Wins/Notional 无法直接给（binance income
+		// 不区分单笔），保留为 0 —— routine prompt 主要用 by_symbol[].net_pnl 排序，足够
+		out.BySymbol[s.Symbol] = optimizeContextSymbolSummary{
+			Count:    s.TradeCount,
+			PnL:      s.NetPnL,
+			Notional: 0,
+			Wins:     0,
+		}
+	}
+	return out
+}
+
+// fetchBinanceDailyPnL 从币安 income 接口按"日"聚合最近 N 天 PnL。
+// 替代 loadDailyPnLCalendar（那个从 DB 的 daily_pnls 表读，依赖 StrategyPosition 是否完整）。
+// 返回字段格式跟 DailyPnLEntry 兼容，前端/routine 无感知。
+func fetchBinanceDailyPnL(ownerID uint, days int) []DailyPnLEntry {
+	if days <= 0 {
+		return nil
+	}
+	if stratMgr == nil || stratMgr.GetExchange() == nil {
+		return nil
+	}
+	bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange)
+	if !ok || bx.Market() != "usdm" {
+		return nil
+	}
+
+	// 拉 days+1 天的事件，最早一天可能被时区/边界裁掉，所以多拉 1 天兜底
+	now := time.Now()
+	since := now.AddDate(0, 0, -(days + 1))
+	events, err := bx.USDMIncomeHistory(ownerID, since, now, 1000)
+	if err != nil || len(events) == 0 {
+		return nil
+	}
+
+	// 按本地 day 聚合
+	loc := now.Location()
+	type bucket struct {
+		realized   float64
+		commission float64
+		funding    float64
+		trades     int
+	}
+	byDay := map[string]*bucket{}
+	for _, e := range events {
+		t := time.UnixMilli(e.Time).In(loc)
+		day := t.Format("2006-01-02")
+		b := byDay[day]
+		if b == nil {
+			b = &bucket{}
+			byDay[day] = b
+		}
+		switch e.IncomeType {
+		case "REALIZED_PNL":
+			b.realized += e.Income
+			b.trades++
+		case "COMMISSION":
+			b.commission += e.Income
+		case "FUNDING_FEE":
+			b.funding += e.Income
+		}
+	}
+
+	// 拼成连续 N 天的数组（即使某天无成交也要有占位行，cron 算 7d 累加才不会漏）
+	out := make([]DailyPnLEntry, 0, days)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	for i := 0; i < days; i++ {
+		d := today.AddDate(0, 0, -i)
+		key := d.Format("2006-01-02")
+		b := byDay[key]
+		entry := DailyPnLEntry{
+			Day:         key,
+			Trades:      0,
+			RealizedPnL: 0,
+		}
+		if b != nil {
+			// 净 PnL = 实现盈亏 + 手续费（负值）+ 资金费率
+			// 这样 cron 算 daily_7d_sum 自动是净值，跟前端日历语义一致
+			entry.Trades = b.trades
+			entry.RealizedPnL = roundMoney2(b.realized + b.commission + b.funding)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// roundMoney2 给 PnL 字段限定 2 位小数，避免 float64 拖尾。
+func roundMoney2(v float64) float64 {
+	return math.Round(v*100) / 100
 }
 
 // fetchBinanceContext 调用币安私有接口，把账户成交配对、按 symbol 汇总、

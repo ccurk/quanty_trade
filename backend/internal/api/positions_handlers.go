@@ -316,6 +316,50 @@ func ListPositions(c *gin.Context) {
 		}
 	}
 
+	// closed 历史仓位优先从币安拉（更准），失败再走 DB。
+	// 用 ?source=db 强制走 DB（调试用）；默认 binance。
+	if status == "closed" && c.Query("source") != "db" {
+		// 默认拉 48h 历史；前端要更长可加 ?hours=168 之类
+		hoursParam := 48
+		if v := strings.TrimSpace(c.Query("hours")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 720 {
+				hoursParam = n
+			}
+		}
+		if positions, fetchErr := closedPositionsFromBinance(uid, hoursParam); fetchErr == "" {
+			// 按 owner 过滤已经在 binance 里做了（key 是 ownerID）；admin 看其他人需 fallback DB
+			if userRole != "admin" || c.Query("source") == "binance_only" {
+				sort.Slice(positions, func(i, j int) bool { return positions[i].CloseTime.After(positions[j].CloseTime) })
+				if !usePaging {
+					c.JSON(http.StatusOK, positions)
+					return
+				}
+				total := len(positions)
+				start := (page - 1) * pageSize
+				if start > total {
+					start = total
+				}
+				end := start + pageSize
+				if end > total {
+					end = total
+				}
+				type resp struct {
+					Items      []exchange.Position `json:"items"`
+					Total      int                 `json:"total"`
+					Page       int                 `json:"page"`
+					PageSize   int                 `json:"page_size"`
+					DataSource string              `json:"data_source"`
+				}
+				c.JSON(http.StatusOK, resp{
+					Items: positions[start:end], Total: total, Page: page, PageSize: pageSize,
+					DataSource: "binance",
+				})
+				return
+			}
+		}
+		// fetchErr 非空 或 admin → fallback DB
+	}
+
 	query := database.DB.Model(&models.StrategyPosition{})
 	if userRole != "admin" {
 		query = query.Where("owner_id = ?", uid)
