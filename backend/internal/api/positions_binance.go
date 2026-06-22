@@ -53,7 +53,7 @@ func closedPositionsFromBinance(uid uint, hours int) ([]exchange.Position, strin
 	// 2. 每个 symbol 拉 userTrades 并按时间排序
 	type fill struct {
 		Time  int64
-		Side  string  // BUY / SELL
+		Side  string // BUY / SELL
 		Qty   float64
 		Price float64
 		PnL   float64
@@ -74,41 +74,98 @@ func closedPositionsFromBinance(uid uint, hours int) ([]exchange.Position, strin
 		sort.Slice(allFills[sym], func(i, j int) bool { return allFills[sym][i].Time < allFills[sym][j].Time })
 	}
 
-	// 3. 配对：同 side 累计开仓，异 side 且带 realized_pnl != 0 → 平仓事件
-	// 简化：一个 open + 一个 close = 一条 chain（不处理部分平仓后再加仓的复杂场景）
+	// 3. running-position FIFO 配对（替代旧的朴素 1开:1平 状态机，那个会丢单 + 方向错配）。
+	//    跟踪每个 symbol 的净持仓 qty：同向 fill 累计开仓（VWAP 进场价），反向 fill 平仓
+	//    （累计 realized + 手续费 + VWAP 出场价）。持仓回到 0 → 记一条完整 round-trip；
+	//    反向穿越 0 → 先平掉旧仓再用余量反向开新仓。支持部分平仓 / 加仓 / 反手。
 	type chain struct {
-		Symbol        string
-		OpenTime      int64
-		CloseTime     int64
-		OpenSide      string // BUY/SELL
-		OpenPrice     float64
-		Qty           float64
-		ClosePrice    float64
-		RealizedPnL   float64
-		TotalCommFee  float64
+		Symbol       string
+		OpenTime     int64
+		CloseTime    int64
+		OpenSide     string // BUY/SELL（开仓方向）
+		OpenPrice    float64
+		Qty          float64
+		ClosePrice   float64
+		RealizedPnL  float64
+		TotalCommFee float64
+	}
+	type rtState struct {
+		active        bool
+		openTime      int64
+		openSide      string
+		posQty        float64 // signed：+ 多 / - 空
+		entryQtyAbs   float64
+		entryNotional float64
+		closeQtyAbs   float64
+		closeNotional float64
+		realized      float64
+		commission    float64 // 负值
+		lastClose     int64
 	}
 	var chains []chain
 	for sym, fills := range allFills {
-		var openSt *fill
+		var st rtState
+		emit := func() {
+			if !st.active || st.closeQtyAbs <= 0 {
+				return
+			}
+			avgEntry := 0.0
+			if st.entryQtyAbs > 0 {
+				avgEntry = st.entryNotional / st.entryQtyAbs
+			}
+			avgClose := 0.0
+			if st.closeQtyAbs > 0 {
+				avgClose = st.closeNotional / st.closeQtyAbs
+			}
+			chains = append(chains, chain{
+				Symbol: sym, OpenTime: st.openTime, CloseTime: st.lastClose,
+				OpenSide: st.openSide, OpenPrice: avgEntry, Qty: st.closeQtyAbs,
+				ClosePrice: avgClose, RealizedPnL: st.realized, TotalCommFee: st.commission,
+			})
+		}
 		for i := range fills {
 			f := fills[i]
-			if openSt == nil {
-				openSt = &f
+			signed := f.Qty
+			if strings.EqualFold(f.Side, "SELL") {
+				signed = -f.Qty
+			}
+			if !st.active {
+				st = rtState{
+					active: true, openTime: f.Time, openSide: f.Side,
+					posQty: signed, entryQtyAbs: f.Qty, entryNotional: f.Qty * f.Price,
+					commission: f.Fee, realized: f.PnL,
+				}
 				continue
 			}
-			if f.Side != openSt.Side && f.PnL != 0 {
-				chains = append(chains, chain{
-					Symbol:       sym,
-					OpenTime:     openSt.Time,
-					CloseTime:    f.Time,
-					OpenSide:     openSt.Side,
-					OpenPrice:    openSt.Price,
-					Qty:          openSt.Qty,
-					ClosePrice:   f.Price,
-					RealizedPnL:  f.PnL,
-					TotalCommFee: openSt.Fee + f.Fee,
-				})
-				openSt = nil
+			st.commission += f.Fee
+			sameDir := (st.posQty > 0 && strings.EqualFold(f.Side, "BUY")) ||
+				(st.posQty < 0 && strings.EqualFold(f.Side, "SELL"))
+			if sameDir {
+				st.posQty += signed
+				st.entryQtyAbs += f.Qty
+				st.entryNotional += f.Qty * f.Price
+				continue
+			}
+			// 反向 fill = 平仓（可能部分 / 全平 / 反手穿越）
+			st.realized += f.PnL
+			closingQty := math.Min(f.Qty, math.Abs(st.posQty))
+			st.closeQtyAbs += closingQty
+			st.closeNotional += closingQty * f.Price
+			st.lastClose = f.Time
+			newPos := st.posQty + signed
+			if math.Abs(newPos) < 1e-12 {
+				emit()
+				st = rtState{}
+			} else if (st.posQty > 0) != (newPos > 0) {
+				// 反手穿越：旧仓全平 + 余量反向开新仓
+				emit()
+				rem := math.Abs(newPos)
+				st = rtState{
+					active: true, openTime: f.Time, openSide: f.Side,
+					posQty: newPos, entryQtyAbs: rem, entryNotional: rem * f.Price,
+				}
+			} else {
+				st.posQty = newPos // 部分平仓，方向不变
 			}
 		}
 	}

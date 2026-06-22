@@ -67,7 +67,7 @@ type optimizeAccountSnapshot struct {
 // optimizeBinanceSymbolStats 单 symbol 在窗口内的累计
 type optimizeBinanceSymbolStats struct {
 	Symbol      string  `json:"symbol"`
-	TradeCount  int     `json:"trade_count"`     // 平仓配对数
+	TradeCount  int     `json:"trade_count"` // 平仓配对数
 	RealizedPnL float64 `json:"realized_pnl"`
 	Commission  float64 `json:"commission"`
 	Funding     float64 `json:"funding"`
@@ -76,11 +76,11 @@ type optimizeBinanceSymbolStats struct {
 
 // optimizeBinanceHoldBucket 持仓时长分布桶
 type optimizeBinanceHoldBucket struct {
-	Label     string  `json:"label"`        // <1m / 1-5m / 5-15m / 15-60m / >60m
-	Count     int     `json:"count"`
-	WinCount  int     `json:"win_count"`
-	WinRate   float64 `json:"win_rate_pct"`
-	PnL       float64 `json:"pnl"`
+	Label    string  `json:"label"` // <1m / 1-5m / 5-15m / 15-60m / >60m
+	Count    int     `json:"count"`
+	WinCount int     `json:"win_count"`
+	WinRate  float64 `json:"win_rate_pct"`
+	PnL      float64 `json:"pnl"`
 }
 
 // optimizeBinanceContext 是从币安 API 拉的真实账户成交诊断。
@@ -90,10 +90,10 @@ type optimizeBinanceContext struct {
 	Balance          float64                      `json:"balance_usdt"`
 	AvailableBalance float64                      `json:"available_balance_usdt"`
 	OpenPositions    []optimizeOpenPosition       `json:"open_positions"`
-	IncomeTotals     map[string]float64           `json:"income_totals"`    // type -> sum
-	IncomeCounts     map[string]int               `json:"income_counts"`    // type -> n
-	BySymbol         []optimizeBinanceSymbolStats `json:"by_symbol"`        // realized pnl 排序
-	PairedTrades     optimizePairedSummary        `json:"paired_trades"`    // 开-平 配对统计
+	IncomeTotals     map[string]float64           `json:"income_totals"` // type -> sum
+	IncomeCounts     map[string]int               `json:"income_counts"` // type -> n
+	BySymbol         []optimizeBinanceSymbolStats `json:"by_symbol"`     // realized pnl 排序
+	PairedTrades     optimizePairedSummary        `json:"paired_trades"` // 开-平 配对统计
 	HoldDistribution []optimizeBinanceHoldBucket  `json:"hold_distribution"`
 	FetchedAt        time.Time                    `json:"fetched_at"`
 	FetchError       string                       `json:"fetch_error,omitempty"`
@@ -480,17 +480,22 @@ func fetchBinanceContext(ownerID uint, hours int) *optimizeBinanceContext {
 		return out.BySymbol[i].RealizedPnL < out.BySymbol[j].RealizedPnL
 	})
 
-	// 4) 按 symbol 拉 userTrades 并做开-平 配对（与脚本里的回测逻辑一致）
+	// 4) 拉 userTrades，用"已实现平仓事件"做权威聚合。
+	//    ⚠️ 旧实现用朴素 open/close 状态机配对：一次开仓有多笔 fill、一次平仓也有多笔 fill，
+	//       但状态机只把"1 个开 fill 配 1 个平 fill"，196 笔真实平仓事件被压成 ~13 个"配对"，
+	//       丢掉的多是亏损 churn，导致 net_pnl 系统性偏乐观（曾报 +$0.86 但真账 -$8.31）；
+	//       且平仓后剩余的反向 fill 被误当成"新开仓"，污染 long/short 归因。
+	//    ✅ 新实现：每一笔 realizedPnl != 0 的成交 = 一次真实结算事件；方向 = 平仓 fill 方向的反面。
+	//       口径与 income_totals 一致，routine 不必再绕开本字段手算。
 	type fillRow struct {
-		Symbol string
-		Time   int64
-		Side   string
-		Qty    float64
-		Price  float64
-		PnL    float64
-		Fee    float64
+		Time int64
+		Side string // BUY / SELL
+		Qty  float64
+		PnL  float64 // realizedPnl（开/加仓 fill 为 0）
+		Comm float64 // 正值手续费
 	}
 	allFills := map[string][]fillRow{}
+	var totalCommission float64
 	for sym := range symbolSet {
 		trades, err := bx.USDMUserTrades(ownerID, sym, since, now, 1000)
 		if err != nil {
@@ -498,151 +503,157 @@ func fetchBinanceContext(ownerID uint, hours int) *optimizeBinanceContext {
 			continue
 		}
 		for _, t := range trades {
+			c := math.Abs(t.Commission)
+			totalCommission += c
 			allFills[sym] = append(allFills[sym], fillRow{
-				Symbol: sym, Time: t.Time, Side: t.Side, Qty: t.Qty, Price: t.Price,
-				PnL: t.RealizedPnL, Fee: -math.Abs(t.Commission),
+				Time: t.Time, Side: t.Side, Qty: t.Qty, PnL: t.RealizedPnL, Comm: c,
 			})
 		}
 	}
 
-	// 配对：对每个 symbol，连续同 side 视为开仓，反向 side 视为平仓
-	type chain struct {
-		Sym      string
-		OpenTime int64
-		Dur      float64 // minutes
-		Side     string
-		PnL      float64
-		Fee      float64
-		Net      float64
-	}
-	var chains []chain
-	for sym, fills := range allFills {
-		sort.Slice(fills, func(i, j int) bool { return fills[i].Time < fills[j].Time })
-		var openState *fillRow
-		for i := range fills {
-			f := fills[i]
-			if openState == nil {
-				openState = &f
-				continue
+	// 4a) 权威 headline 指标：遍历所有"已实现平仓事件"（realizedPnl != 0）。
+	var realizedCount, wins, losses int
+	var grossRealized, sumWin, sumLoss float64
+	var longCnt, longWin, shortCnt, shortWin int
+	var longRealized, shortRealized float64
+	for _, fills := range allFills {
+		for _, f := range fills {
+			if f.PnL == 0 {
+				continue // 开仓 / 加仓 fill 不产生已实现盈亏
 			}
-			if f.Side != openState.Side && f.PnL != 0 {
-				durMin := float64(f.Time-openState.Time) / 60000.0
-				chains = append(chains, chain{
-					Sym:      sym,
-					OpenTime: openState.Time,
-					Dur:      durMin,
-					Side:     openState.Side,
-					PnL:      f.PnL,
-					Fee:      openState.Fee + f.Fee,
-					Net:      f.PnL + openState.Fee + f.Fee,
-				})
-				openState = nil
-			}
-		}
-	}
-
-	// 5) 配对统计 + 持仓时长分布
-	if len(chains) > 0 {
-		var wins, losses int
-		var sumWin, sumLoss, sumDur, gross, totalFee float64
-		var longCnt, longWin int
-		var shortCnt, shortWin int
-		var longNet, shortNet float64
-		buckets := []struct {
-			Label string
-			Lo    float64
-			Hi    float64
-		}{
-			{"<1m", 0, 1}, {"1-5m", 1, 5}, {"5-15m", 5, 15},
-			{"15-60m", 15, 60}, {">60m", 60, math.MaxFloat64},
-		}
-		bucketCount := make([]int, len(buckets))
-		bucketWin := make([]int, len(buckets))
-		bucketPnL := make([]float64, len(buckets))
-
-		for _, c := range chains {
-			gross += c.PnL
-			totalFee += c.Fee
-			sumDur += c.Dur
-			if c.PnL > 0 {
+			realizedCount++
+			grossRealized += f.PnL
+			if f.PnL > 0 {
 				wins++
-				sumWin += c.PnL
-			} else if c.PnL < 0 {
+				sumWin += f.PnL
+			} else {
 				losses++
-				sumLoss += c.PnL
+				sumLoss += f.PnL
 			}
-			if strings.EqualFold(c.Side, "BUY") {
+			// 方向 = 平仓 fill 方向的反面：SELL 平多 → long；BUY 平空 → short
+			if strings.EqualFold(f.Side, "SELL") {
 				longCnt++
-				longNet += c.Net
-				if c.PnL > 0 {
+				longRealized += f.PnL
+				if f.PnL > 0 {
 					longWin++
 				}
-			} else if strings.EqualFold(c.Side, "SELL") {
+			} else if strings.EqualFold(f.Side, "BUY") {
 				shortCnt++
-				shortNet += c.Net
-				if c.PnL > 0 {
+				shortRealized += f.PnL
+				if f.PnL > 0 {
 					shortWin++
 				}
 			}
-			for i, b := range buckets {
-				if c.Dur >= b.Lo && c.Dur < b.Hi {
-					bucketCount[i]++
-					bucketPnL[i] += c.PnL
-					if c.PnL > 0 {
-						bucketWin[i]++
+		}
+	}
+
+	funding := out.IncomeTotals["FUNDING_FEE"]
+	totalFees := -totalCommission + funding // 手续费为负，资金费率可正可负
+
+	p := &out.PairedTrades
+	p.PairCount = realizedCount
+	p.Wins = wins
+	p.Losses = losses
+	if realizedCount > 0 {
+		p.WinRatePct = float64(wins) / float64(realizedCount) * 100
+	}
+	if wins > 0 {
+		p.AvgWin = sumWin / float64(wins)
+	}
+	if losses > 0 {
+		p.AvgLoss = sumLoss / float64(losses)
+	}
+	if p.AvgLoss != 0 {
+		p.RewardRiskRatio = math.Abs(p.AvgWin / p.AvgLoss)
+	}
+	p.GrossPnL = grossRealized
+	p.TotalFees = totalFees
+	p.NetPnL = grossRealized + totalFees // 权威净值，与 income_totals 口径一致
+	if grossRealized != 0 {
+		p.FeeDragPct = math.Abs(totalFees) / math.Abs(grossRealized) * 100
+	}
+	if p.RewardRiskRatio > 0 {
+		p.BreakevenWinPct = 1.0 / (p.RewardRiskRatio + 1) * 100
+	}
+	// 注：long/short 用毛已实现盈亏拆分（不含按比例分摊的费用），加总 = gross。
+	p.LongCount = longCnt
+	p.LongNetPnL = longRealized
+	if longCnt > 0 {
+		p.LongWinRatePct = float64(longWin) / float64(longCnt) * 100
+	}
+	p.ShortCount = shortCnt
+	p.ShortNetPnL = shortRealized
+	if shortCnt > 0 {
+		p.ShortWinRatePct = float64(shortWin) / float64(shortCnt) * 100
+	}
+
+	// 5) 持仓时长分布：按 symbol 跟踪净持仓 qty。position 从 0 离开记开仓时刻，
+	//    回到 0 或反向穿越 0 记一段完整持仓，用该平仓 fill 的 realizedPnl 判定输赢。
+	buckets := []struct {
+		Label string
+		Lo    float64
+		Hi    float64
+	}{
+		{"<1m", 0, 1}, {"1-5m", 1, 5}, {"5-15m", 5, 15},
+		{"15-60m", 15, 60}, {">60m", 60, math.MaxFloat64},
+	}
+	bucketCount := make([]int, len(buckets))
+	bucketWin := make([]int, len(buckets))
+	bucketPnL := make([]float64, len(buckets))
+	var sumDur float64
+	var durCount int
+	for _, fills := range allFills {
+		sort.Slice(fills, func(i, j int) bool { return fills[i].Time < fills[j].Time })
+		var posQty float64
+		var openTime int64
+		for _, f := range fills {
+			signed := f.Qty
+			if strings.EqualFold(f.Side, "SELL") {
+				signed = -f.Qty
+			}
+			prev := posQty
+			if math.Abs(prev) < 1e-12 && signed != 0 {
+				openTime = f.Time
+			}
+			posQty += signed
+			// 持仓减少到 0 或反向穿越 0 → 记一段完整持仓
+			crossedZero := math.Abs(prev) >= 1e-12 && (math.Abs(posQty) < 1e-12 || (prev > 0) != (posQty > 0))
+			if crossedZero && f.PnL != 0 {
+				durMin := float64(f.Time-openTime) / 60000.0
+				if durMin < 0 {
+					durMin = 0
+				}
+				sumDur += durMin
+				durCount++
+				for i, b := range buckets {
+					if durMin >= b.Lo && durMin < b.Hi {
+						bucketCount[i]++
+						bucketPnL[i] += f.PnL
+						if f.PnL > 0 {
+							bucketWin[i]++
+						}
+						break
 					}
-					break
+				}
+				// 若反向开了新仓，新仓开仓时刻 = 此刻
+				if math.Abs(posQty) > 1e-12 {
+					openTime = f.Time
 				}
 			}
 		}
-		p := &out.PairedTrades
-		p.PairCount = len(chains)
-		p.Wins = wins
-		p.Losses = losses
-		if p.PairCount > 0 {
-			p.WinRatePct = float64(wins) / float64(p.PairCount) * 100
-			p.AvgHoldMinutes = sumDur / float64(p.PairCount)
+	}
+	if durCount > 0 {
+		p.AvgHoldMinutes = sumDur / float64(durCount)
+	}
+	for i, b := range buckets {
+		rate := 0.0
+		if bucketCount[i] > 0 {
+			rate = float64(bucketWin[i]) / float64(bucketCount[i]) * 100
 		}
-		if wins > 0 {
-			p.AvgWin = sumWin / float64(wins)
-		}
-		if losses > 0 {
-			p.AvgLoss = sumLoss / float64(losses)
-		}
-		if p.AvgLoss != 0 {
-			p.RewardRiskRatio = math.Abs(p.AvgWin / p.AvgLoss)
-		}
-		p.GrossPnL = gross
-		p.TotalFees = totalFee
-		p.NetPnL = gross + totalFee
-		if gross != 0 {
-			p.FeeDragPct = math.Abs(totalFee) / math.Abs(gross) * 100
-		}
-		// 净 breakeven 胜率：rr / (rr+1)，rr 是 R:R
-		if p.RewardRiskRatio > 0 {
-			p.BreakevenWinPct = 1.0 / (p.RewardRiskRatio + 1) * 100
-		}
-		p.LongCount = longCnt
-		p.LongNetPnL = longNet
-		if longCnt > 0 {
-			p.LongWinRatePct = float64(longWin) / float64(longCnt) * 100
-		}
-		p.ShortCount = shortCnt
-		p.ShortNetPnL = shortNet
-		if shortCnt > 0 {
-			p.ShortWinRatePct = float64(shortWin) / float64(shortCnt) * 100
-		}
-
-		for i, b := range buckets {
-			rate := 0.0
-			if bucketCount[i] > 0 {
-				rate = float64(bucketWin[i]) / float64(bucketCount[i]) * 100
-			}
-			out.HoldDistribution = append(out.HoldDistribution, optimizeBinanceHoldBucket{
-				Label: b.Label, Count: bucketCount[i], WinCount: bucketWin[i],
-				WinRate: rate, PnL: bucketPnL[i],
-			})
-		}
+		out.HoldDistribution = append(out.HoldDistribution, optimizeBinanceHoldBucket{
+			Label: b.Label, Count: bucketCount[i], WinCount: bucketWin[i],
+			WinRate: rate, PnL: bucketPnL[i],
+		})
 	}
 
 	return out
@@ -653,7 +664,7 @@ func fetchBinanceContext(ownerID uint, hours int) *optimizeBinanceContext {
 type applyOptimizationRequest struct {
 	StrategyID   string `json:"strategy_id" binding:"required"`
 	Code         string `json:"code" binding:"required"`
-	Name         string `json:"name"`         // optional, auto-generated
+	Name         string `json:"name"` // optional, auto-generated
 	Description  string `json:"description"`
 	BaselineHash string `json:"baseline_hash"` // optional, race detection
 }
