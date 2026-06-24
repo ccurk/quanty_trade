@@ -53,6 +53,16 @@ telegram:
   bot_token: "8531784709:AAF6gmy8CAoBzWTPmOfoLWrlG9Eabwa6Sng"
   poll_timeout_seconds: 30
 
+# 飞书/Lark 群机器人 ERROR 告警：ERROR 级日志实时推送到群。
+# 用法：飞书群 → 设置 → 群机器人 → 添加"自定义机器人" → 复制 webhook 填到 webhook_url。
+# 若机器人勾选了"签名校验"，把密钥填到 secret；否则留空。
+lark:
+  enabled: true
+  webhook_url: "https://open.larksuite.com/open-apis/bot/v2/hook/99e0617b-69b4-4632-af63-c00fd235e753" # https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx
+  secret: "" # 可选：开启签名校验才填
+  min_interval_seconds: 5 # 同类错误去重窗口
+  max_per_minute: 12 # 每分钟上限，超出聚合成一条
+
 ai:
   optimizer:
     provider: "openrouter"
@@ -61,4 +71,3 @@ ai:
     api_key: "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"
     http_referer: "https://quanty.qxyz.xyz"
     app_name: "QuantyTrade"
-

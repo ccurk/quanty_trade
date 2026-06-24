@@ -1,1 +1,202 @@
+/* ============================================================
+   QuantyTrade 前端入口样式
+   全局换肤：把 Tailwind 调色板重映射到 QuantyTrade 设计系统
+   （冷近黑 ink 阶 + 电青品牌 + 红绿涨跌语义 + Hanken/JetBrains/Space Grotesk）。
+   现有 394 处 Tailwind className 无需改动即自动获得暗色 quant-terminal 外观。
+   ============================================================ */
+
+/* 1) Webfonts（必须在最前）—— 设计系统指定的四套字族 */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Hanken+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+
+/* 2) Tailwind v4 */
 @import "tailwindcss";
+
+/* 3) 设计系统原始 tokens（--ink-* / --cyan-* / --bg-app / --text-* / qt-* 组件类） */
+@import "./styles/ds/colors.css";
+@import "./styles/ds/typography.css";
+@import "./styles/ds/spacing.css";
+@import "./styles/ds/effects.css";
+@import "./styles/ds/components.css";
+
+/* 4) Tailwind 调色板 → 设计系统语义。用字面 hex（设计师解析值），
+      让 bg-gray-900 / text-blue-500 / bg-green-500 / bg-red-500 等工具类
+      直接渲染成设计系统配色。 */
+@theme {
+  /* ---- 字体 ---- */
+  --font-sans: "Hanken Grotesk", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Noto Sans SC", ui-monospace, "SFMono-Regular", monospace;
+  --font-display: "Space Grotesk", "Noto Sans SC", system-ui, sans-serif;
+
+  /* ---- 中性 gray → ink 冷近黑阶 ---- */
+  --color-gray-50:  #EDF1F7;
+  --color-gray-100: #D2DAE6;
+  --color-gray-200: #A7B4C6;
+  --color-gray-300: #8090A4;
+  --color-gray-400: #5E7186;
+  --color-gray-500: #5E7186;  /* 121× secondary text：取 ink-400 保证暗底可读 */
+  --color-gray-600: #324052;
+  --color-gray-700: #25303F;
+  --color-gray-800: #161C28;
+  --color-gray-900: #0C1019;
+  --color-gray-950: #080B11;
+
+  /* slate / zinc / neutral 同步映射到 ink（避免遗漏） */
+  --color-slate-50:  #EDF1F7;
+  --color-slate-100: #D2DAE6;
+  --color-slate-200: #A7B4C6;
+  --color-slate-300: #8090A4;
+  --color-slate-400: #5E7186;
+  --color-slate-500: #43566C;
+  --color-slate-600: #324052;
+  --color-slate-700: #25303F;
+  --color-slate-800: #161C28;
+  --color-slate-900: #0C1019;
+  --color-slate-950: #080B11;
+  --color-zinc-700: #25303F;
+  --color-zinc-800: #161C28;
+  --color-zinc-900: #0C1019;
+  --color-zinc-950: #080B11;
+  --color-neutral-800: #161C28;
+  --color-neutral-900: #0C1019;
+  --color-neutral-950: #080B11;
+
+  /* ---- 主色 blue → 电青 cyan（品牌 / 链接 / focus） ---- */
+  --color-blue-50:  #E6FBFF;
+  --color-blue-100: #B5F1FB;
+  --color-blue-200: #8AE7F6;
+  --color-blue-300: #5FDDF2;
+  --color-blue-400: #34CFEC;
+  --color-blue-500: #16BEDC;
+  --color-blue-600: #0FA0BD;
+  --color-blue-700: #0B7E96;
+  --color-blue-800: #0A6275;
+  --color-blue-900: #0A3D49;
+  --color-blue-950: #06262E;
+  /* sky / cyan / indigo 一并归到品牌青 */
+  --color-sky-400:  #34CFEC;
+  --color-sky-500:  #16BEDC;
+  --color-sky-600:  #0FA0BD;
+  --color-cyan-400: #34CFEC;
+  --color-cyan-500: #16BEDC;
+  --color-cyan-600: #0FA0BD;
+  --color-indigo-400: #34CFEC;
+  --color-indigo-500: #16BEDC;
+  --color-indigo-600: #0FA0BD;
+
+  /* ---- 涨 / 盈利 green & emerald & teal → up ---- */
+  --color-green-50:  #E7FBF1;
+  --color-green-100: #C2F4DB;
+  --color-green-200: #94EBC0;
+  --color-green-300: #5FE3A4;
+  --color-green-400: #3DE08A;
+  --color-green-500: #1FD178;
+  --color-green-600: #15A862;
+  --color-green-700: #0F8A50;
+  --color-green-800: #0C5C38;
+  --color-green-900: #0A3322;
+  --color-green-950: #062216;
+  --color-emerald-400: #3DE08A;
+  --color-emerald-500: #1FD178;
+  --color-emerald-600: #15A862;
+  --color-emerald-900: #0A3322;
+  --color-teal-400: #3DE08A;
+  --color-teal-500: #1FD178;
+
+  /* ---- 跌 / 亏损 / 危险 red & rose → down ---- */
+  --color-red-50:  #FFECEE;
+  --color-red-100: #FFD2D8;
+  --color-red-200: #FFAAB5;
+  --color-red-300: #FF8B99;
+  --color-red-400: #FF6B7E;
+  --color-red-500: #FB4A5F;
+  --color-red-600: #D62F44;
+  --color-red-700: #B5283A;
+  --color-red-800: #7E2230;
+  --color-red-900: #3D1117;
+  --color-red-950: #280B0F;
+  --color-rose-400: #FF6B7E;
+  --color-rose-500: #FB4A5F;
+  --color-rose-600: #D62F44;
+  --color-rose-900: #3D1117;
+
+  /* ---- 警示 yellow / amber / orange → warn ---- */
+  --color-yellow-400: #FFC857;
+  --color-yellow-500: #F5A623;
+  --color-amber-400:  #FFC857;
+  --color-amber-500:  #F5A623;
+  --color-orange-400: #FFC857;
+  --color-orange-500: #F5A623;
+  --color-orange-600: #D98613;
+
+  /* ---- AI / 优化器 紫 purple / violet → violet accent ---- */
+  --color-purple-400: #A99BF9;
+  --color-purple-500: #8B7CF6;
+  --color-purple-600: #6F5FE0;
+  --color-violet-400: #A99BF9;
+  --color-violet-500: #8B7CF6;
+  --color-violet-600: #6F5FE0;
+
+  /* ---- 纯色 ---- */
+  --color-black: #05070B;  /* 最深 well / 遮罩 */
+  --color-white: #FFFFFF;
+}
+
+/* 5) Base 层 —— 暗色优先的终端底座 + 字体 + 滚动条 + 选区 */
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg-app);
+    color: var(--text-2);
+    font-family: var(--font-sans);
+    font-size: var(--fs-body);
+    line-height: var(--lh-normal);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* 标题用 display 字族 + 收紧字距，呼应 quant-desk 调性 */
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    letter-spacing: var(--ls-tight);
+  }
+
+  /* 等宽数字：价格 / 盈亏 / 代码 用 tabular */
+  code, kbd, pre, samp {
+    font-family: var(--font-mono);
+  }
+
+  ::selection {
+    background: var(--selection);
+  }
+
+  /* 细滚动条（暗色终端感） */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--ink-700) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--ink-700);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--ink-600);
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}

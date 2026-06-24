@@ -21,7 +21,17 @@ type Config struct {
 	Exchange ExchangeConfig `yaml:"exchange"`
 	Redis    RedisConfig    `yaml:"redis"`
 	Telegram TelegramConfig `yaml:"telegram"`
+	Lark     LarkConfig     `yaml:"lark"`
 	AI       AIConfig       `yaml:"ai"`
+}
+
+// LarkConfig 配置飞书/Lark 群机器人 ERROR 告警。
+type LarkConfig struct {
+	Enabled            bool   `yaml:"enabled"`
+	WebhookURL         string `yaml:"webhook_url"`
+	Secret             string `yaml:"secret"`               // 可选：群机器人开启签名校验时填
+	MinIntervalSeconds int    `yaml:"min_interval_seconds"` // 同类错误去重窗口（默认 5）
+	MaxPerMinute       int    `yaml:"max_per_minute"`       // 每分钟上限，超出聚合（默认 12）
 }
 
 type ServerConfig struct {
@@ -57,8 +67,8 @@ type AdminConfig struct {
 }
 
 type SecurityConfig struct {
-	JWTSecret           string   `yaml:"jwt_secret"`
-	ConfigEncryptionKey string   `yaml:"config_encryption_key"`
+	JWTSecret           string `yaml:"jwt_secret"`
+	ConfigEncryptionKey string `yaml:"config_encryption_key"`
 	// AllowedOrigins 用于 WebSocket Origin 校验，逗号分隔。
 	// 在生产模式下必须设置；非生产模式留空时退回 allow-all（便于本地开发）。
 	AllowedOrigins []string `yaml:"allowed_origins"`

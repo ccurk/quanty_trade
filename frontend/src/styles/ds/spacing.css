@@ -1,0 +1,31 @@
+/* ============================================================
+   QuantyTrade — Spacing & radii (4px base grid)
+   ============================================================ */
+:root {
+  --sp-0: 0;     /* @kind spacing */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+  --sp-8: 40px;
+  --sp-9: 48px;
+  --sp-10: 64px;
+  --sp-12: 80px;
+
+  /* Mixed-radius system: data surfaces stay crisp, cards soften. */
+  --r-xs: 3px;    /* table cells, chips, dense controls */
+  --r-sm: 5px;    /* inputs, buttons, badges */
+  --r-md: 8px;    /* default control / small card */
+  --r-lg: 12px;   /* cards, panels */
+  --r-xl: 16px;   /* hero / marketing cards */
+  --r-2xl: 22px;
+  --r-pill: 999px;
+
+  /* Layout rails */
+  --sidebar-w: 248px;        /* @kind other */
+  --topbar-h: 60px;          /* @kind other */
+  --container-max: 1320px;   /* @kind other */
+}

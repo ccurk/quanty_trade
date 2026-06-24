@@ -9,6 +9,7 @@ import (
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
+	"quanty_trade/internal/lark"
 	"quanty_trade/internal/logger"
 	"quanty_trade/internal/strategy"
 	"quanty_trade/internal/telegram"
@@ -45,6 +46,17 @@ func BuildStrategyManager(ctx context.Context, hub *ws.Hub) *strategy.Manager {
 
 func StartBackgroundJobs(ctx context.Context, mgr *strategy.Manager) {
 	api.SetManager(mgr)
+	// Lark 群机器人 ERROR 告警：注册 logger error sink，ERROR 日志实时推送。
+	if ln := lark.Start(lark.Config{
+		Enabled:            conf.C().Lark.Enabled,
+		WebhookURL:         conf.C().Lark.WebhookURL,
+		Secret:             conf.C().Lark.Secret,
+		MinIntervalSeconds: conf.C().Lark.MinIntervalSeconds,
+		MaxPerMinute:       conf.C().Lark.MaxPerMinute,
+	}); ln != nil {
+		lark.SendInfo(fmt.Sprintf("后端启动 · 端口 %d · 交易所 %s · ERROR 告警已接入",
+			conf.C().Server.Port, conf.C().Exchange.Name))
+	}
 	if svc := telegram.Start(ctx, mgr); svc != nil {
 		telegram.NotifySystemEvent(
 			"后端服务重启",

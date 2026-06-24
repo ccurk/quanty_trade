@@ -1,0 +1,63 @@
+/* ============================================================
+   QuantyTrade — Typography
+   Display: Space Grotesk · UI/body: Hanken Grotesk · Mono: JetBrains Mono
+   CJK fallback: Noto Sans SC (the product is Simplified Chinese).
+   ============================================================ */
+:root {
+  --font-display: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
+  --font-sans:    'Hanken Grotesk', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Noto Sans SC', ui-monospace, 'SFMono-Regular', monospace;
+
+  /* ---- Type scale (px) — tuned for a dense console ---- */
+  --fs-display: 44px;   /* hero / marketing figures */
+  --fs-h1: 30px;
+  --fs-h2: 23px;
+  --fs-h3: 18px;
+  --fs-h4: 15px;
+  --fs-body: 14px;      /* default UI body */
+  --fs-sm: 13px;
+  --fs-xs: 12px;
+  --fs-micro: 11px;     /* labels, eyebrows, table headers */
+
+  /* ---- Weights ---- */
+  --fw-regular: 400;   /* @kind font */
+  --fw-medium: 500;    /* @kind font */
+  --fw-semibold: 600;  /* @kind font */
+  --fw-bold: 700;      /* @kind font */
+  --fw-black: 800;     /* @kind font */
+
+  /* ---- Line heights ---- */
+  --lh-tight: 1.1;     /* @kind other */
+  --lh-snug: 1.3;      /* @kind other */
+  --lh-normal: 1.5;    /* @kind other */
+  --lh-relaxed: 1.65;  /* @kind other */
+
+  /* ---- Tracking ---- */
+  --ls-tight: -0.02em;  /* @kind other */
+  --ls-normal: 0;       /* @kind other */
+  --ls-wide: 0.04em;    /* @kind other */
+  --ls-eyebrow: 0.14em; /* @kind other */
+
+  /* tabular figures helper value */
+  --fvn-tabular: tabular-nums;  /* @kind other */
+}
+
+/* Utility classes the kits/cards can lean on (optional sugar). */
+.qt-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+.qt-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--ls-tight);
+}
+.qt-display {
+  font-family: var(--font-display);
+  letter-spacing: var(--ls-tight);
+  font-weight: var(--fw-bold);
+}

@@ -1,11 +1,45 @@
 package logger
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
+
+// ErrorSink 在每条 ERROR 级日志触发时被调用，参数是格式化后的消息（不含 "[ERROR]" 前缀）。
+// 约束：sink 必须极快且非阻塞——真正的工作（网络等）放到自己的 goroutine。
+// sink 内【绝不能】再调用 logger.Error*，否则无限循环。sink 的 panic 会被 recover。
+type ErrorSink func(msg string)
+
+var (
+	sinkMu     sync.RWMutex
+	errorSinks []ErrorSink
+)
+
+// AddErrorSink 注册一个 ERROR 钩子（如 Lark 告警）。可多次调用注册多个。
+func AddErrorSink(s ErrorSink) {
+	if s == nil {
+		return
+	}
+	sinkMu.Lock()
+	errorSinks = append(errorSinks, s)
+	sinkMu.Unlock()
+}
+
+func dispatchError(msg string) {
+	sinkMu.RLock()
+	sinks := errorSinks
+	sinkMu.RUnlock()
+	for _, s := range sinks {
+		func(fn ErrorSink) {
+			defer func() { _ = recover() }()
+			fn(msg)
+		}(s)
+	}
+}
 
 type Level int32
 
@@ -64,7 +98,9 @@ func Warnf(format string, args ...interface{}) {
 }
 
 func Errorf(format string, args ...interface{}) {
-	log.Printf("[ERROR] "+format, args...)
+	msg := fmt.Sprintf(format, args...)
+	log.Print("[ERROR] " + msg)
+	dispatchError(msg)
 }
 
 func Debug(args ...interface{}) {
@@ -89,7 +125,9 @@ func Warn(args ...interface{}) {
 }
 
 func Error(args ...interface{}) {
-	log.Print(append([]interface{}{"[ERROR] "}, args...)...)
+	msg := fmt.Sprint(args...)
+	log.Print("[ERROR] " + msg)
+	dispatchError(msg)
 }
 
 type TraceLogger struct {
@@ -134,9 +172,10 @@ func (t TraceLogger) Warnf(format string, args ...interface{}) {
 }
 
 func (t TraceLogger) Errorf(format string, args ...interface{}) {
-	if t.traceID == "" {
-		log.Printf("[ERROR] "+format, args...)
-		return
+	msg := fmt.Sprintf(format, args...)
+	if t.traceID != "" {
+		msg = "[trace=" + t.traceID + "] " + msg
 	}
-	log.Printf("[ERROR] [trace=%s] "+format, append([]interface{}{t.traceID}, args...)...)
+	log.Print("[ERROR] " + msg)
+	dispatchError(msg)
 }

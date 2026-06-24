@@ -51,6 +51,14 @@ telegram:
   bot_token: "8531784709:AAF6gmy8CAoBzWTPmOfoLWrlG9Eabwa6Sng"
   poll_timeout_seconds: 30
 
+# 飞书/Lark 群机器人 ERROR 告警（详见 conf_pro.yaml 注释）
+lark:
+  enabled: false
+  webhook_url: ""
+  secret: ""
+  min_interval_seconds: 5
+  max_per_minute: 12
+
 ai:
   optimizer:
     provider: "openrouter"

@@ -1,0 +1,120 @@
+/* ============================================================
+   QuantyTrade — Color system
+   Dark-first quant-desk terminal. Base ramps are raw values;
+   semantic aliases at the bottom are what you should USE in components.
+   A light theme is mapped under [data-theme="light"].
+   ============================================================ */
+:root {
+  /* ---- Ink neutrals (cool near-black → light slate) ---- */
+  --ink-1000: #05070B;  /* deepest — app backdrop wells */
+  --ink-950:  #080B11;  /* app background */
+  --ink-900:  #0C1019;  /* panel / sidebar */
+  --ink-850:  #11161F;  /* card surface */
+  --ink-800:  #161C28;  /* raised / hover surface */
+  --ink-750:  #1C2433;  /* input / inset */
+  --ink-700:  #25303F;  /* hairline-strong / divider on elevated */
+  --ink-600:  #324052;  /* border */
+  --ink-500:  #43566C;  /* faint icon / disabled stroke */
+  --ink-400:  #5E7186;
+  --ink-300:  #8090A4;
+  --ink-200:  #A7B4C6;
+  --ink-100:  #D2DAE6;
+  --ink-50:   #EDF1F7;
+
+  /* ---- Brand: electric cyan (interactive, links, focus) ---- */
+  --cyan-50:  #E6FBFF;
+  --cyan-100: #B5F1FB;
+  --cyan-300: #5FDDF2;
+  --cyan-400: #34CFEC;
+  --cyan-500: #16BEDC;  /* brand primary */
+  --cyan-600: #0FA0BD;
+  --cyan-700: #0B7E96;
+
+  /* ---- Market semantics ---- */
+  --up-400:   #3DE08A;
+  --up-500:   #1FD178;  /* long / profit / gain */
+  --up-600:   #15A862;
+  --down-400: #FF6B7E;
+  --down-500: #FB4A5F;  /* short / loss / sell */
+  --down-600: #D62F44;
+  --warn-400: #FFC857;
+  --warn-500: #F5A623;  /* caution / pending */
+  --info-500: #5B8DEF;  /* neutral info */
+  --violet-500: #8B7CF6; /* AI / optimizer accent */
+
+  /* ---- Pure ---- */
+  --white: #FFFFFF;
+  --black: #000000;
+
+  /* ============ SEMANTIC ALIASES (use these) ============ */
+  --bg-app:        var(--ink-950);
+  --bg-well:       var(--ink-1000);
+  --surface-1:     var(--ink-900);   /* sidebar, top chrome */
+  --surface-2:     var(--ink-850);   /* cards, panels */
+  --surface-3:     var(--ink-800);   /* hover / raised / popover */
+  --surface-input: var(--ink-750);
+  --surface-inset: var(--ink-1000);
+
+  --border:        var(--ink-600);
+  --border-soft:   var(--ink-700);
+  --border-strong: var(--ink-500);
+  --border-brand:  color-mix(in srgb, var(--cyan-500) 55%, transparent);
+
+  --text-1: var(--ink-50);    /* headings, key figures */
+  --text-2: var(--ink-200);   /* body */
+  --text-3: var(--ink-300);   /* secondary / labels */
+  --text-4: var(--ink-400);   /* muted / captions */
+  --text-faint: var(--ink-500);
+
+  --brand:        var(--cyan-500);
+  --brand-hover:  var(--cyan-400);
+  --brand-press:  var(--cyan-600);
+  --brand-fg:     #04141A;    /* text on brand fills */
+  --brand-soft:   color-mix(in srgb, var(--cyan-500) 14%, transparent);
+  --brand-ring:   color-mix(in srgb, var(--cyan-500) 45%, transparent);
+
+  --up:        var(--up-500);
+  --up-soft:   color-mix(in srgb, var(--up-500) 15%, transparent);
+  --down:      var(--down-500);
+  --down-soft: color-mix(in srgb, var(--down-500) 15%, transparent);
+  --warn:      var(--warn-500);
+  --warn-soft: color-mix(in srgb, var(--warn-500) 16%, transparent);
+  --info:      var(--info-500);
+  --info-soft: color-mix(in srgb, var(--info-500) 16%, transparent);
+  --ai:        var(--violet-500);
+  --ai-soft:   color-mix(in srgb, var(--violet-500) 16%, transparent);
+
+  --selection:  color-mix(in srgb, var(--cyan-500) 30%, transparent);
+}
+
+/* ===================== LIGHT THEME ===================== */
+[data-theme="light"] {
+  --bg-app:        #F4F6FA;
+  --bg-well:       #EBEFF5;
+  --surface-1:     #FFFFFF;
+  --surface-2:     #FFFFFF;
+  --surface-3:     #F4F6FA;
+  --surface-input: #FFFFFF;
+  --surface-inset: #F4F6FA;
+
+  --border:        #DCE3ED;
+  --border-soft:   #E8EDF4;
+  --border-strong: #C2CCDA;
+  --border-brand:  color-mix(in srgb, var(--cyan-600) 50%, transparent);
+
+  --text-1: #0D1623;
+  --text-2: #33415A;
+  --text-3: #5A6B85;
+  --text-4: #8493A8;
+  --text-faint: #A7B4C6;
+
+  --brand:       var(--cyan-600);
+  --brand-hover: var(--cyan-500);
+  --brand-press: var(--cyan-700);
+  --brand-fg:    #FFFFFF;
+  --brand-soft:  color-mix(in srgb, var(--cyan-500) 12%, transparent);
+
+  --up:   var(--up-600);
+  --down: var(--down-600);
+  --warn: #D98613;
+}
