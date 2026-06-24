@@ -517,10 +517,15 @@ func (m *Manager) onCandleStreamEvent(inst *StrategyInstance, sym string, event 
 		emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS dialing symbol=%s url=%s", sym, detail))
 	case "connected":
 		emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS connected symbol=%s url=%s", sym, detail))
+	// WS 重连类事件（connect_failed / disconnected / silent_disconnect）都有指数退避
+	// 自愈，属于可恢复的运维 churn，记 warn 不告警，避免刷爆 Lark 群。
+	// 真正可操作的故障（unmarshal=数据格式变了；unknown=代码缺口）才保留 error。
 	case "connect_failed":
-		emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS connect failed symbol=%s url=%s err=%v", sym, detail, err))
+		emitStrategyLog(inst, "warn", fmt.Sprintf("Binance WS connect failed symbol=%s url=%s err=%v", sym, detail, err))
 	case "disconnected":
-		emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS disconnected symbol=%s url=%s err=%v", sym, detail, err))
+		emitStrategyLog(inst, "warn", fmt.Sprintf("Binance WS disconnected symbol=%s url=%s err=%v", sym, detail, err))
+	case "silent_disconnect":
+		emitStrategyLog(inst, "warn", fmt.Sprintf("Binance WS silent disconnect symbol=%s %s（退避重连中，自愈）", sym, detail))
 	case "rx_raw_first":
 		emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS recv first raw symbol=%s %s", sym, detail))
 	case "rx_first":
