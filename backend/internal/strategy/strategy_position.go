@@ -10,13 +10,21 @@ import (
 	"quanty_trade/internal/bus"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
+	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 )
 
 func (m *Manager) runOrderWorker() {
 	for req := range m.orderCh {
 		func() {
-			defer func() { recover() }()
+			// 下单是最关键路径：panic（空指针 / sizing 除零等）以前被静默吞掉、零可见性。
+			// 现在记 ERROR（→ Lark 告警），方便立刻感知。
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Errorf("[ORDER WORKER PANIC] symbol=%s side=%s amount=%v panic=%v",
+						req.symbol, req.side, req.amount, r)
+				}
+			}()
 			m.placeOrderForInstance(req.inst, req.symbol, req.side, req.amount, req.price, req.takeProfit, req.stopLoss, req.signalID)
 		}()
 	}

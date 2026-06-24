@@ -167,22 +167,7 @@ func (n *Notifier) formatError(msg string) string {
 }
 
 func (n *Notifier) send(text string) {
-	payload := map[string]interface{}{
-		"msg_type": "text",
-		"content":  map[string]string{"text": text},
-	}
-	if s := strings.TrimSpace(n.cfg.Secret); s != "" {
-		tsSec := strconv.FormatInt(time.Now().Unix(), 10)
-		if sign, err := genSign(tsSec, s); err == nil {
-			payload["timestamp"] = tsSec
-			payload["sign"] = sign
-		}
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		log.Printf("[lark] marshal err=%v", err)
-		return
-	}
+	b := buildPayload(n.cfg, text)
 	req, err := http.NewRequest(http.MethodPost, n.cfg.WebhookURL, bytes.NewReader(b))
 	if err != nil {
 		log.Printf("[lark] build req err=%v", err)
@@ -199,6 +184,62 @@ func (n *Notifier) send(text string) {
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("[lark] non-200 status=%d", resp.StatusCode)
 	}
+}
+
+// buildPayload 构造 Lark 文本消息体（带可选签名）。
+func buildPayload(cfg Config, text string) []byte {
+	payload := map[string]interface{}{
+		"msg_type": "text",
+		"content":  map[string]string{"text": text},
+	}
+	if s := strings.TrimSpace(cfg.Secret); s != "" {
+		tsSec := strconv.FormatInt(time.Now().Unix(), 10)
+		if sign, err := genSign(tsSec, s); err == nil {
+			payload["timestamp"] = tsSec
+			payload["sign"] = sign
+		}
+	}
+	b, _ := json.Marshal(payload)
+	return b
+}
+
+// ─── 同步告警：可在异步 Start 之前使用（如启动期 DB 致命错误，那时 loop 还没起） ───
+
+var (
+	syncMu     sync.Mutex
+	syncCfg    Config
+	syncClient = &http.Client{Timeout: 6 * time.Second}
+)
+
+// Configure 存一份配置，使 AlertSync 在 Start 之前也能用（启动早期告警）。
+// main 在 database.InitDB 之前调用它。
+func Configure(cfg Config) {
+	syncMu.Lock()
+	syncCfg = cfg
+	syncMu.Unlock()
+}
+
+// AlertSync 同步、阻塞、尽力发一条告警。未启用/无 webhook 时静默 no-op。
+// 适合在进程即将退出（log.Fatal）前调用，确保消息真的发出去。
+func AlertSync(text string) {
+	syncMu.Lock()
+	cfg := syncCfg
+	syncMu.Unlock()
+	if !cfg.Enabled || strings.TrimSpace(cfg.WebhookURL) == "" {
+		return
+	}
+	b := buildPayload(cfg, text)
+	req, err := http.NewRequest(http.MethodPost, cfg.WebhookURL, bytes.NewReader(b))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := syncClient.Do(req)
+	if err != nil {
+		log.Printf("[lark] sync send err=%v", err)
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 // SendInfo 主动发一条非错误通知（如服务启动）。Lark 未启用时静默忽略。

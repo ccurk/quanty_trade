@@ -11,14 +11,32 @@ import (
 	"quanty_trade/internal/app"
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
+	"quanty_trade/internal/lark"
 	"quanty_trade/internal/logger"
 	"quanty_trade/internal/ws"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
+
+// customRecovery 捕获任意 HTTP handler 的 panic，记 ERROR（→ 进 Lark 告警），返回 500。
+// 替代 gin.Recovery()（后者只写 stderr，不进我们的 logger，因此不告警）。
+func customRecovery() gin.HandlerFunc {
+	return gin.CustomRecovery(func(c *gin.Context, recovered any) {
+		stack := debug.Stack()
+		const maxStack = 2000
+		st := string(stack)
+		if len(st) > maxStack {
+			st = st[:maxStack] + " …(truncated)"
+		}
+		logger.Errorf("[HTTP PANIC] %s %s panic=%v\n%s",
+			c.Request.Method, c.Request.URL.Path, recovered, st)
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+	})
+}
 
 func initLogging() {
 	c := conf.C()
@@ -86,6 +104,16 @@ func main() {
 	// release 模式下还要求 ALLOWED_ORIGINS 非空。
 	conf.MustValidateSecurity()
 
+	// 先配置 Lark 同步告警通道，使启动期（DB 初始化）的致命错误也能推送。
+	// 异步告警 loop 在 app.StartBackgroundJobs 里另行启动。
+	lark.Configure(lark.Config{
+		Enabled:            conf.C().Lark.Enabled,
+		WebhookURL:         conf.C().Lark.WebhookURL,
+		Secret:             conf.C().Lark.Secret,
+		MinIntervalSeconds: conf.C().Lark.MinIntervalSeconds,
+		MaxPerMinute:       conf.C().Lark.MaxPerMinute,
+	})
+
 	// Initialize Database
 	database.InitDB()
 
@@ -95,7 +123,7 @@ func main() {
 
 	r := gin.New()
 	r.Use(gin.Logger())
-	r.Use(gin.Recovery())
+	r.Use(customRecovery()) // HTTP handler panic → logger.Errorf → Lark 告警
 	r.Use(api.TraceMiddleware())
 	r.Use(api.APILogger()) // Global API Logging
 	r.Use(api.CORSMiddleware())
@@ -134,10 +162,10 @@ func main() {
 		// 用于"AI 优化过后想用回手动模板"的场景。
 		protected.POST("/strategies/:id/unbind-version", api.UnbindStrategyVersion)
 		// Bot/admin 用：精细化操控 strategy。每个动作都自动写 strategy_audit_logs。
-		protected.PATCH("/strategies/:id", api.PatchStrategyMeta)                          // 改 name 等顶层字段
+		protected.PATCH("/strategies/:id", api.PatchStrategyMeta)                            // 改 name 等顶层字段
 		protected.DELETE("/strategies/:id/blacklist/:symbol", api.RemoveSymbolFromBlacklist) // 释放单个黑名单
-		protected.POST("/strategies/:id/rollback", api.RollbackStrategyTemplate)            // 回滚到上一版 template
-		protected.POST("/strategies/:id/cancel-orders", api.CancelStrategyOrders)           // 紧急取消委托
+		protected.POST("/strategies/:id/rollback", api.RollbackStrategyTemplate)             // 回滚到上一版 template
+		protected.POST("/strategies/:id/cancel-orders", api.CancelStrategyOrders)            // 紧急取消委托
 
 		// Positions
 		protected.GET("/positions", api.ListPositions)

@@ -6,6 +6,7 @@ import (
 
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
+	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 )
 
@@ -66,7 +67,11 @@ func (m *Manager) StopStrategy(id string, force bool) error {
 func (m *Manager) runStartWorker() {
 	for id := range m.startCh {
 		func() {
-			defer func() { recover() }()
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Errorf("[START WORKER PANIC] id=%s panic=%v", id, r)
+				}
+			}()
 			if err := m.startStrategyNow(id); err != nil {
 				m.markStrategyStartFailed(id, err)
 			}
@@ -77,7 +82,11 @@ func (m *Manager) runStartWorker() {
 func (m *Manager) runStopWorker() {
 	for req := range m.stopCh {
 		func() {
-			defer func() { recover() }()
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Errorf("[STOP WORKER PANIC] id=%s force=%v panic=%v", req.id, req.force, r)
+				}
+			}()
 			if err := m.stopStrategyNow(req.id, req.force); err != nil {
 				m.markStrategyStopFailed(req.id, err)
 			}

@@ -7,6 +7,7 @@ import (
 	"log"
 	"quanty_trade/internal/auth"
 	"quanty_trade/internal/conf"
+	"quanty_trade/internal/lark"
 	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 	"strings"
@@ -15,6 +16,14 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+// fatalAlert 在进程因致命启动错误退出前，尽力把消息推到 Lark，再 log.Fatal。
+// 启动期（DB 初始化）异步告警 loop 还没起，所以走 lark.AlertSync（已由 main 提前 Configure）。
+func fatalAlert(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	lark.AlertSync("🚨 QuantyTrade 启动失败 · " + msg)
+	log.Fatal(msg)
+}
 
 // generateRandomPassword 生成 n 字符长度的随机密码（base64-url-safe，无填充）。
 // 用 crypto/rand 保证不可预测。n 至少 24，否则 base64 截断后熵不足。
@@ -26,7 +35,7 @@ func generateRandomPassword(n int) string {
 	b := make([]byte, (n*3+3)/4)
 	if _, err := rand.Read(b); err != nil {
 		// crypto/rand 失败极罕见，但发生时绝不退回弱密码。
-		log.Fatalf("crypto/rand.Read failed: %v", err)
+		fatalAlert("crypto/rand.Read failed: %v", err)
 	}
 	s := base64.RawURLEncoding.EncodeToString(b)
 	if len(s) > n {
@@ -76,12 +85,12 @@ func InitDB() {
 	}
 
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		fatalAlert("Failed to connect to database: %v", err)
 	}
 
 	// Migrate user table first so we can bootstrap admin user safely.
 	if err := DB.AutoMigrate(&models.User{}); err != nil {
-		log.Fatal("Failed to migrate database:", err)
+		fatalAlert("Failed to migrate database: %v", err)
 	}
 
 	adminUsername := c.Admin.Username
@@ -104,7 +113,7 @@ func InitDB() {
 		}
 		hashedPassword, herr := auth.HashPassword(pw)
 		if herr != nil {
-			log.Fatalf("Failed to hash initial admin password: %v", herr)
+			fatalAlert("Failed to hash initial admin password: %v", herr)
 		}
 		admin = models.User{
 			Username: adminUsername,
@@ -112,7 +121,7 @@ func InitDB() {
 			Role:     models.RoleAdmin,
 		}
 		if err := DB.Create(&admin).Error; err != nil {
-			log.Fatalf("Failed to create initial admin user: %v", err)
+			fatalAlert("Failed to create initial admin user: %v", err)
 		}
 		if pwSource == "auto-generated (random)" {
 			log.Printf("============================================================")
@@ -127,7 +136,7 @@ func InitDB() {
 	} else if adminPassword != "" {
 		hashedPassword, herr := auth.HashPassword(adminPassword)
 		if herr != nil {
-			log.Fatalf("Failed to hash admin password update: %v", herr)
+			fatalAlert("Failed to hash admin password update: %v", herr)
 		}
 		DB.Model(&admin).Updates(map[string]interface{}{
 			"password": hashedPassword,
@@ -154,7 +163,7 @@ func InitDB() {
 		&models.TelegramBotState{},
 	)
 	if err != nil {
-		log.Fatal("Failed to migrate database:", err)
+		fatalAlert("Failed to migrate database: %v", err)
 	}
 
 	if dbType == "mysql" {
