@@ -72,8 +72,14 @@ func (m *Manager) waitProcessLoop(inst *StrategyInstance) {
 	inst.RuntimePath = ""
 	inst.RuntimeGenerated = false
 	inst.RuntimeKeep = false
+	// killedByUs / stopping = 我们主动停的（routine 改配置重启、健康检查重启、删除等），
+	// 不是进程自己崩溃。读后清零 killedByUs，避免下一次真崩溃被误判为主动停。
+	intentional := inst.killedByUs || inst.stopping
+	inst.killedByUs = false
 	inst.mu.Unlock()
-	if err != nil && runtimeGenerated && strings.TrimSpace(runtimePath) != "" {
+
+	// 只有"真崩溃"才保留 runtime 脚本 + 记 error；主动停就正常清理、不告警。
+	if !intentional && err != nil && runtimeGenerated && strings.TrimSpace(runtimePath) != "" {
 		runtimeKeep = true
 		emitStrategyLog(inst, "error", fmt.Sprintf("Strategy crashed; runtime script kept path=%s", runtimePath))
 	}
@@ -85,12 +91,18 @@ func (m *Manager) waitProcessLoop(inst *StrategyInstance) {
 	stopping := inst.stopping
 	active := inst.Status == StatusRunning || inst.Status == StatusStarting
 	inst.mu.Unlock()
-	if active {
-		m.setStrategyStatus(inst, StatusError)
+
+	if intentional || stopping {
+		// 主动停/重启：状态置 Stopped（而非 Error），不告警、不自动重启。
+		if active {
+			m.setStrategyStatus(inst, StatusStopped)
+		}
+		return
 	}
 
-	if stopping {
-		return
+	// 到这里才是真正的意外退出 → 告警 + 自动重启
+	if active {
+		m.setStrategyStatus(inst, StatusError)
 	}
 	if err != nil {
 		logger.Errorf("[STRATEGY EXIT] id=%s owner=%d err=%v", inst.ID, inst.OwnerID, err)

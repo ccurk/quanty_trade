@@ -178,7 +178,11 @@ func (m *Manager) stopStrategyNow(id string, force bool) error {
 		inst.candleStops = nil
 	}
 	if inst.cmd != nil && inst.cmd.Process != nil {
+		// 标记"主动杀"：exit handler 据此判定为正常停止/重启，不告警 signal:killed。
+		// 持有 inst.mu 时设置，exit handler 拿到同一把锁后才能读，无竞态。
+		inst.killedByUs = true
 		if err := inst.cmd.Process.Kill(); err != nil {
+			inst.killedByUs = false
 			inst.stopping = false
 			return err
 		}

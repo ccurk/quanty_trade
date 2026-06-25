@@ -345,6 +345,7 @@ func (m *Manager) activateStartedStrategy(inst *StrategyInstance, plan *strategy
 	inst.startedAt = time.Now()
 	inst.lastHB = time.Time{}
 	inst.stopping = false
+	inst.killedByUs = false
 	inst.restarting = false
 	inst.mu.Unlock()
 	m.setStrategyStatus(inst, StatusStarting)

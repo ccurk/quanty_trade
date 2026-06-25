@@ -498,11 +498,14 @@ type StrategyInstance struct {
 
 	mgr *Manager
 
-	redisCancel      context.CancelFunc
-	bootID           string
-	startedAt        time.Time
-	lastHB           time.Time
-	stopping         bool
+	redisCancel context.CancelFunc
+	bootID      string
+	startedAt   time.Time
+	lastHB      time.Time
+	stopping    bool
+	// killedByUs：我们主动 Kill 子进程（停止/重启）时置 true，由 exit handler 读后清零。
+	// 用来区分"主动停"与"进程自己崩溃"，避免每次 routine 改配置重启都误报 signal:killed。
+	killedByUs       bool
 	restarting       bool
 	resync           bool
 	resyncLogBootID  string
@@ -1386,6 +1389,7 @@ func (m *Manager) RemoveStrategy(id string) error {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 	if inst.Status == StatusRunning {
+		inst.killedByUs = true
 		inst.cmd.Process.Kill()
 	}
 	return nil
@@ -1542,6 +1546,7 @@ func (m *Manager) Clear() {
 	defer m.mu.Unlock()
 	for _, inst := range m.instances {
 		if inst.Status == StatusRunning {
+			inst.killedByUs = true
 			inst.cmd.Process.Kill()
 		}
 	}
