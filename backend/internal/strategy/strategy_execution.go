@@ -242,6 +242,23 @@ func resolveHungerMode(inst *StrategyInstance) (bool, time.Duration, float64, fl
 	return enabled, time.Duration(afterMinutes) * time.Minute, tpPct, slPct
 }
 
+// resolveMaxHoldTimeout returns the hard per-position max holding time. A
+// position that has been open at least this long is force-closed regardless of
+// PnL by the quick-trade monitor (unlike hunger mode, which only tightens TP/SL
+// and still waits for a price condition). 0 (the default) disables it —
+// force-closing is destructive, so it is strictly opt-in via config
+// max_hold_minutes.
+func resolveMaxHoldTimeout(inst *StrategyInstance) time.Duration {
+	if inst == nil {
+		return 0
+	}
+	minutes := int(getNumber(inst.Config["max_hold_minutes"]))
+	if minutes <= 0 {
+		return 0
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
 func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.BinanceExchange, sym string) error {
 	m.stopPositionTPStopMonitor(inst, sym)
 	var pos models.StrategyPosition

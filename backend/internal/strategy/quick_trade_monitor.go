@@ -73,13 +73,34 @@ func (m *Manager) quickTradeTick() {
 			if inst == nil {
 				continue
 			}
-			enabled, after, hungerTPPct, hungerSLPct := resolveHungerMode(inst)
-			if !enabled || after <= 0 || r.OpenTime.IsZero() || now.Sub(r.OpenTime) < after {
-				continue
-			}
 			symKey := strings.ToUpper(r.Symbol)
 			pos, ok := posBySymbol[symKey]
 			if !ok {
+				continue // 币安上已无此持仓 → 不处理
+			}
+
+			// —— 硬性最大持仓超时：到点无条件平仓（不看盈亏），优先于饥饿模式 ——
+			// 持仓时长以币安 updateTime(pos.OpenTime) 为准，更准确且确认仓位真实存在；
+			// 币安时间缺失时回退本地 open_time。
+			binanceOpen := pos.OpenTime
+			if binanceOpen.IsZero() {
+				binanceOpen = r.OpenTime
+			}
+			if maxHold := resolveMaxHoldTimeout(inst); maxHold > 0 && !binanceOpen.IsZero() && now.Sub(binanceOpen) >= maxHold {
+				if !m.tryMarkQuickClose(uid, symKey, now) {
+					continue
+				}
+				emitStrategyLog(inst, "info", fmt.Sprintf("硬性持仓超时：持仓时长=%s ≥ %s symbol=%s roi=%0.4f%% pnl=%0.4f，无条件平仓", now.Sub(binanceOpen).Round(time.Second), maxHold, r.Symbol, pos.ReturnRate, pos.UnrealizedPnL))
+				if err := m.closePositionForInstance(inst, r.Symbol, "max_hold_timeout", ""); err != nil {
+					m.releaseQuickClose(uid, symKey)
+					emitStrategyLog(inst, "error", fmt.Sprintf("硬性持仓超时平仓失败 symbol=%s err=%v", r.Symbol, err))
+				}
+				continue
+			}
+
+			// —— 软性饥饿模式（原有逻辑，未改动，仍以本地 open_time 计时）——
+			enabled, after, hungerTPPct, hungerSLPct := resolveHungerMode(inst)
+			if !enabled || after <= 0 || r.OpenTime.IsZero() || now.Sub(r.OpenTime) < after {
 				continue
 			}
 			roi := pos.ReturnRate

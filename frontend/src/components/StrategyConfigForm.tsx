@@ -297,6 +297,10 @@ export function StrategyConfigForm({
           <input type="number" value={config.max_trades_per_day} onChange={(e) => onChange({ ...config, max_trades_per_day: Number(e.target.value) })} className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`} />
         </div>
         <div>
+          <label className="block text-sm font-medium text-gray-500 mb-2">持仓超时分钟(0=关)</label>
+          <input type="number" min={0} value={config.max_hold_minutes} onChange={(e) => onChange({ ...config, max_hold_minutes: Number(e.target.value) })} className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`} />
+        </div>
+        <div>
           <label className="block text-sm font-medium text-gray-500 mb-2">预热 K 线</label>
           <input type="number" value={config.warmup_bars} onChange={(e) => onChange({ ...config, warmup_bars: Number(e.target.value) })} className={`w-full px-4 py-2.5 rounded-xl border transition focus:ring-2 focus:ring-blue-500 outline-none ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200'}`} />
         </div>

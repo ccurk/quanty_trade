@@ -12,6 +12,7 @@ export type StrategyFormConfig = {
   max_consecutive_entries_per_symbol: number;
   symbol_reentry_cooldown_minutes: number;
   max_trades_per_day: number;
+  max_hold_minutes: number;
   warmup_bars: number;
   auto_symbols: boolean;
   symbol_select_mode: string;
@@ -103,6 +104,7 @@ export const createDefaultStrategyConfig = (): StrategyFormConfig => ({
   max_consecutive_entries_per_symbol: 0,
   symbol_reentry_cooldown_minutes: 0,
   max_trades_per_day: 3,
+  max_hold_minutes: 0,
   warmup_bars: 100,
   auto_symbols: false,
   symbol_select_mode: 'manual',
@@ -143,6 +145,7 @@ export const strategyConfigFromExisting = (cfg: Record<string, unknown>): Strate
     max_consecutive_entries_per_symbol: getCfgNumber(cfg, 'max_consecutive_entries_per_symbol', 0),
     symbol_reentry_cooldown_minutes: getCfgNumber(cfg, 'symbol_reentry_cooldown_minutes', 0),
     max_trades_per_day: getCfgNumber(cfg, 'max_trades_per_day', 3),
+    max_hold_minutes: getCfgNumber(cfg, 'max_hold_minutes', 0),
     warmup_bars: getCfgNumber(cfg, 'warmup_bars', 100),
     auto_symbols: getCfgBool(cfg, 'auto_symbols', false),
     symbol_select_mode: getCfgString(cfg, 'symbol_select_mode', 'manual'),
@@ -216,6 +219,7 @@ export const buildStrategyConfigPayload = (
     max_consecutive_entries_per_symbol: Number(cfg.max_consecutive_entries_per_symbol) || 0,
     symbol_reentry_cooldown_minutes: Number(cfg.symbol_reentry_cooldown_minutes) || 0,
     max_trades_per_day: Number(cfg.max_trades_per_day) || 0,
+    max_hold_minutes: Number(cfg.max_hold_minutes) || 0,
     warmup_bars: Number(cfg.warmup_bars) || 0,
     auto_symbols: cfg.auto_symbols,
     symbol_select_mode: cfg.symbol_select_mode,
