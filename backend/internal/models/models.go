@@ -61,7 +61,7 @@ type StrategyTemplate struct {
 	// IsEnabled allows admins/authors to disable a template without deleting it.
 	IsEnabled bool `gorm:"default:true" json:"is_enabled"`
 	// Code stores the template source for in-browser editing.
-	Code string `gorm:"type:text" json:"code"`
+	Code string `gorm:"type:mediumtext" json:"code"`
 	// CreatedAt is the row creation time.
 	CreatedAt time.Time `json:"created_at"`
 	// UpdatedAt is the last update time.
@@ -271,6 +271,9 @@ type StrategyPosition struct {
 	AvgPrice   float64 `json:"avg_price"`
 	TakeProfit float64 `json:"take_profit"`
 	StopLoss   float64 `json:"stop_loss"`
+	// AtrAbs is the absolute ATR captured at entry, used by exit engineering
+	// (breakeven/trailing). 0 when unknown (falls back to |entry-sl|/atr_sl_mult).
+	AtrAbs float64 `json:"atr_abs"`
 	// ClosedQty is the cumulative closed quantity across partial closes.
 	ClosedQty float64 `json:"closed_qty"`
 	// AvgClosePrice is the volume-weighted average close price.
@@ -369,7 +372,7 @@ type StrategyVersion struct {
 	VersionHash string `gorm:"type:varchar(64);index" json:"version_hash"`
 	CodeHash    string `gorm:"type:varchar(64);index" json:"code_hash"`
 	CodeSize    int    `json:"code_size"`
-	Code        string `gorm:"type:text" json:"code"`
+	Code        string `gorm:"type:mediumtext" json:"code"`
 
 	Source    string `gorm:"type:varchar(32);index" json:"source"`
 	Trigger   string `gorm:"type:varchar(32)" json:"trigger"`

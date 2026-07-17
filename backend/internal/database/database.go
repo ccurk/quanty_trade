@@ -167,6 +167,11 @@ func InitDB() {
 	}
 
 	if dbType == "mysql" {
+		// Widen strategy code columns TEXT(64KB) -> MEDIUMTEXT(16MB). GORM
+		// AutoMigrate does not reliably widen an existing TEXT column, and a
+		// >64KB code write would otherwise be silently truncated by MySQL.
+		_ = DB.Exec("ALTER TABLE strategy_templates MODIFY code MEDIUMTEXT").Error
+		_ = DB.Exec("ALTER TABLE strategy_versions MODIFY code MEDIUMTEXT").Error
 		_ = DB.Exec(`
 			UPDATE strategy_templates
 			SET

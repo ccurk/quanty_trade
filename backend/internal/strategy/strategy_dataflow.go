@@ -450,6 +450,14 @@ func (m *Manager) onExchangeCandle(inst *StrategyInstance, redisBus *bus.RedisBu
 		"close":     candle.Close,
 		"volume":    candle.Volume,
 	}
+	var extra map[string]interface{}
+	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok {
+		extra = map[string]interface{}{
+			"oi_change_pct": bx.OIChangePct(sym),
+			"funding_rate":  bx.FundingRate(sym),
+			"ls_ratio":      bx.LSRatio(sym),
+		}
+	}
 	pubErr := redisBus.PublishCandle(context.Background(), bus.CandleMessage{
 		StrategyID: inst.ID,
 		Symbol:     sym,
@@ -459,6 +467,7 @@ func (m *Manager) onExchangeCandle(inst *StrategyInstance, redisBus *bus.RedisBu
 		Low:        candle.Low,
 		Close:      candle.Close,
 		Volume:     candle.Volume,
+		Extra:      extra,
 	})
 	if pubErr != nil {
 		logger.Errorf("[REDIS PUBLISH ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, pubErr)

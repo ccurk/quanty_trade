@@ -520,6 +520,64 @@ export function StrategyConfigForm({
       </div>
 
       <div>
+        <label className="block text-sm font-medium text-gray-500 mb-2">出场管理（保本 / 移动止盈）</label>
+        <div className={`rounded-2xl border p-4 grid grid-cols-1 sm:grid-cols-2 gap-4 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">保本触发 ATR 倍数 breakeven_trigger_atr</label>
+            <input
+              type="number"
+              step="0.1"
+              min="0"
+              value={config.breakeven_trigger_atr}
+              onChange={(e) => onChange({ ...config, breakeven_trigger_atr: Number(e.target.value) || 0 })}
+              className={`w-full px-4 py-2.5 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+            />
+            <div className="mt-1 text-xs text-gray-500">0=关。浮盈达 N×ATR 后把止损移到保本价（含手续费缓冲）。建议 1.0。</div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">移动止盈 trailing_enabled</label>
+            <button
+              type="button"
+              onClick={() => onChange({ ...config, trailing_enabled: !config.trailing_enabled })}
+              className={`w-full px-3 py-2 rounded-xl text-sm font-bold border transition ${
+                config.trailing_enabled
+                  ? (isDarkMode ? 'bg-green-900/30 border-green-700 text-green-200' : 'bg-green-50 border-green-300 text-green-800')
+                  : (isDarkMode ? 'bg-gray-900 border-gray-800 text-gray-400' : 'bg-white border-gray-200 text-gray-600')
+              }`}
+            >
+              {config.trailing_enabled ? '✓ 已开启' : '关闭'}
+            </button>
+            <div className="mt-1 text-xs text-gray-500">用交易所原生移动止盈替代固定止盈；新币不支持时自动回退固定止盈。</div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">回调率 trailing_callback_pct (%)</label>
+            <input
+              type="number"
+              step="0.1"
+              min="0.1"
+              max="10"
+              value={config.trailing_callback_pct}
+              onChange={(e) => onChange({ ...config, trailing_callback_pct: Number(e.target.value) || 0 })}
+              className={`w-full px-4 py-2.5 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+            />
+            <div className="mt-1 text-xs text-gray-500">Binance callbackRate，0.1~10。价格从最优回撤此比例即平。默认 1.5。</div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">激活 ATR 倍数 trailing_activation_atr</label>
+            <input
+              type="number"
+              step="0.1"
+              min="0"
+              value={config.trailing_activation_atr}
+              onChange={(e) => onChange({ ...config, trailing_activation_atr: Number(e.target.value) || 0 })}
+              className={`w-full px-4 py-2.5 rounded-xl border text-sm transition outline-none ${isDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-200 text-gray-900'}`}
+            />
+            <div className="mt-1 text-xs text-gray-500">浮盈达 N×ATR 后才激活移动止盈。默认 2.0。</div>
+          </div>
+        </div>
+      </div>
+
+      <div>
         <label className="block text-sm font-medium text-gray-500 mb-2">日志详细程度</label>
         <div className={`rounded-2xl border p-4 ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-gray-50'}`}>
           <select

@@ -37,6 +37,11 @@ export type StrategyFormConfig = {
   allowed_sides: 'both' | 'buy' | 'sell'; // 'both'=多空双开 / 'buy'=只多 / 'sell'=只空
   symbol_blacklist: string;   // 逗号分隔的 symbol 黑名单
   use_exchange_tpsl: boolean; // 是否强制在交易所挂 TP/SL（推荐 true）
+  // === 出场管理（Task 3 exit engineering）===
+  breakeven_trigger_atr: number;   // 浮盈达 N×ATR 后把止损移到保本价（0=关）
+  trailing_enabled: boolean;       // 用交易所原生移动止盈替代固定止盈
+  trailing_callback_pct: number;   // Binance callbackRate 回调率 0.1~10
+  trailing_activation_atr: number; // 浮盈达 N×ATR 后激活移动止盈
 };
 
 export type StrategyConfigMarketSymbol = {
@@ -127,6 +132,10 @@ export const createDefaultStrategyConfig = (): StrategyFormConfig => ({
   allowed_sides: 'both',
   symbol_blacklist: '',
   use_exchange_tpsl: true,
+  breakeven_trigger_atr: 0,
+  trailing_enabled: false,
+  trailing_callback_pct: 1.5,
+  trailing_activation_atr: 2.0,
 });
 
 export const strategyConfigFromExisting = (cfg: Record<string, unknown>): StrategyFormConfig => {
@@ -189,6 +198,10 @@ export const strategyConfigFromExisting = (cfg: Record<string, unknown>): Strate
       return '';
     })(),
     use_exchange_tpsl: getCfgBool(cfg, 'use_exchange_tpsl', true),
+    breakeven_trigger_atr: getCfgNumber(cfg, 'breakeven_trigger_atr', 0),
+    trailing_enabled: getCfgBool(cfg, 'trailing_enabled', false),
+    trailing_callback_pct: getCfgNumber(cfg, 'trailing_callback_pct', 1.5),
+    trailing_activation_atr: getCfgNumber(cfg, 'trailing_activation_atr', 2.0),
   };
 };
 
@@ -252,6 +265,10 @@ export const buildStrategyConfigPayload = (
       .map(s => s.trim().toUpperCase())
       .filter(Boolean),
     use_exchange_tpsl: cfg.use_exchange_tpsl,
+    breakeven_trigger_atr: Number(cfg.breakeven_trigger_atr) || 0,
+    trailing_enabled: cfg.trailing_enabled,
+    trailing_callback_pct: Number(cfg.trailing_callback_pct) || 1.5,
+    trailing_activation_atr: Number(cfg.trailing_activation_atr) || 2.0,
   };
   if (rawConfig && typeof rawConfig === 'object') {
     // 关键修复：合并 rawConfig 先（保留所有未知字段如 allowed_sides /

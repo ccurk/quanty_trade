@@ -66,6 +66,11 @@ type BinanceExchange struct {
 	usdmAvailExp   map[uint]time.Time
 	usdmAvailCache map[uint]float64
 
+	// per-symbol market-data float cache (oi/funding/ls), keyed "kind:SYM"
+	marketMu       sync.Mutex
+	marketCache    map[string]float64
+	marketCacheExp map[string]time.Time
+
 	// rate limit tracking
 	rateLimitWeight1m int
 	lastRateLimitLoad time.Time
@@ -129,6 +134,8 @@ func NewBinanceExchange() *BinanceExchange {
 	ex.positionsCache = make(map[uint][]Position)
 	ex.usdmAvailExp = make(map[uint]time.Time)
 	ex.usdmAvailCache = make(map[uint]float64)
+	ex.marketCache = make(map[string]float64)
+	ex.marketCacheExp = make(map[string]time.Time)
 	ex.rateLimitWeight1m = 1200 // sensible default; will be overridden by exchangeInfo
 	return ex
 }
@@ -824,6 +831,120 @@ func (b *BinanceExchange) loadRateLimitIfNeeded() error {
 	b.lastRateLimitLoad = time.Now()
 	return nil
 }
+
+// OIChangePct returns the cached 5-minute open-interest change percent for a
+// USD-M symbol: (latest - prev) / prev * 100 over the two most recent 5m
+// buckets of /futures/data/openInterestHist (sumOpenInterest / contracts).
+// It NEVER blocks — the REST fetch runs in the background and refreshes the
+// cache at most once per 5 minutes per symbol. Returns 0 until the first
+// refresh completes, and 0 on any error / non-usdm market (callers treat 0 as
+// neutral).
+func (b *BinanceExchange) OIChangePct(symbol string) float64 {
+	return b.marketFloat("oi:", symbol, b.refreshOI)
+}
+
+// FundingRate returns the cached last funding rate (fraction, e.g. 0.0001) for a
+// USD-M symbol from /fapi/v1/premiumIndex. Non-blocking; 0 on error/non-usdm.
+func (b *BinanceExchange) FundingRate(symbol string) float64 {
+	return b.marketFloat("fr:", symbol, b.refreshFunding)
+}
+
+// LSRatio returns the cached global long/short account ratio for a USD-M symbol
+// from /futures/data/globalLongShortAccountRatio. Non-blocking; 0 on
+// error/non-usdm (the Python side defaults ls_ratio to 1.0 when it sees 0).
+func (b *BinanceExchange) LSRatio(symbol string) float64 {
+	return b.marketFloat("ls:", symbol, b.refreshLS)
+}
+
+// marketFloat is the shared non-blocking cache for per-symbol market-data floats
+// (keyed "kind:SYM"). It returns the cached value immediately (0 until the first
+// refresh completes) and launches a background refresh at most once per 5
+// minutes per key, so the candle publish path is never blocked by a REST call.
+func (b *BinanceExchange) marketFloat(kind, symbol string, refresh func(sym string)) float64 {
+	if b.market != "usdm" {
+		return 0
+	}
+	sym := binanceSymbol(symbol)
+	key := kind + sym
+	now := time.Now()
+	b.marketMu.Lock()
+	v := b.marketCache[key]
+	if now.After(b.marketCacheExp[key]) {
+		b.marketCacheExp[key] = now.Add(5 * time.Minute) // one refresh per interval
+		go refresh(sym)
+	}
+	b.marketMu.Unlock()
+	return v
+}
+
+func (b *BinanceExchange) setMarketFloat(key string, val float64) {
+	b.marketMu.Lock()
+	b.marketCache[key] = val
+	b.marketCacheExp[key] = time.Now().Add(5 * time.Minute)
+	b.marketMu.Unlock()
+}
+
+func (b *BinanceExchange) refreshOI(sym string) {
+	params := url.Values{}
+	params.Set("symbol", sym)
+	params.Set("period", "5m")
+	params.Set("limit", "2")
+	body, _, err := b.publicRequest(context.Background(), "/futures/data/openInterestHist", params)
+	if err != nil {
+		return
+	}
+	var rows []struct {
+		SumOpenInterest string `json:"sumOpenInterest"`
+	}
+	if err := json.Unmarshal(body, &rows); err != nil || len(rows) < 2 {
+		return
+	}
+	prev, e1 := strconv.ParseFloat(rows[0].SumOpenInterest, 64)             // older bucket
+	latest, e2 := strconv.ParseFloat(rows[len(rows)-1].SumOpenInterest, 64) // newest bucket
+	if e1 != nil || e2 != nil || prev <= 0 {
+		return
+	}
+	b.setMarketFloat("oi:"+sym, (latest-prev)/prev*100)
+}
+
+func (b *BinanceExchange) refreshFunding(sym string) {
+	params := url.Values{}
+	params.Set("symbol", sym)
+	body, _, err := b.publicRequest(context.Background(), "/fapi/v1/premiumIndex", params)
+	if err != nil {
+		return
+	}
+	var row struct {
+		LastFundingRate string `json:"lastFundingRate"`
+	}
+	if err := json.Unmarshal(body, &row); err != nil {
+		return
+	}
+	if fr, e := strconv.ParseFloat(row.LastFundingRate, 64); e == nil {
+		b.setMarketFloat("fr:"+sym, fr)
+	}
+}
+
+func (b *BinanceExchange) refreshLS(sym string) {
+	params := url.Values{}
+	params.Set("symbol", sym)
+	params.Set("period", "5m")
+	params.Set("limit", "1")
+	body, _, err := b.publicRequest(context.Background(), "/futures/data/globalLongShortAccountRatio", params)
+	if err != nil {
+		return
+	}
+	var rows []struct {
+		LongShortRatio string `json:"longShortRatio"`
+	}
+	if err := json.Unmarshal(body, &rows); err != nil || len(rows) == 0 {
+		return
+	}
+	if lr, e := strconv.ParseFloat(rows[len(rows)-1].LongShortRatio, 64); e == nil {
+		b.setMarketFloat("ls:"+sym, lr)
+	}
+}
+
 func (b *BinanceExchange) FetchCandles(symbol string, timeframe string, limit int) ([]Candle, error) {
 	interval, err := binanceInterval(timeframe)
 	if err != nil {
@@ -2467,11 +2588,11 @@ func (b *BinanceExchange) SubscribeCandlesWithEvents(symbol string, callback fun
 		// 关键修复：之前 dial 成功就 reset backoff，软 ban 时会立刻重连进死循环。
 		// 现在等到收到第一条 数据 才 reset。
 		const (
-			handshakeTimeout    = 10 * time.Second
-			readDeadline        = 90 * time.Second // 90s 没数据 = 软 ban 信号
-			normalMaxBackoff    = 30 * time.Second
-			silentBaseUnit      = 30 * time.Second
-			silentMaxBackoff    = 5 * time.Minute
+			handshakeTimeout = 10 * time.Second
+			readDeadline     = 90 * time.Second // 90s 没数据 = 软 ban 信号
+			normalMaxBackoff = 30 * time.Second
+			silentBaseUnit   = 30 * time.Second
+			silentMaxBackoff = 5 * time.Minute
 		)
 		normalBackoff := 1 * time.Second
 		silentDisconnects := 0
@@ -2714,8 +2835,8 @@ type USDMUserTrade struct {
 	Symbol          string  `json:"symbol"`
 	ID              int64   `json:"trade_id"`
 	OrderID         int64   `json:"order_id"`
-	Side            string  `json:"side"`         // BUY / SELL
-	PositionSide    string  `json:"position_side"`// LONG / SHORT / BOTH
+	Side            string  `json:"side"`          // BUY / SELL
+	PositionSide    string  `json:"position_side"` // LONG / SHORT / BOTH
 	Qty             float64 `json:"qty"`
 	Price           float64 `json:"price"`
 	QuoteQty        float64 `json:"quote_qty"`

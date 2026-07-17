@@ -46,7 +46,7 @@ func CreateStrategy(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	configJSON, config, err := normalizeStrategyConfigJSON(req.Config)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON config"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "配置非法: " + err.Error()})
 		return
 	}
 	instance := models.StrategyInstance{
@@ -176,7 +176,7 @@ func UpdateStrategyConfig(c *gin.Context) {
 
 	configJSON, config, err := normalizeStrategyConfigJSON(req.Config)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON config"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "配置非法: " + err.Error()})
 		return
 	}
 

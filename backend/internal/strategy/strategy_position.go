@@ -258,6 +258,21 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	})
 
 	order, err := inst.exchange.PlaceOrder(inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price)
+	// -2027（当前杠杆下持仓上限超出）：自动把下单数量减半后重试，最多 3 次；数量
+	// 只减不增、永不降到 0/负数。选缩量而非降杠杆——降杠杆会抬高保证金需求，在薄
+	// 账户上容易转成 -2019 保证金不足。-2027 是下单前风控拒绝、不产生订单，故沿用
+	// 同一 client_order_id 重试是安全的。
+	for retry := 1; retry <= 3 && err != nil && strings.Contains(err.Error(), "\"code\":-2027"); retry++ {
+		reduced := amount * 0.5
+		if reduced <= 0 || reduced >= amount {
+			break
+		}
+		emitStrategyLog(inst, "info", fmt.Sprintf("持仓上限超出(-2027)，第 %d/3 次缩量重试：数量 %.8f → %.8f symbol=%s", retry, amount, reduced, symbol))
+		amount = reduced
+		database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
+			Updates(map[string]interface{}{"requested_qty": amount, "updated_at": time.Now()})
+		order, err = inst.exchange.PlaceOrder(inst.OwnerID, clientOrderID, symbol, normalizedSide, amount, price)
+	}
 	if err != nil {
 		if acquiredSlot && rb != nil {
 			_, _ = rb.ReleaseOpenSlot(context.Background(), inst.ID)

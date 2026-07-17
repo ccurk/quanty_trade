@@ -78,6 +78,7 @@ type SignalMessage struct {
 	Amount      float64   `json:"amount"`
 	TakeProfit  float64   `json:"take_profit"`
 	StopLoss    float64   `json:"stop_loss"`
+	AtrAbs      float64   `json:"atr_abs"` // absolute ATR at signal time, for exit engineering (breakeven/trailing); 0 if strategy omits it
 	SignalID    string    `json:"signal_id"`
 	GeneratedAt time.Time `json:"generated_at"`
 }

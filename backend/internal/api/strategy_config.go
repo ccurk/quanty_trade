@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"quanty_trade/internal/conf"
+	"quanty_trade/internal/strategy"
 )
 
 func normalizeStrategyConfigJSON(raw string) (string, map[string]interface{}, error) {
@@ -13,6 +14,14 @@ func normalizeStrategyConfigJSON(raw string) (string, map[string]interface{}, er
 		return "", nil, err
 	}
 	norm := normalizeStrategyConfigMap(cfg)
+	// Reject a malformed entry_time_windows at write time (fail-closed on the
+	// API): the runtime engine fails OPEN on it, so persisting a typo would
+	// silently disable the trading-hours gate.
+	if v, ok := norm["entry_time_windows"].(string); ok {
+		if err := strategy.ValidateEntryTimeWindows(v); err != nil {
+			return "", nil, err
+		}
+	}
 	b, err := json.Marshal(norm)
 	if err != nil {
 		return "", nil, err

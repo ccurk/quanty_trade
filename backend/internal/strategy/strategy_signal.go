@@ -182,6 +182,46 @@ func resolveEntryTimeWindows(inst *StrategyInstance, now time.Time) (bool, strin
 	return !validFound, strings.Join(normalized, ","), validFound
 }
 
+// ValidateEntryTimeWindows returns an error if raw is a NON-EMPTY
+// entry_time_windows string containing no parseable HH:mm-HH:mm segment.
+// The runtime engine FAILS OPEN on such input (treats it as "no restriction"),
+// so a typo silently disables the trading-hours gate. The config write path
+// calls this to reject the typo with 400 instead of persisting a gate-disabling
+// value. It mirrors resolveEntryTimeWindows' parsing exactly (same separators
+// and parseClockMinutes) so validation and runtime agree on what is "valid".
+func ValidateEntryTimeWindows(raw string) error {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil // empty = intentionally no restriction
+	}
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		switch r {
+		case ',', '，', ';', '；', '|', '\n', '\r':
+			return true
+		default:
+			return false
+		}
+	})
+	for _, part := range parts {
+		seg := strings.TrimSpace(part)
+		if seg == "" {
+			continue
+		}
+		bounds := strings.Split(seg, "-")
+		if len(bounds) != 2 {
+			continue
+		}
+		if _, ok := parseClockMinutes(bounds[0]); !ok {
+			continue
+		}
+		if _, ok := parseClockMinutes(bounds[1]); !ok {
+			continue
+		}
+		return nil // at least one valid segment → accepted
+	}
+	return fmt.Errorf("entry_time_windows 格式非法：需为 HH:mm-HH:mm（逗号分隔，如 09:00-11:30,13:00-15:00），当前值 %q 无任何可解析时间段", raw)
+}
+
 func symbolReentryCooldown(inst *StrategyInstance) time.Duration {
 	if inst == nil {
 		return 0
