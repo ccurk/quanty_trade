@@ -186,6 +186,11 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 					sl = rsl
 				}
 			}
+			// 出场推移（只在 5s 守护里做，分钟止损扫描不动）：先保本、再移动止盈
+			if !stopLossOnly {
+				m.maybeMoveBreakeven(inst, uid, r, pos, side, currentPrice, tp)
+				m.maybeTrail(inst, uid, r, pos, side, currentPrice, tp)
+			}
 			reason := ""
 			if !stopLossOnly {
 				if currentPrice > 0 {

@@ -172,92 +172,99 @@ func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBu
 	//   - 应用层抖动让请求队列稀释
 	//   - bucket 兜底拦截瞬时突发
 	for idx, sym := range symbols {
-		sym := sym
 		startDelay := time.Duration(idx)*300*time.Millisecond + time.Duration(idx*73)*time.Millisecond%200
-		go func() {
-			if startDelay > 0 {
-				time.Sleep(startDelay)
-			}
-			emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles start symbol=%s (after %s stagger)", sym, startDelay))
-			pollCtx, pollCancel := context.WithCancel(context.Background())
-			go m.latestClosedCandleFallbackLoop(pollCtx, inst, redisBus, sym)
-
-			// stopFn is registered into candleStops up-front so a concurrent
-			// StopStrategy sweep can cancel us even while SubscribeCandles is
-			// still dialing the WS. Once dial returns, we wire subscribeStop
-			// in; if a sweep already fired, we tear the new WS down here.
-			var (
-				stopMu        sync.Mutex
-				subscribeStop func()
-				stopRequested bool
-			)
-			stopFn := func() {
-				stopMu.Lock()
-				stopRequested = true
-				s := subscribeStop
-				stopMu.Unlock()
-				pollCancel()
-				if s != nil {
-					s()
-				}
-			}
-			inst.mu.Lock()
-			if inst.candleStops == nil {
-				inst.candleStops = map[string]func(){}
-			}
-			if prev, ok := inst.candleStops[sym]; ok && prev != nil {
-				prev()
-			}
-			inst.candleStops[sym] = stopFn
-			inst.mu.Unlock()
-
-			var (
-				ws  func()
-				err error
-			)
-			if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok {
-				ws, err = bx.SubscribeCandlesWithEvents(sym, func(candle exchange.Candle) {
-					m.onExchangeCandle(inst, redisBus, sym, candle)
-				}, func(event string, detail string, err error) {
-					m.onCandleStreamEvent(inst, sym, event, detail, err)
-				})
-			} else {
-				ws, err = inst.exchange.SubscribeCandles(sym, func(candle exchange.Candle) {
-					m.onExchangeCandle(inst, redisBus, sym, candle)
-				})
-			}
-			if err != nil {
-				stopFn()
-				logger.Errorf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, err)
-				database.DB.Create(&models.StrategyLog{
-					StrategyID: inst.ID,
-					Level:      "error",
-					Message:    fmt.Sprintf("SubscribeCandles error: %v", err),
-					CreatedAt:  time.Now(),
-				})
-				inst.hub.BroadcastJSON(map[string]interface{}{
-					"type":        "error",
-					"strategy_id": inst.ID,
-					"owner_id":    inst.OwnerID,
-					"error":       fmt.Sprintf("SubscribeCandles error: %v", err),
-				})
-				return
-			}
-
-			stopMu.Lock()
-			if stopRequested {
-				stopMu.Unlock()
-				if ws != nil {
-					ws()
-				}
-				return
-			}
-			subscribeStop = ws
-			stopMu.Unlock()
-			emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles ok symbol=%s", sym))
-		}()
+		m.subscribeOneSymbol(inst, redisBus, sym, startDelay)
 	}
 	return nil
+}
+
+// subscribeOneSymbol starts ONE symbol's candle feed (fallback poll + WS
+// subscription) on an instance and registers its cancel func into
+// inst.candleStops[sym]. Extracted verbatim from attachMarketData's per-symbol
+// loop body so dynamic symbol rotation reuses the exact same subscribe path.
+func (m *Manager) subscribeOneSymbol(inst *StrategyInstance, redisBus *bus.RedisBus, sym string, startDelay time.Duration) {
+	go func() {
+		if startDelay > 0 {
+			time.Sleep(startDelay)
+		}
+		emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles start symbol=%s (after %s stagger)", sym, startDelay))
+		pollCtx, pollCancel := context.WithCancel(context.Background())
+		go m.latestClosedCandleFallbackLoop(pollCtx, inst, redisBus, sym)
+
+		// stopFn is registered into candleStops up-front so a concurrent
+		// StopStrategy sweep can cancel us even while SubscribeCandles is
+		// still dialing the WS. Once dial returns, we wire subscribeStop
+		// in; if a sweep already fired, we tear the new WS down here.
+		var (
+			stopMu        sync.Mutex
+			subscribeStop func()
+			stopRequested bool
+		)
+		stopFn := func() {
+			stopMu.Lock()
+			stopRequested = true
+			s := subscribeStop
+			stopMu.Unlock()
+			pollCancel()
+			if s != nil {
+				s()
+			}
+		}
+		inst.mu.Lock()
+		if inst.candleStops == nil {
+			inst.candleStops = map[string]func(){}
+		}
+		if prev, ok := inst.candleStops[sym]; ok && prev != nil {
+			prev()
+		}
+		inst.candleStops[sym] = stopFn
+		inst.mu.Unlock()
+
+		var (
+			ws  func()
+			err error
+		)
+		if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok {
+			ws, err = bx.SubscribeCandlesWithEvents(sym, func(candle exchange.Candle) {
+				m.onExchangeCandle(inst, redisBus, sym, candle)
+			}, func(event string, detail string, err error) {
+				m.onCandleStreamEvent(inst, sym, event, detail, err)
+			})
+		} else {
+			ws, err = inst.exchange.SubscribeCandles(sym, func(candle exchange.Candle) {
+				m.onExchangeCandle(inst, redisBus, sym, candle)
+			})
+		}
+		if err != nil {
+			stopFn()
+			logger.Errorf("[STRATEGY SUBSCRIBE ERROR] id=%s owner=%d symbol=%s err=%v", inst.ID, inst.OwnerID, sym, err)
+			database.DB.Create(&models.StrategyLog{
+				StrategyID: inst.ID,
+				Level:      "error",
+				Message:    fmt.Sprintf("SubscribeCandles error: %v", err),
+				CreatedAt:  time.Now(),
+			})
+			inst.hub.BroadcastJSON(map[string]interface{}{
+				"type":        "error",
+				"strategy_id": inst.ID,
+				"owner_id":    inst.OwnerID,
+				"error":       fmt.Sprintf("SubscribeCandles error: %v", err),
+			})
+			return
+		}
+
+		stopMu.Lock()
+		if stopRequested {
+			stopMu.Unlock()
+			if ws != nil {
+				ws()
+			}
+			return
+		}
+		subscribeStop = ws
+		stopMu.Unlock()
+		emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles ok symbol=%s", sym))
+	}()
 }
 
 func candleWaitReason(inst *StrategyInstance, sym string) (int, string) {

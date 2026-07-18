@@ -166,6 +166,8 @@ func main() {
 		protected.DELETE("/strategies/:id/blacklist/:symbol", api.RemoveSymbolFromBlacklist) // 释放单个黑名单
 		protected.POST("/strategies/:id/rollback", api.RollbackStrategyTemplate)             // 回滚到上一版 template
 		protected.POST("/strategies/:id/cancel-orders", api.CancelStrategyOrders)            // 紧急取消委托
+		protected.GET("/strategies/:id/symbols", api.GetRunningSymbols)                      // 运行中币种(动态选币)
+		protected.POST("/strategies/:id/symbols/rotate", api.RotateRunningSymbols)           // 热轮换币种(cron 驱动)
 
 		// Positions
 		protected.GET("/positions", api.ListPositions)

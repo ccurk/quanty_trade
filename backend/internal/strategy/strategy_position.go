@@ -938,10 +938,17 @@ func (m *Manager) closePositionForInstance(inst *StrategyInstance, symbol string
 		return fmt.Errorf("empty symbol")
 	}
 
-	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
-		return m.closeUSDMPosition(inst, bx, sym)
-	}
-	_ = reason
 	_ = signalID
-	return m.closeSpotPosition(inst, sym)
+	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		err := m.closeUSDMPosition(inst, bx, sym)
+		if err == nil {
+			m.emitExitAudit(inst, sym, reason, 0, 0, "action=close")
+		}
+		return err
+	}
+	err := m.closeSpotPosition(inst, sym)
+	if err == nil {
+		m.emitExitAudit(inst, sym, reason, 0, 0, "action=close")
+	}
+	return err
 }

@@ -274,6 +274,9 @@ type StrategyPosition struct {
 	// AtrAbs is the absolute ATR captured at entry, used by exit engineering
 	// (breakeven/trailing). 0 when unknown (falls back to |entry-sl|/atr_sl_mult).
 	AtrAbs float64 `json:"atr_abs"`
+	// BreakevenMoved marks that the stop has already been moved to breakeven, so
+	// the exit engine only moves it once per position (durable across restarts).
+	BreakevenMoved bool `json:"breakeven_moved"`
 	// ClosedQty is the cumulative closed quantity across partial closes.
 	ClosedQty float64 `json:"closed_qty"`
 	// AvgClosePrice is the volume-weighted average close price.
