@@ -516,9 +516,19 @@ func fetchBinanceContext(ownerID uint, hours int) *optimizeBinanceContext {
 	var grossRealized, sumWin, sumLoss float64
 	var longCnt, longWin, shortCnt, shortWin int
 	var longRealized, shortRealized float64
+	var longComm, shortComm float64
 	for _, fills := range allFills {
 		for _, f := range fills {
+			// 手续费按方向归集（每笔 fill 自带精确 Comm，无需比例分摊）：
+			// 平仓 fill（PnL!=0）：SELL 平多 → long；BUY 平空 → short。
+			// 开/加仓 fill（PnL==0）：方向与 fill 同向：BUY 开多 → long；SELL 开空 → short。
+			// （单向持仓模式下平空的 BUY 必带 realizedPnl，所以 PnL==0 的 BUY 一定是开多。）
 			if f.PnL == 0 {
+				if strings.EqualFold(f.Side, "BUY") {
+					longComm += f.Comm
+				} else if strings.EqualFold(f.Side, "SELL") {
+					shortComm += f.Comm
+				}
 				continue // 开仓 / 加仓 fill 不产生已实现盈亏
 			}
 			realizedCount++
@@ -534,12 +544,14 @@ func fetchBinanceContext(ownerID uint, hours int) *optimizeBinanceContext {
 			if strings.EqualFold(f.Side, "SELL") {
 				longCnt++
 				longRealized += f.PnL
+				longComm += f.Comm
 				if f.PnL > 0 {
 					longWin++
 				}
 			} else if strings.EqualFold(f.Side, "BUY") {
 				shortCnt++
 				shortRealized += f.PnL
+				shortComm += f.Comm
 				if f.PnL > 0 {
 					shortWin++
 				}
@@ -575,14 +587,16 @@ func fetchBinanceContext(ownerID uint, hours int) *optimizeBinanceContext {
 	if p.RewardRiskRatio > 0 {
 		p.BreakevenWinPct = 1.0 / (p.RewardRiskRatio + 1) * 100
 	}
-	// 注：long/short 用毛已实现盈亏拆分（不含按比例分摊的费用），加总 = gross。
+	// long/short 净额 = 该方向毛已实现盈亏 − 该方向实际手续费（开+平 fill 逐笔归集，
+	// 非比例分摊）。资金费只有账户级总数、无方向归属，不摊入，因此
+	// long_net + short_net + funding = net_pnl。
 	p.LongCount = longCnt
-	p.LongNetPnL = longRealized
+	p.LongNetPnL = longRealized - longComm
 	if longCnt > 0 {
 		p.LongWinRatePct = float64(longWin) / float64(longCnt) * 100
 	}
 	p.ShortCount = shortCnt
-	p.ShortNetPnL = shortRealized
+	p.ShortNetPnL = shortRealized - shortComm
 	if shortCnt > 0 {
 		p.ShortWinRatePct = float64(shortWin) / float64(shortCnt) * 100
 	}
