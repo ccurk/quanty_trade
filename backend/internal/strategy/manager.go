@@ -559,6 +559,11 @@ type Manager struct {
 	// instances keeps in-memory runtime state keyed by strategy instance id.
 	instances map[string]*StrategyInstance
 	mu        sync.RWMutex
+	// tpslPlaceMu/tpslLastPlace: TP/SL 守护的挂单节流闸。90s 内同一
+	// (owner,symbol) 已挂过又被判"缺失"= 列表或撤单环节异常，跳过而非重挂，
+	// 把任何未知故障模式的爆炸半径压到 ≤1 次挂单/90s。
+	tpslPlaceMu   sync.Mutex
+	tpslLastPlace map[string]time.Time
 	// hub broadcasts runtime events (logs/orders/candles/backtest updates) to frontend.
 	hub *ws.Hub
 	// exchange is the global exchange connector used by all strategies.

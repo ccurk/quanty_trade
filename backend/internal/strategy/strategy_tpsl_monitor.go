@@ -133,13 +133,64 @@ func (m *Manager) tpslGuardTick() {
 					return
 				}
 
+				// 挂单节流闸：90s 内本守护刚挂过却又被判"缺失/脏"，说明
+				// 列表或撤单环节在说谎（查询吞错/跨列表重复计数/撤单失败），
+				// 此时盲目重挂只会制造 15s 一对的风暴——跳过本轮等待复核。
+				brakeKey := fmt.Sprintf("%d|%s", uid, exchange.NormalizeSymbol(row.Symbol))
+				m.tpslPlaceMu.Lock()
+				lastPlace, placedBefore := m.tpslLastPlace[brakeKey]
+				m.tpslPlaceMu.Unlock()
+				if placedBefore && time.Since(lastPlace) < 90*time.Second {
+					emitStrategyLog(inst, "info", fmt.Sprintf("止盈止损90s内已挂过但再次被判缺失 symbol=%s tp在=%v sl在=%v 张数=%d，跳过重挂待下轮复核", row.Symbol, hasTP, hasSL, len(algoOrders)))
+					return
+				}
+
+				// 越位腿预检：价格已穿过触发价的腿挂上去必被 -2021 拒单，
+				// 反复硬挂=永动失败循环。只挂仍有效的腿；两腿全越位时
+				// 不挂单，交由 ROI 守护按超限平仓处置。
+				mark := active.CurrentPrice
+				if mark <= 0 {
+					mark = active.Price
+				}
+				tpPlace, slPlace := tp, sl
+				if mark > 0 {
+					if side == "buy" {
+						if tpPlace <= mark {
+							tpPlace = 0
+						}
+						if slPlace >= mark {
+							slPlace = 0
+						}
+					} else {
+						if tpPlace >= mark {
+							tpPlace = 0
+						}
+						if slPlace <= mark {
+							slPlace = 0
+						}
+					}
+				}
+				if tpPlace <= 0 && slPlace <= 0 {
+					emitStrategyLog(inst, "error", fmt.Sprintf("止盈止损位均已被价格越过 symbol=%s mark=%v tp=%v sl=%v，不挂单等待ROI守护处置", row.Symbol, mark, tp, sl))
+					return
+				}
+				if tpPlace != tp || slPlace != sl {
+					emitStrategyLog(inst, "info", fmt.Sprintf("部分止盈止损位已被价格越过 symbol=%s mark=%v 原tp=%v 原sl=%v，仅补挂有效腿", row.Symbol, mark, tp, sl))
+				}
+
 				if len(algoOrders) > 0 {
 					// 必须用全类型清扫：TP/SL 实际是普通条件单，algo-only 撤单
 					// 清不掉它们，残单逐轮堆积直至 -4045（2026-07-19 实测）。
 					_ = bx.CancelUSDMTPSLOpenOrders(uid, row.Symbol)
 				}
+				m.tpslPlaceMu.Lock()
+				if m.tpslLastPlace == nil {
+					m.tpslLastPlace = map[string]time.Time{}
+				}
+				m.tpslLastPlace[brakeKey] = time.Now()
+				m.tpslPlaceMu.Unlock()
 				baseClientOrderID := models.GenerateUUID()
-				created, err := bx.PlaceUSDMTPStopOrders(uid, baseClientOrderID, row.Symbol, tp, sl)
+				created, err := bx.PlaceUSDMTPStopOrders(uid, baseClientOrderID, row.Symbol, tpPlace, slPlace)
 				if err != nil {
 					emitStrategyLog(inst, "error", fmt.Sprintf("补设交易所止盈止损失败 symbol=%s tp=%v sl=%v err=%v", row.Symbol, tp, sl, err))
 					return

@@ -2121,7 +2121,13 @@ func (b *BinanceExchange) ListUSDMTPSLOpenOrders(ownerID uint, symbol string) ([
 	created := make([]USDMAlgoOrder, 0, 4)
 
 	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/openOrders", params)
-	if err == nil {
+	// 查询失败必须如实报错：此前吞掉 err 返回空表，TP/SL 守护会把
+	// "查不到"误读成"没挂过"而每 15s 盲目重挂一对（2026-07-19 实测
+	// 15 秒节拍的已补设风暴）。宁可这一轮不动，也不能凭空表行动。
+	if err != nil {
+		return nil, err
+	}
+	{
 		var orders []struct {
 			OrderID       int64  `json:"orderId"`
 			ClientOrderID string `json:"clientOrderId"`
@@ -2155,11 +2161,27 @@ func (b *BinanceExchange) ListUSDMTPSLOpenOrders(ownerID uint, symbol string) ([
 	}
 
 	algoOrders, algoErr := b.ListUSDMAlgoOpenOrders(ownerID, symbol)
-	if algoErr != nil && err != nil {
+	if algoErr != nil {
 		return nil, algoErr
 	}
 	created = append(created, algoOrders...)
-	return created, nil
+	// 跨列表去重：同一张条件单可能同时出现在普通与 Algo 两个列表
+	// （平台迁移期镜像），重复计数会把健康的一对误判成"多余对"，
+	// 触发清扫→重挂循环。client id 相同即视为同单。
+	seen := map[string]struct{}{}
+	deduped := created[:0]
+	for _, o := range created {
+		k := strings.TrimSpace(o.ClientAlgoID)
+		if k == "" {
+			k = "id:" + strconv.FormatInt(o.AlgoID, 10)
+		}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		deduped = append(deduped, o)
+	}
+	return deduped, nil
 }
 
 func (b *BinanceExchange) CancelUSDMAlgoOpenOrders(ownerID uint, symbol string) error {
