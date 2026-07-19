@@ -121,7 +121,9 @@ func (m *Manager) tpslGuardTick() {
 				}
 
 				if len(algoOrders) > 0 {
-					_ = bx.CancelUSDMAlgoOpenOrders(uid, row.Symbol)
+					// 必须用全类型清扫：TP/SL 实际是普通条件单，algo-only 撤单
+					// 清不掉它们，残单逐轮堆积直至 -4045（2026-07-19 实测）。
+					_ = bx.CancelUSDMTPSLOpenOrders(uid, row.Symbol)
 				}
 				baseClientOrderID := models.GenerateUUID()
 				created, err := bx.PlaceUSDMTPStopOrders(uid, baseClientOrderID, row.Symbol, tp, sl)

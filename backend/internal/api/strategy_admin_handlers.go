@@ -389,6 +389,14 @@ func CancelStrategyOrders(c *gin.Context) {
 			symSet[p.Symbol] = struct{}{}
 		}
 	}
+	// 并入账户上仍挂着 TP/SL 条件单的 symbol：台账缺失年代（close_time 1292）
+	// 的仓位没有 DB 行，其孤儿条件单只能从交易所侧反查，否则永远扫不到，
+	// 并持续占用账户级 stop 单额度（-4045）。
+	if exSyms, err := bx.ListUSDMConditionalOrderSymbols(inst.OwnerID); err == nil {
+		for _, s := range exSyms {
+			symSet[s] = struct{}{}
+		}
+	}
 
 	if len(symSet) == 0 {
 		c.JSON(http.StatusOK, gin.H{

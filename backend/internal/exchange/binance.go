@@ -2196,6 +2196,102 @@ func (b *BinanceExchange) CancelUSDMAlgoOpenOrders(ownerID uint, symbol string) 
 	return firstErr
 }
 
+// CancelUSDMTPSLOpenOrders cancels ALL open TP/SL conditional orders on a
+// symbol —— 普通条件单（/fapi/v1/order 的 STOP_MARKET/TAKE_PROFIT_MARKET）与
+// Algo API 单都覆盖。CancelUSDMAlgoOpenOrders 只撤后者是个盲区：TP/SL 下单
+// 默认走普通条件单（Algo 仅为 -4120 回退），algo-only 的清扫等于没撤，
+// 旧单逐轮堆积直至 -4045 Reach max stop order limit。
+func (b *BinanceExchange) CancelUSDMTPSLOpenOrders(ownerID uint, symbol string) error {
+	if b.market != "usdm" {
+		return nil
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return err
+	}
+	orders, err := b.ListUSDMTPSLOpenOrders(ownerID, symbol)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, o := range orders {
+		q := url.Values{}
+		q.Set("symbol", binanceSymbol(symbol))
+		var cErr error
+		if o.IsAlgo {
+			if o.AlgoID > 0 {
+				q.Set("algoId", strconv.FormatInt(o.AlgoID, 10))
+			} else if strings.TrimSpace(o.ClientAlgoID) != "" {
+				q.Set("clientAlgoId", o.ClientAlgoID)
+			} else {
+				continue
+			}
+			_, _, cErr = b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/algoOrder", q)
+			if isBinanceHTMLNotFound(cErr) {
+				continue
+			}
+		} else {
+			if o.AlgoID <= 0 {
+				continue
+			}
+			q.Set("orderId", strconv.FormatInt(o.AlgoID, 10))
+			_, _, cErr = b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/order", q)
+		}
+		if cErr != nil && firstErr == nil {
+			firstErr = cErr
+		}
+	}
+	return firstErr
+}
+
+// ListUSDMConditionalOrderSymbols returns distinct symbols that currently
+// hold open TP/SL-type conditional orders anywhere on the USDM account
+// (unfiltered openOrders query, weight 40 —— 仅供人工/紧急清扫用，勿进热路径)。
+// 用途：DB 台账缺失年代留下的孤儿条件单散布在历史 symbol 上，仅靠
+// StrategyPosition 行推导 symbol 会漏掉它们。
+func (b *BinanceExchange) ListUSDMConditionalOrderSymbols(ownerID uint) ([]string, error) {
+	if b.market != "usdm" {
+		return nil, nil
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return nil, err
+	}
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/openOrders", nil)
+	if err != nil {
+		return nil, err
+	}
+	var orders []struct {
+		Symbol   string `json:"symbol"`
+		Type     string `json:"type"`
+		OrigType string `json:"origType"`
+	}
+	if err := json.Unmarshal(body, &orders); err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(orders))
+	for _, o := range orders {
+		typ := o.OrigType
+		if strings.TrimSpace(typ) == "" {
+			typ = o.Type
+		}
+		if !isUSDMTPSLType(typ) {
+			continue
+		}
+		s := strings.ToUpper(strings.TrimSpace(o.Symbol))
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
 // USDMMaxNotionalForLeverage returns the symbol-specific maximum notional allowed at the given leverage bracket.
 // If the exchange does not return brackets or leverage is out of range, it returns 0.
 func (b *BinanceExchange) USDMMaxNotionalForLeverage(ownerID uint, symbol string, leverage int) (float64, error) {
