@@ -11,7 +11,56 @@ import (
 	"quanty_trade/internal/models"
 )
 
-func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange, symbol string, amount float64, price float64) (float64, error) {
+// confSizingMultiplier 按信号置信度线性插值仓位乘数：
+// conf<=conf_lo → min_mult，conf>=conf_hi → max_mult，中间线性。
+// conf_sizing_enabled 未开启或信号未带置信度时返回 (1, false)，行为与旧版完全一致。
+func confSizingMultiplier(inst *StrategyInstance, confidence float64) (float64, bool) {
+	if inst == nil || !getBool(inst.Config["conf_sizing_enabled"]) || confidence <= 0 {
+		return 1, false
+	}
+	lo := getNumber(inst.Config["conf_sizing_conf_lo"])
+	if lo <= 0 {
+		lo = getNumber(inst.Config["min_confidence"])
+	}
+	if lo <= 0 {
+		lo = 0.40
+	}
+	hi := getNumber(inst.Config["conf_sizing_conf_hi"])
+	if hi <= lo {
+		hi = lo + 0.15
+	}
+	minM := getNumber(inst.Config["conf_sizing_min_mult"])
+	if minM <= 0 {
+		minM = 0.60
+	}
+	maxM := getNumber(inst.Config["conf_sizing_max_mult"])
+	if maxM <= 0 {
+		maxM = 1.40
+	}
+	// 乘数带宽夹在 [0.2, 2]，且 max 不得低于 min：配置写反时按保守方向收敛。
+	if minM < 0.20 {
+		minM = 0.20
+	}
+	if minM > 1 {
+		minM = 1
+	}
+	if maxM < 1 {
+		maxM = 1
+	}
+	if maxM > 2 {
+		maxM = 2
+	}
+	t := (confidence - lo) / (hi - lo)
+	if t < 0 {
+		t = 0
+	}
+	if t > 1 {
+		t = 1
+	}
+	return minM + t*(maxM-minM), true
+}
+
+func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange, symbol string, amount float64, price float64, confidence float64) (float64, error) {
 	if inst == nil || bx == nil {
 		return 0, nil
 	}
@@ -62,6 +111,19 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 		if pct > 1 {
 			pct = 1
 		}
+		mult, confSized := confSizingMultiplier(inst, confidence)
+		if confSized {
+			basePct := pct
+			pct = pct * mult
+			// 有效 pct 夹在 [0.05, 0.75]：与人工调参共用同一物理边界。
+			if pct > 0.75 {
+				pct = 0.75
+			}
+			if pct < 0.05 {
+				pct = 0.05
+			}
+			emitStrategyLog(inst, "info", fmt.Sprintf("置信度动态仓位 symbol=%s conf=%.4f mult=%.2f pct=%.4f→%.4f", symbol, confidence, mult, basePct, pct))
+		}
 		initial := avail * pct
 		maxInit := getNumber(inst.Config["max_initial_margin_usdt"])
 		if maxInit > 0 && initial > maxInit {
@@ -72,6 +134,16 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 			return 0, nil
 		}
 		desiredNotional = initial * float64(lev)
+		if confSized {
+			// 缩量不得击穿单笔名义下限（默认 20U）：低置信度是少开，不是开出无意义的粉尘单。
+			floorN := getNumber(inst.Config["conf_sizing_min_notional_usdt"])
+			if floorN <= 0 {
+				floorN = 20
+			}
+			if desiredNotional < floorN {
+				desiredNotional = floorN
+			}
+		}
 	} else if mode == "notional" {
 		desiredNotional = amount
 	}

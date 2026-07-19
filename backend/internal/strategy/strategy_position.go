@@ -25,12 +25,12 @@ func (m *Manager) runOrderWorker() {
 						req.symbol, req.side, req.amount, r)
 				}
 			}()
-			m.placeOrderForInstance(req.inst, req.symbol, req.side, req.amount, req.price, req.takeProfit, req.stopLoss, req.signalID)
+			m.placeOrderForInstance(req.inst, req.symbol, req.side, req.amount, req.price, req.takeProfit, req.stopLoss, req.signalID, req.confidence)
 		}()
 	}
 }
 
-func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, side string, amount float64, price float64, takeProfit float64, stopLoss float64, signalID string) {
+func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, side string, amount float64, price float64, takeProfit float64, stopLoss float64, signalID string, confidence float64) {
 	if inst == nil {
 		return
 	}
@@ -89,7 +89,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			emitStrategyLog(inst, "error", fmt.Sprintf("跳过开仓：当前市场不支持该交易对 symbol=%s err=%v", symbol, err))
 			return
 		}
-		resolvedAmount, err := resolveUSDMOrderAmount(inst, bx, symbol, amount, price)
+		resolvedAmount, err := resolveUSDMOrderAmount(inst, bx, symbol, amount, price, confidence)
 		if err != nil || resolvedAmount <= 0 {
 			return
 		}

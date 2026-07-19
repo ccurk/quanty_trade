@@ -912,6 +912,7 @@ type orderReq struct {
 	takeProfit float64
 	stopLoss   float64
 	signalID   string
+	confidence float64
 }
 
 type stopReq struct {
@@ -926,12 +927,12 @@ func (m *Manager) StartWorkers() {
 	go m.runAutoOptimizeWorker()
 }
 
-func (m *Manager) enqueueOrderForInstance(inst *StrategyInstance, symbol string, side string, amount float64, price float64, takeProfit float64, stopLoss float64, signalID string) {
+func (m *Manager) enqueueOrderForInstance(inst *StrategyInstance, symbol string, side string, amount float64, price float64, takeProfit float64, stopLoss float64, signalID string, confidence float64) {
 	if inst == nil || symbol == "" || side == "" {
 		return
 	}
 	select {
-	case m.orderCh <- orderReq{inst: inst, symbol: symbol, side: side, amount: amount, price: price, takeProfit: takeProfit, stopLoss: stopLoss, signalID: signalID}:
+	case m.orderCh <- orderReq{inst: inst, symbol: symbol, side: side, amount: amount, price: price, takeProfit: takeProfit, stopLoss: stopLoss, signalID: signalID, confidence: confidence}:
 	default:
 		emitStrategyLog(inst, "error", "Order queue is full, dropping order request")
 	}

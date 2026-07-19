@@ -681,7 +681,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 非自然开仓后止盈止损无效 side=%s tp=%v sl=%v px=%v", sig.Symbol, side, takeProfit, stopLoss, c.px))
 			continue
 		}
-		res := m.tryPlaceCandidate(inst, sig.Symbol, side, c.amount, takeProfit, stopLoss, strings.TrimSpace(sig.SignalID))
+		res := m.tryPlaceCandidate(inst, sig.Symbol, side, c.amount, takeProfit, stopLoss, strings.TrimSpace(sig.SignalID), sig.Confidence)
 		if res == candidatePlaceFilled || res == candidatePlacePending {
 			selected++
 			selectedSymbols[symKey] = struct{}{}
@@ -716,12 +716,12 @@ const (
 	candidatePlaceFilled  candidatePlaceResult = "filled"
 )
 
-func (m *Manager) tryPlaceCandidate(inst *StrategyInstance, symbol string, side string, amount float64, tp float64, sl float64, signalID string) candidatePlaceResult {
+func (m *Manager) tryPlaceCandidate(inst *StrategyInstance, symbol string, side string, amount float64, tp float64, sl float64, signalID string, confidence float64) candidatePlaceResult {
 	if inst == nil {
 		return candidatePlaceFailed
 	}
 	requestedAfter := time.Now().Add(-200 * time.Millisecond)
-	m.enqueueOrderForInstance(inst, symbol, side, amount, 0, tp, sl, signalID)
+	m.enqueueOrderForInstance(inst, symbol, side, amount, 0, tp, sl, signalID, confidence)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		var ord models.StrategyOrder
