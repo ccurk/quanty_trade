@@ -125,20 +125,8 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 			emitStrategyLog(inst, "info", fmt.Sprintf("置信度动态仓位 symbol=%s conf=%.4f mult=%.2f pct=%.4f→%.4f", symbol, confidence, mult, basePct, pct))
 		}
 		maxInit := getNumber(inst.Config["max_initial_margin_usdt"])
-		if getBool(inst.Config["order_pct_leverage_scaled"]) {
-			// 旧语义兜底开关：pct 视为初始保证金占比，名义 = 保证金×杠杆。
-			initial := avail * pct
-			if maxInit > 0 && initial > maxInit {
-				initial = maxInit
-			}
-			if initial <= 0 {
-				emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：按余额百分比计算后的初始保证金<=0 symbol=%s", symbol))
-				return 0, nil
-			}
-			desiredNotional = initial * float64(lev)
-		} else {
-			// 默认（2026-07-19 用户直令）：名义 = 余额×pct，不乘杠杆；
-			// 杠杆只决定保证金占用（= 名义/杠杆），max_initial_margin_usdt 含义不变。
+		if getBool(inst.Config["order_pct_exclude_leverage"]) {
+			// 保守开关：名义 = 余额×pct，不乘杠杆；杠杆只决定保证金占用（= 名义/杠杆）。
 			notional := avail * pct
 			if maxInit > 0 && notional > maxInit*float64(lev) {
 				notional = maxInit * float64(lev)
@@ -148,6 +136,18 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 				return 0, nil
 			}
 			desiredNotional = notional
+		} else {
+			// 默认（2026-07-20 用户直令）：与币安百分比滑杆同语义——
+			// pct 视为初始保证金占比，名义 = 保证金×杠杆，后端算出最终币数量传给交易所。
+			initial := avail * pct
+			if maxInit > 0 && initial > maxInit {
+				initial = maxInit
+			}
+			if initial <= 0 {
+				emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：按余额百分比计算后的初始保证金<=0 symbol=%s", symbol))
+				return 0, nil
+			}
+			desiredNotional = initial * float64(lev)
 		}
 		if confSized {
 			// 缩量不得击穿单笔名义下限（默认 20U）：低置信度是少开，不是开出无意义的粉尘单。
