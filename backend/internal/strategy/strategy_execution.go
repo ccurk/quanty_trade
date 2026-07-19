@@ -215,9 +215,9 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 		return 0, nil
 	}
 	if levChosen != lev {
-		_ = bx.SetLeverage(inst.OwnerID, symbol, levChosen)
 		emitStrategyLog(inst, "info", fmt.Sprintf("自动调整杠杆：因档位上限约束 symbol=%s lev=%d->%d", symbol, lev, levChosen))
 	}
+	ensureExchangeLeverage(inst, bx, symbol, levChosen)
 	amount = finalNotional / px
 	amount = clampOrderAmount(inst, amount)
 	if amount <= 0 {
@@ -228,6 +228,36 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 		return 0, nil
 	}
 	return amount, nil
+}
+
+// ensureExchangeLeverage 把交易所侧 per-symbol 杠杆对齐到目标值。
+// 交易所杠杆是粘性的：手动改过或新币默认档（常见 20X）会一直生效，旧逻辑只在
+// 档位降级时调 SetLeverage，导致实际保证金占用/ROI 按 20X 而非 config 杠杆计算
+// （实证：config=3 时 VANRY 持仓显示 20X、AKE 显示 10X）。
+// 结果按进程周期缓存，每个 symbol×lev 只发一次 REST；失败不阻塞下单
+// （按现有交易所杠杆继续），下一单自动重试。
+func ensureExchangeLeverage(inst *StrategyInstance, bx *exchange.BinanceExchange, symbol string, lev int) {
+	if inst == nil || bx == nil || lev < 1 {
+		return
+	}
+	key := exchange.NormalizeSymbol(symbol)
+	inst.orderMu.Lock()
+	if inst.leverageSet == nil {
+		inst.leverageSet = map[string]int{}
+	}
+	done := inst.leverageSet[key] == lev
+	inst.orderMu.Unlock()
+	if done {
+		return
+	}
+	if err := bx.SetLeverage(inst.OwnerID, symbol, lev); err != nil {
+		emitStrategyLog(inst, "error", fmt.Sprintf("对齐交易所杠杆失败（按现有杠杆继续下单） symbol=%s lev=%d err=%v", symbol, lev, err))
+		return
+	}
+	inst.orderMu.Lock()
+	inst.leverageSet[key] = lev
+	inst.orderMu.Unlock()
+	emitStrategyLog(inst, "info", fmt.Sprintf("交易所杠杆已对齐 symbol=%s lev=%d", symbol, lev))
 }
 
 func normalizedTPSLPct(inst *StrategyInstance, key string) float64 {

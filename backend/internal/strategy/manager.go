@@ -487,6 +487,9 @@ type StrategyInstance struct {
 	inflightOpen  int
 	lastSkipLogAt map[string]time.Time
 	invalidSymbol map[string]time.Time
+	// leverageSet 记录本进程周期内已对齐到交易所的 per-symbol 杠杆。
+	// 交易所侧杠杆是粘性的（手动改过/新币默认 20X 会一直生效），必须显式 SetLeverage 对齐。
+	leverageSet map[string]int
 	// hub is the websocket broadcaster for UI updates.
 	hub *ws.Hub
 	// exchange is the exchange implementation (mock/binance/etc.).
