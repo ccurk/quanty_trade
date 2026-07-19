@@ -121,7 +121,9 @@ func (m *Manager) applyStopMove(inst *StrategyInstance, uid uint, row models.Str
 	}
 	unlock := m.lockTPSL(uid, row.Symbol)
 	defer unlock()
-	_ = bx.CancelUSDMAlgoOpenOrders(uid, row.Symbol)
+	// 全类型清扫：TP/SL 是普通条件单，algo-only 撤单清不掉旧对，
+	// 每次移动止损都会净增一对（与补设监控同款盲区）。
+	_ = bx.CancelUSDMTPSLOpenOrders(uid, row.Symbol)
 	baseClientOrderID := models.GenerateUUID()
 	created, err := bx.PlaceUSDMTPStopOrders(uid, baseClientOrderID, row.Symbol, tpVal, newSL)
 	if err != nil {

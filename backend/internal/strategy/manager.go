@@ -766,9 +766,12 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 					m.NotifyExternalTradeClosed(ownerID, row.StrategyID, strategyName, exchangeName, row.Symbol, side, row.Amount, exitPrice, "closed", "external_close_detected", metrics)
 					continue
 				}
+				// symbol 记入已见集合与 StrategyID 是否为空无关：只要存在任一
+				// open 行，收养路径就不得再 Create 同 symbol 的新行（否则每轮
+				// +1 行，补设监控随行数重复挂 TP/SL）。
+				countedSymbols[symKey] = struct{}{}
 				if strings.TrimSpace(row.StrategyID) != "" {
 					countByStrategy[row.StrategyID]++
-					countedSymbols[symKey] = struct{}{}
 				}
 			}
 

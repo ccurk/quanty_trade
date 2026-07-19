@@ -64,7 +64,16 @@ func (m *Manager) tpslGuardTick() {
 				activeBySymbol[strings.ToUpper(p.Symbol)] = p
 			}
 		}
+		seenSym := map[string]struct{}{}
 		for _, row := range rows {
+			// 同一 symbol 的重复台账行（reconcile 收养/入场路径竞态产物）只
+			// 处理一次：否则一轮内会按行数重复补挂 TP/SL（2026-07-19 实测
+			// ROBO/USDT 同 tick 78ms 内挂出两对）。
+			dedupKey := exchange.NormalizeSymbol(row.Symbol)
+			if _, dup := seenSym[dedupKey]; dup {
+				continue
+			}
+			seenSym[dedupKey] = struct{}{}
 			active, ok := activeBySymbol[strings.ToUpper(row.Symbol)]
 			if !ok {
 				continue
@@ -116,7 +125,11 @@ func (m *Manager) tpslGuardTick() {
 					emitStrategyLog(inst, "error", fmt.Sprintf("仓位缺少有效止盈止损配置 symbol=%s tp=%v sl=%v", row.Symbol, tp, sl))
 					return
 				}
-				if hasTP && hasSL {
+				// 恰好一对且两腿齐全才算健康。>2 张 = 历史堆积的多余对
+				// （重复行竞态/盲区撤单年代的残留），必须落入下方
+				// 全类型清扫+重挂，否则残单永久滞留并占用账户级
+				// stop 单额度（-4045 的温床）。
+				if hasTP && hasSL && len(algoOrders) <= 2 {
 					return
 				}
 
