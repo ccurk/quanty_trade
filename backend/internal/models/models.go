@@ -290,7 +290,9 @@ type StrategyPosition struct {
 	// OpenTime is when the position was first opened.
 	OpenTime time.Time `json:"open_time"`
 	// CloseTime is set when position becomes closed.
-	CloseTime time.Time `json:"close_time,omitempty"`
+	// default:null 让 GORM 在零值时省略该列（落 NULL）：严格模式 MySQL
+	// (NO_ZERO_DATE) 会拒绝零值 time.Time 生成的 '0000-00-00'（Error 1292）。
+	CloseTime time.Time `gorm:"default:null" json:"close_time,omitempty"`
 	// UpdatedAt is when we last updated this row.
 	UpdatedAt time.Time `json:"updated_at"`
 }
