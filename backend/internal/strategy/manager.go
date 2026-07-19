@@ -267,6 +267,23 @@ func parseSymbolsValue(v interface{}) []string {
 	return dedup
 }
 
+// feedHasSymbol reports whether sym is in the instance's LIVE feed set — the
+// authoritative "what are we trading now" under dynamic rotation, which hot-adds
+// symbols that are deliberately absent from the static config seed list.
+func feedHasSymbol(inst *StrategyInstance, sym string) bool {
+	if inst == nil {
+		return false
+	}
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	for _, s := range inst.feedSymbols {
+		if exchange.NormalizeSymbol(s) == sym {
+			return true
+		}
+	}
+	return false
+}
+
 func isAllowedSymbol(inst *StrategyInstance, symbol string) bool {
 	if inst == nil {
 		return false
@@ -281,10 +298,16 @@ func isAllowedSymbol(inst *StrategyInstance, symbol string) bool {
 				return true
 			}
 		}
-		return false
+		// 动态币池：config.symbols 只是启动种子；轮换热加入的币在 feedSymbols
+		// 里而不在静态配置里。此前这里直接 return false，导致轮换币的开仓信号
+		// 被静默丢弃（"择优胜出"却永不下单）。
+		return feedHasSymbol(inst, sym)
 	}
 	if raw, ok := inst.Config["symbol"].(string); ok && strings.TrimSpace(raw) != "" {
-		return exchange.NormalizeSymbol(raw) == sym
+		if exchange.NormalizeSymbol(raw) == sym {
+			return true
+		}
+		return feedHasSymbol(inst, sym)
 	}
 	return true
 }
