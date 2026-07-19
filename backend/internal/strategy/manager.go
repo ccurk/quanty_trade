@@ -686,6 +686,14 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 						_, _ = rb.ReleaseOpenSlot(ctx, row.StrategyID)
 					}
 					logger.Infof("[REDIS OPEN COUNT] auto close stale open position owner=%d strategy=%s symbol=%s", ownerID, row.StrategyID, row.Symbol)
+					// 交易所侧平仓（TP/SL 在币安成交、强平、手工平）不走 closeUSDMPosition，
+					// 残留的另一腿联动委托需在此清理：主路径 closePosition=true 的单币安通常
+					// 自动过期，但 -4120 回退路径的按数量 algo 单不会。只撤本仓位在
+					// strategy_orders 登记过的联动 TP/SL，不碰用户手挂委托；撤已过期单仅
+					// 无害报错（标记 cancel_failed）。
+					if found, canceled, cErr := m.cancelLinkedTPSLOrders(ownerID, row.StrategyID, row.Symbol); found > 0 {
+						logger.Infof("[REDIS OPEN COUNT] external close cleanup owner=%d symbol=%s linked_tpsl found=%d canceled=%d err=%v", ownerID, row.Symbol, found, canceled, cErr)
+					}
 
 					// 即时通知：交易所 TP/SL 触发 / 用户在交易所手工平仓时，
 					// 这里是后端第一次"知道"的地方。早一秒把 closed 状态推

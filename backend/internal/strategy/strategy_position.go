@@ -63,7 +63,9 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	if amount <= 0 {
 		return
 	}
-	if ok, remain, _ := canOpenSymbolByCooldown(inst, loadRecentEntryStats(inst, 1)[exchange.NormalizeSymbol(symbol)]); !ok {
+	// limit 必须覆盖多笔近期入场（不能用 1）：并发≥2 时别的 symbol 的入场会压在
+	// 本 symbol 上面，limit=1 的窗口里根本没有本 symbol 的行 → 冷却被绕过。
+	if ok, remain, _ := canOpenSymbolByCooldown(inst, loadRecentEntryStats(inst, 30)[exchange.NormalizeSymbol(symbol)]); !ok {
 		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：%s 仍在重复开仓冷却期 remaining=%s", symbol, remain.Truncate(time.Second)))
 		return
 	}

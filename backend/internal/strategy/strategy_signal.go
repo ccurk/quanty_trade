@@ -300,14 +300,19 @@ func loadRecentEntryStats(inst *StrategyInstance, limit int) map[string]symbolEn
 		Limit(limit).
 		Find(&rows).Error
 	stats := make(map[string]symbolEntryStats, len(rows))
-	for idx, row := range rows {
+	for _, row := range rows {
 		symKey := exchange.NormalizeSymbol(row.Symbol)
 		if symKey == "" {
 			continue
 		}
 		item := stats[symKey]
 		item.RecentCount++
-		if idx == 0 {
+		// Rows are ordered requested_at desc, so the FIRST occurrence of each
+		// symbol is that symbol's most recent entry. Marking only idx==0 (the
+		// single globally-newest row) broke per-symbol re-entry cooldown as soon
+		// as another symbol's entry sat on top — guaranteed to happen with
+		// max_concurrent_positions>=2, and possible sequentially at max=1.
+		if item.LastEntryAt.IsZero() {
 			item.LastEntryAt = row.RequestedAt
 		}
 		stats[symKey] = item
