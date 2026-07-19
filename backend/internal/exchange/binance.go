@@ -2068,14 +2068,18 @@ func (b *BinanceExchange) ListUSDMAlgoOpenOrders(ownerID uint, symbol string) ([
 	}
 	params := url.Values{}
 	params.Set("symbol", binanceSymbol(symbol))
-	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/algoOpenOrders", params)
+	// 官方端点为 GET /fapi/v1/openAlgoOrders（2025-12-09 条件单强制迁移后
+	// 所有 TP/SL 都落在 Algo 空间）。此前写成 /fapi/v1/algoOpenOrders（词序
+	// 颠倒）→ 永久 404 被吞成空表 → 守护/撤单对 Algo 空间的单全盲：
+	// 补设风暴、-4045 堆积、cancel-orders 报 0 全部源于此一词之差。
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/openAlgoOrders", params)
 	if err != nil {
 		if isBinanceHTMLNotFound(err) {
 			return []USDMAlgoOrder{}, nil
 		}
 		return nil, err
 	}
-	var orders []struct {
+	type algoOrderJSON struct {
 		AlgoID       int64  `json:"algoId"`
 		ClientAlgoID string `json:"clientAlgoId"`
 		Symbol       string `json:"symbol"`
@@ -2084,8 +2088,17 @@ func (b *BinanceExchange) ListUSDMAlgoOpenOrders(ownerID uint, symbol string) ([
 		TriggerPrice string `json:"triggerPrice"`
 		Price        string `json:"price"`
 	}
-	if err := json.Unmarshal(body, &orders); err != nil {
-		return nil, err
+	// 响应形态兼容：裸数组与 {orders:[...]} 包装都接受（官方文档示例
+	// 未给出列表形态，防御性双解析避免再赌一次结构）。
+	var orders []algoOrderJSON
+	if arrErr := json.Unmarshal(body, &orders); arrErr != nil {
+		var wrapped struct {
+			Orders []algoOrderJSON `json:"orders"`
+		}
+		if wrapErr := json.Unmarshal(body, &wrapped); wrapErr != nil {
+			return nil, arrErr
+		}
+		orders = wrapped.Orders
 	}
 	out := make([]USDMAlgoOrder, 0, len(orders))
 	for _, o := range orders {
