@@ -88,16 +88,24 @@ func (m *Manager) tpslGuardTick() {
 					emitStrategyLog(inst, "error", fmt.Sprintf("查询交易所止盈止损失败 symbol=%s err=%v", row.Symbol, err))
 					return
 				}
-				hasTP := false
-				hasSL := false
+				tpCount := 0
+				slCount := 0
 				for _, ord := range algoOrders {
 					typ := strings.ToUpper(strings.TrimSpace(ord.Type))
 					if strings.Contains(typ, "TAKE_PROFIT") {
-						hasTP = true
+						tpCount++
+					} else if strings.Contains(typ, "STOP") {
+						slCount++
 					}
-					if typ == "STOP" || strings.Contains(typ, "STOP") {
-						hasSL = true
-					}
+				}
+				hasTP := tpCount > 0
+				hasSL := slCount > 0
+				// 每仓位只应有一对 TP/SL。多于一对（历史 bug 曾因查单端点 404 无限
+				// 补挂）→ 走下面的撤光重建路径自愈。
+				if tpCount > 1 || slCount > 1 {
+					emitStrategyLog(inst, "info", fmt.Sprintf("检测到重复止盈止损单 symbol=%s tp=%d sl=%d，撤销全部后重建", row.Symbol, tpCount, slCount))
+					hasTP = false
+					hasSL = false
 				}
 
 				tp := row.TakeProfit

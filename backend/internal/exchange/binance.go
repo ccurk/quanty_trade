@@ -2068,14 +2068,17 @@ func (b *BinanceExchange) ListUSDMAlgoOpenOrders(ownerID uint, symbol string) ([
 	}
 	params := url.Values{}
 	params.Set("symbol", binanceSymbol(symbol))
-	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/algoOpenOrders", params)
+	// 端点名必须是 openAlgoOrders：曾误写成 /fapi/v1/algoOpenOrders（不存在，
+	// 404 HTML 被下面的 NotFound 容错吞成"空列表"），导致 15s 守护永远"看不见"
+	// 已挂的 algo TP/SL，每轮补挂新单且跳过撤旧（len==0），条件委托无限堆积。
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/openAlgoOrders", params)
 	if err != nil {
 		if isBinanceHTMLNotFound(err) {
 			return []USDMAlgoOrder{}, nil
 		}
 		return nil, err
 	}
-	var orders []struct {
+	type algoOrderRow struct {
 		AlgoID       int64  `json:"algoId"`
 		ClientAlgoID string `json:"clientAlgoId"`
 		Symbol       string `json:"symbol"`
@@ -2084,8 +2087,16 @@ func (b *BinanceExchange) ListUSDMAlgoOpenOrders(ownerID uint, symbol string) ([
 		TriggerPrice string `json:"triggerPrice"`
 		Price        string `json:"price"`
 	}
+	// 兼容两种响应形态：裸数组 或 {"total":n,"orders":[...]} 包装。
+	var orders []algoOrderRow
 	if err := json.Unmarshal(body, &orders); err != nil {
-		return nil, err
+		var wrapped struct {
+			Orders []algoOrderRow `json:"orders"`
+		}
+		if err2 := json.Unmarshal(body, &wrapped); err2 != nil {
+			return nil, err
+		}
+		orders = wrapped.Orders
 	}
 	out := make([]USDMAlgoOrder, 0, len(orders))
 	for _, o := range orders {
