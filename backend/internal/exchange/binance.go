@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"quanty_trade/internal/conf"
@@ -61,6 +62,10 @@ type BinanceExchange struct {
 	positionsCacheMu  sync.Mutex
 	positionsCacheExp map[uint]time.Time
 	positionsCache    map[uint][]Position
+
+	// Binance 强制条件单迁移 Algo API（-4045/-4120 时代之后）后置 1：
+	// TP/SL 直接走 /fapi/v1/algoOrder，不再每次对 /fapi/v1/order 做注定失败的试探
+	algoOrderMigrated atomic.Bool
 
 	usdmAvailMu    sync.Mutex
 	usdmAvailExp   map[uint]time.Time
@@ -2075,20 +2080,38 @@ func (b *BinanceExchange) ListUSDMAlgoOpenOrders(ownerID uint, symbol string) ([
 		}
 		return nil, err
 	}
-	var orders []struct {
+	type algoItem struct {
 		AlgoID       int64  `json:"algoId"`
 		ClientAlgoID string `json:"clientAlgoId"`
 		Symbol       string `json:"symbol"`
 		Side         string `json:"side"`
 		Type         string `json:"orderType"`
+		AlgoStatus   string `json:"algoStatus"`
 		TriggerPrice string `json:"triggerPrice"`
 		Price        string `json:"price"`
 	}
-	if err := json.Unmarshal(body, &orders); err != nil {
-		return nil, err
+	var orders []algoItem
+	if uerr := json.Unmarshal(body, &orders); uerr != nil {
+		// 兼容包裹形态响应（{"orders":[...]} / {"data":[...]}），
+		// 解析失败必须报错而不是当作空列表——守护会拿空列表反复补挂
+		var wrapped struct {
+			Orders []algoItem `json:"orders"`
+			Data   []algoItem `json:"data"`
+		}
+		if werr := json.Unmarshal(body, &wrapped); werr != nil {
+			return nil, fmt.Errorf("algoOpenOrders parse failed: %w body=%.200s", uerr, string(body))
+		}
+		orders = wrapped.Orders
+		if len(orders) == 0 {
+			orders = wrapped.Data
+		}
 	}
 	out := make([]USDMAlgoOrder, 0, len(orders))
 	for _, o := range orders {
+		switch strings.ToUpper(strings.TrimSpace(o.AlgoStatus)) {
+		case "CANCELED", "CANCELLED", "TRIGGERED", "FINISHED", "EXPIRED", "REJECTED":
+			continue
+		}
 		out = append(out, USDMAlgoOrder{
 			AlgoID:         o.AlgoID,
 			ClientAlgoID:   o.ClientAlgoID,
@@ -2157,13 +2180,15 @@ func (b *BinanceExchange) ListUSDMTPSLOpenOrders(ownerID uint, symbol string) ([
 	}
 
 	algoOrders, algoErr := b.ListUSDMAlgoOpenOrders(ownerID, symbol)
-	if algoErr != nil && err != nil {
-		return nil, algoErr
-	}
-	// 常规单查询失败时不得凭 algo 结果谎报"无 TP/SL"——tpsl 守护会据空列表
-	// 反复撤旧挂新形成 churn；宁可整次报错让调用方跳过本轮。
+	// 任一类查询失败都必须如实报错，不得谎报"无 TP/SL"——条件单迁移 Algo API
+	// 之后常规列表合法为空，若吞掉 algo 侧错误，守护会拿着空列表反复补挂重复单
+	//（实证 2026-07-21 DODOX/BULLA 每 60s 一对）。algo 接口不存在(HTML 404)已在
+	// ListUSDMAlgoOpenOrders 内按"无 algo 单"消化，不会走到这里。
 	if err != nil {
 		return nil, err
+	}
+	if algoErr != nil {
+		return nil, algoErr
 	}
 	created = append(created, algoOrders...)
 	return created, nil
@@ -2475,17 +2500,23 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		orderParams.Set("workingType", "MARK_PRICE")
 		orderParams.Set("priceProtect", "TRUE")
 		orderParams.Set("newClientOrderId", clientID)
-		body, _, e := b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/order", orderParams)
-		useAlgoFallback := false
-		if e != nil {
-			msg := e.Error()
-			if strings.Contains(msg, "\"code\":-4120") || strings.Contains(msg, "Algo Order API") || strings.Contains(msg, "algoOrder") {
-				useAlgoFallback = true
-			} else if firstErr == nil {
-				firstErr = e
-				return
-			} else {
-				return
+		useAlgoFallback := b.algoOrderMigrated.Load()
+		var body []byte
+		var e error
+		if !useAlgoFallback {
+			body, _, e = b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/order", orderParams)
+			if e != nil {
+				msg := e.Error()
+				if strings.Contains(msg, "\"code\":-4120") || strings.Contains(msg, "Algo Order API") || strings.Contains(msg, "algoOrder") {
+					// Binance 强制条件单走 Algo API：记住，后续同进程不再试探主路径
+					useAlgoFallback = true
+					b.algoOrderMigrated.Store(true)
+				} else if firstErr == nil {
+					firstErr = e
+					return
+				} else {
+					return
+				}
 			}
 		}
 		if useAlgoFallback {

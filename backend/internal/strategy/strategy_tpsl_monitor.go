@@ -190,9 +190,12 @@ func (m *Manager) tpslOrphanSweep() {
 		}
 	}
 	m.mu.RUnlock()
+	tpslPurposes := []string{"take_profit", "stop_loss", "tpsl"}
 	for uid := range owners {
+		// 常规类可全账户列出；algo 类接口 symbol 必填（无全账户列表），
+		// 用本库登记的未终态 TP/SL 单符号补齐候选。
 		refs, err := bx.ListUSDMTPSLOpenOrdersAllSymbols(uid)
-		if err != nil || len(refs) == 0 {
+		if err != nil {
 			continue
 		}
 		posList, err := bx.FetchPositions(uid, "active")
@@ -212,29 +215,55 @@ func (m *Manager) tpslOrphanSweep() {
 		for _, r := range openRows {
 			keep[exchange.NormalizeSymbol(r.Symbol)] = struct{}{}
 		}
-		bySym := map[string][]exchange.USDMOpenStopRef{}
-		for _, ref := range refs {
-			bySym[ref.Symbol] = append(bySym[ref.Symbol], ref)
-		}
+
 		nowMs := time.Now().UnixMilli()
-		for sym, list := range bySym {
-			if _, ok := keep[exchange.NormalizeSymbol(sym)]; ok {
+		candidates := map[string]string{} // normalized → 原始符号（供撤单/加锁）
+		young := map[string]bool{}        // 该符号存在挂龄不足的单 → 本轮不动
+		for _, ref := range refs {
+			n := exchange.NormalizeSymbol(ref.Symbol)
+			if _, ok := candidates[n]; !ok {
+				candidates[n] = ref.Symbol
+			}
+			if ref.CreatedAtMs > 0 && nowMs-ref.CreatedAtMs < tpslOrphanMinAge.Milliseconds() {
+				young[n] = true
+			}
+		}
+		var orderRows []models.StrategyOrder
+		_ = database.DB.Where("owner_id = ? AND purpose IN ? AND status = ?", uid, tpslPurposes, "open").
+			Find(&orderRows).Error
+		for _, r := range orderRows {
+			n := exchange.NormalizeSymbol(r.Symbol)
+			if _, ok := candidates[n]; !ok {
+				candidates[n] = r.Symbol
+			}
+			if time.Since(r.RequestedAt) < tpslOrphanMinAge {
+				young[n] = true
+			}
+		}
+
+		for n, sym := range candidates {
+			if _, ok := keep[n]; ok {
 				continue
 			}
-			young := false
-			for _, ref := range list {
-				if ref.CreatedAtMs > 0 && nowMs-ref.CreatedAtMs < tpslOrphanMinAge.Milliseconds() {
-					young = true
-					break
-				}
-			}
-			if young {
+			if young[n] {
 				continue
 			}
 			unlock := m.lockTPSL(uid, sym)
+			orders, lErr := bx.ListUSDMTPSLOpenOrders(uid, sym)
+			if lErr == nil && len(orders) == 0 {
+				// 交易所已无该符号的保护单：把本库还挂着 open 的登记行结转，
+				// 避免它每 5 分钟都进候选。
+				_ = database.DB.Model(&models.StrategyOrder{}).
+					Where("owner_id = ? AND symbol = ? AND purpose IN ? AND status = ?", uid, sym, tpslPurposes, "open").
+					Update("status", "superseded").Error
+			}
+			if lErr != nil || len(orders) == 0 {
+				unlock()
+				continue
+			}
 			cErr := bx.CancelUSDMAlgoOpenOrders(uid, sym)
 			unlock()
-			logger.Warnf("[TPSL SWEEP] 清理孤儿止盈止损 owner=%d symbol=%s orders=%d err=%v", uid, sym, len(list), cErr)
+			logger.Warnf("[TPSL SWEEP] 清理孤儿止盈止损 owner=%d symbol=%s orders=%d err=%v", uid, sym, len(orders), cErr)
 		}
 	}
 }
