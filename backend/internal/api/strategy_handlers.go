@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,9 +10,20 @@ import (
 
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/models"
+	"quanty_trade/internal/strategy"
 
 	"github.com/gin-gonic/gin"
 )
+
+// configUpdateErrStatus 把 manager 的配置更新错误映射为 HTTP 状态码：
+// 运行中锁配置是调用时机问题（409），不是服务故障（500），
+// 让 trace 中间件按 warn 记日志而不触发 ERROR 告警。
+func configUpdateErrStatus(err error) int {
+	if errors.Is(err, strategy.ErrConfigLockedWhileRunning) {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
+}
 
 type CreateStrategyRequest struct {
 	Name       string `json:"name" binding:"required"`
@@ -181,7 +193,7 @@ func UpdateStrategyConfig(c *gin.Context) {
 	}
 
 	if err := stratMgr.UpdateStrategyConfig(id, config); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(configUpdateErrStatus(err), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -274,12 +286,13 @@ func PatchStrategyConfig(c *gin.Context) {
 	}
 
 	if err := stratMgr.UpdateStrategyConfig(id, normCfg); err != nil {
+		status := configUpdateErrStatus(err)
 		writeAudit(c, auditCtx{
 			StrategyID: id, OwnerID: instance.OwnerID,
 			Action: "patch_config", Endpoint: "PATCH /strategies/:id/config",
 			After: changed, Summary: "patch failed at manager",
-		}, false, http.StatusInternalServerError, err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}, false, status, err.Error())
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 

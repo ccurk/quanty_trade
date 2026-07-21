@@ -39,9 +39,12 @@ func TraceMiddleware() gin.HandlerFunc {
 
 		latency := time.Since(start)
 		status := c.Writer.Status()
-		if status >= 500 {
+		switch {
+		case status >= 500:
 			logger.WithTrace(traceID).Errorf("HTTP end status=%d ms=%d", status, latency.Milliseconds())
-		} else {
+		case status >= 400:
+			logger.WithTrace(traceID).Warnf("HTTP end status=%d ms=%d", status, latency.Milliseconds())
+		default:
 			logger.WithTrace(traceID).Infof("HTTP end status=%d ms=%d", status, latency.Milliseconds())
 		}
 	}

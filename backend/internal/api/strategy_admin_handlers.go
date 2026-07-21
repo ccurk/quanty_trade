@@ -188,13 +188,14 @@ func RemoveSymbolFromBlacklist(c *gin.Context) {
 
 	cfg["symbol_blacklist"] = newList
 	if err := saveMergedConfig(inst, cfg); err != nil {
+		status := configUpdateErrStatus(err)
 		writeAudit(c, auditCtx{
 			StrategyID: inst.ID, OwnerID: inst.OwnerID,
 			Action:   "blacklist_remove",
 			Endpoint: "DELETE /strategies/:id/blacklist/:symbol",
 			Summary:  fmt.Sprintf("attempted remove %s, failed", symbol),
-		}, false, http.StatusInternalServerError, err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}, false, status, err.Error())
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 

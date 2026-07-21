@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -1505,6 +1506,10 @@ func (m *Manager) RemoveStrategy(id string) error {
 	return nil
 }
 
+// ErrConfigLockedWhileRunning 是运行中拒改配置的守卫拒绝。调用方（cron 的
+// stop→PATCH→start 配方）按错误文本识别它，文本不可改；API 层据此返回 409 而非 500。
+var ErrConfigLockedWhileRunning = errors.New("cannot update config while strategy is running")
+
 // UpdateStrategyConfig updates a strategy's config in memory.
 // Caller is responsible for persisting to DB (API handler does this).
 // Config cannot be changed while the strategy is running to avoid race conditions.
@@ -1517,7 +1522,7 @@ func (m *Manager) UpdateStrategyConfig(id string, config map[string]interface{})
 	}
 
 	if inst.Status == StatusRunning {
-		return fmt.Errorf("cannot update config while strategy is running")
+		return ErrConfigLockedWhileRunning
 	}
 
 	inst.Config = config
