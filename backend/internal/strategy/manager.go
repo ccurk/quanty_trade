@@ -617,6 +617,12 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 	if m == nil {
 		return
 	}
+	// "owner|symbol" → 连续几拍在交易所持仓里没看到这个 open 行。
+	// 单次 FetchPositions 抖动（网络劣化、瞬时空响应）会误判"交易所侧已平"，
+	// 进而撤掉刚补设的联动 TP/SL，与 15s 守护形成撤↔挂死循环
+	//（实证 2026-07-21：TUT/ERA 每 15s 被重挂一对）。连续 ≥2 拍（本循环
+	// 2s/拍 + 5s 持仓缓存，即 ≥4s 且跨缓存窗口）仍缺席才当真。
+	staleMissStreak := map[string]int{}
 	syncOnce := func() {
 		m.mu.RLock()
 		rb := m.redisBus
@@ -695,7 +701,19 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 				if symKey == "" {
 					continue
 				}
+				missKey := fmt.Sprintf("%d|%s", ownerID, symKey)
 				if _, ok := activePositions[symKey]; !ok {
+					staleMissStreak[missKey]++
+					if staleMissStreak[missKey] < 2 {
+						// 首拍缺席先按在场计数（不释放槽位、不关行、不撤联动单），
+						// 下一拍仍缺席才走外部平仓路径。
+						if strings.TrimSpace(row.StrategyID) != "" {
+							countByStrategy[row.StrategyID]++
+							countedSymbols[symKey] = struct{}{}
+						}
+						continue
+					}
+					delete(staleMissStreak, missKey)
 					closeTime := row.CloseTime
 					if closeTime.IsZero() {
 						closeTime = now
@@ -767,6 +785,7 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 					m.NotifyExternalTradeClosed(ownerID, row.StrategyID, strategyName, exchangeName, row.Symbol, side, row.Amount, exitPrice, "closed", "external_close_detected", metrics)
 					continue
 				}
+				delete(staleMissStreak, missKey)
 				if strings.TrimSpace(row.StrategyID) != "" {
 					countByStrategy[row.StrategyID]++
 					countedSymbols[symKey] = struct{}{}

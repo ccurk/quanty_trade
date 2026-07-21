@@ -2132,7 +2132,9 @@ func (b *BinanceExchange) ListUSDMTPSLOpenOrders(ownerID uint, symbol string) ([
 			StopPrice     string `json:"stopPrice"`
 			Price         string `json:"price"`
 		}
-		if err := json.Unmarshal(body, &orders); err == nil {
+		if uerr := json.Unmarshal(body, &orders); uerr != nil {
+			err = uerr
+		} else {
 			for _, o := range orders {
 				typ := o.OrigType
 				if strings.TrimSpace(typ) == "" {
@@ -2158,39 +2160,98 @@ func (b *BinanceExchange) ListUSDMTPSLOpenOrders(ownerID uint, symbol string) ([
 	if algoErr != nil && err != nil {
 		return nil, algoErr
 	}
+	// 常规单查询失败时不得凭 algo 结果谎报"无 TP/SL"——tpsl 守护会据空列表
+	// 反复撤旧挂新形成 churn；宁可整次报错让调用方跳过本轮。
+	if err != nil {
+		return nil, err
+	}
 	created = append(created, algoOrders...)
 	return created, nil
 }
 
+// USDMOpenStopRef 是全账户扫描出的一张未成交 TP/SL 条件单的最小引用。
+type USDMOpenStopRef struct {
+	Symbol        string
+	OrderID       int64
+	ClientOrderID string
+	Type          string
+	CreatedAtMs   int64
+}
+
+// ListUSDMTPSLOpenOrdersAllSymbols 全账户列出常规类未成交 TP/SL 条件单
+//（不带 symbol 的 /fapi/v1/openOrders，weight≈40，只应低频调用）。
+// 孤儿清扫用：找出没有对应持仓却还挂着的保护单。algo 回退类由每符号路径处理。
+func (b *BinanceExchange) ListUSDMTPSLOpenOrdersAllSymbols(ownerID uint) ([]USDMOpenStopRef, error) {
+	if b.market != "usdm" {
+		return nil, nil
+	}
+	cred, err := b.getCred(ownerID)
+	if err != nil {
+		return nil, err
+	}
+	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/openOrders", nil)
+	if err != nil {
+		return nil, err
+	}
+	var orders []struct {
+		OrderID       int64  `json:"orderId"`
+		ClientOrderID string `json:"clientOrderId"`
+		Symbol        string `json:"symbol"`
+		Type          string `json:"type"`
+		OrigType      string `json:"origType"`
+		Time          int64  `json:"time"`
+	}
+	if err := json.Unmarshal(body, &orders); err != nil {
+		return nil, err
+	}
+	out := make([]USDMOpenStopRef, 0, len(orders))
+	for _, o := range orders {
+		typ := o.OrigType
+		if strings.TrimSpace(typ) == "" {
+			typ = o.Type
+		}
+		if !isUSDMTPSLType(typ) {
+			continue
+		}
+		out = append(out, USDMOpenStopRef{
+			Symbol:        o.Symbol,
+			OrderID:       o.OrderID,
+			ClientOrderID: o.ClientOrderID,
+			Type:          typ,
+			CreatedAtMs:   o.Time,
+		})
+	}
+	return out, nil
+}
+
+// CancelUSDMAlgoOpenOrders 撤掉该符号全部未成交 TP/SL 保护单。
+// 主路径把 TP/SL 挂成常规条件单（/fapi/v1/order 的 STOP_MARKET /
+// TAKE_PROFIT_MARKET），-4120 回退路径才是 algo 单——两类必须都撤；
+// 历史实现只撤 algo 类，常规单永久残留，随每次重挂堆积到每符号 10 张
+// 上限后触发 -4045 "Reach max stop order limit"。仅按 TP/SL 类型撤，
+// 不碰同符号的普通挂单。
 func (b *BinanceExchange) CancelUSDMAlgoOpenOrders(ownerID uint, symbol string) error {
 	if b.market != "usdm" {
 		return nil
 	}
-	cred, err := b.getCred(ownerID)
-	if err != nil {
-		return err
-	}
-	orders, err := b.ListUSDMAlgoOpenOrders(ownerID, symbol)
+	orders, err := b.ListUSDMTPSLOpenOrders(ownerID, symbol)
 	if err != nil {
 		return err
 	}
 	var firstErr error
 	for _, o := range orders {
-		q := url.Values{}
-		q.Set("symbol", binanceSymbol(symbol))
+		ref := ""
 		if o.AlgoID > 0 {
-			q.Set("algoId", strconv.FormatInt(o.AlgoID, 10))
-		} else if strings.TrimSpace(o.ClientAlgoID) != "" {
-			q.Set("clientAlgoId", o.ClientAlgoID)
+			ref = strconv.FormatInt(o.AlgoID, 10)
+		}
+		var e error
+		if o.IsAlgo {
+			e = b.CancelUSDMAlgoOrderByRef(ownerID, symbol, ref, o.ClientAlgoID)
 		} else {
-			continue
+			e = b.CancelUSDMOrderByRef(ownerID, symbol, ref, o.ClientAlgoID)
 		}
-		_, _, err := b.signedRequest(context.Background(), cred, http.MethodDelete, "/fapi/v1/algoOrder", q)
-		if isBinanceHTMLNotFound(err) {
-			continue
-		}
-		if err != nil && firstErr == nil {
-			firstErr = err
+		if e != nil && firstErr == nil {
+			firstErr = e
 		}
 	}
 	return firstErr
