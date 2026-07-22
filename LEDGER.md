@@ -1,8 +1,20 @@
-# QuantyTrade 改动台账（LEDGER）
+# QuantyTrade 改动台账（LEDGER）——引导种子副本
 
-> 权威分支：`quanty-ledger`（v11 首轮运行前，种子位于 `claude/jolly-bardeen-sz6d04`）。
-> 由 cron 运行维护，每轮必写；人工编辑请只增不删。协议见 `docs/cron_prompt_v11_addendum.md` Step 7。
+> ⚠️ 本文件仅是 2026-07-22 的【引导种子】。权威台账在 `origin/quanty-ledger` 分支
+> （已上线并持续积累）。任何重入/引导逻辑：只要 quanty-ledger 可达，一律以其现行
+> 内容为准，**严禁用本种子覆盖或回滚权威台账**。协议见 `docs/cron_prompt_v12.md` Step 7。
 > 策略：8eb182b6-ee74-4125-a602-f0a91f376432（tpl447 @2026-07-22）
+
+## 0. 用户常备直令（长期有效；权威在 quanty-ledger，此处为种子快照）
+
+| 直令 | 日期 | 内容 |
+|---|---|---|
+| 20U 名义下限 | 2026-07-19，口径重校 2026-07-22 | 单笔名义（余额×pct，不含杠杆度量口径）≥20U；公式用 ceil2 向上取整 |
+| 全天开仓 | 2026-07-19 | entry_time_windows 保持 ""；恢复窗口须用户批准 |
+| 并发基线 | 2026-07-19 | max_concurrent_positions 基线=2，升 3 只经 E4 |
+| 引擎下单语义 | 2026-07-20 | percent_balance 含杠杆语义（与币安滑杆一致）；名义=avail×pct×lev×mult |
+| 置信度动态仓位 | 2026-07-20 | 已由引擎 conf_sizing 实现（mult∈[0.6,1.4]，地板 21U）；策略代码勿双重实现 |
+| 充值信号常备令 | 2026-07-20 | 触发=L2→L1 升档成立 且 12h wr−be≥6pp 且 12h/24h net 双正 → TG 建议充至钱包 250-300U；到账后按新余额重算 pct；用户等信号再充值；提前到账则当轮 LADDER-MAINT 压回当档规格 |
 
 ## 1. 锚点登记（代码活性改动；apply 前必须逐一 grep 到）
 
