@@ -1,5 +1,9 @@
 # Cron Auto-Optimize Prompt
 
+> ⚠️ **本文件是 v2 时代的陈旧副本，仅存档**。调度器中的活文本已演进到 v10（3h 周期、
+> 五窗读数、降险阶梯、E1-E6 触发器、_exp 预注册）。v11 增补块（盈亏归因层、E7/E8、
+> 改动台账持久化）见 `docs/cron_prompt_v11_addendum.md`，台账种子见仓库根 `LEDGER.md`。
+
 这是每 6 小时被 Claude 定时触发一次时跑的完整指令。
 当 cron 触发时，Anthropic 这边会拉起一个**新的、独立的 Claude 会话**，
 把下面整段 prompt 作为初始消息塞进去，让它带着 Bash 工具去执行。
