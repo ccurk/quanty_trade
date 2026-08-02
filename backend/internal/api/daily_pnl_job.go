@@ -29,9 +29,11 @@ import (
 // 逐日拉取后**缓存**进 daily_pnls 表（启动全量刷新一次 + 每天 00:05 刷新最近几天），
 // 「今天」的值则在读取时实时从币安计算。缓存表里的数据 100% 来自币安。
 
-// BackfillDailyPnL is an admin-only handler that synchronously re-pulls the
-// daily PnL aggregation from Binance for the past N days (default 400). Use
-// after a first deploy or whenever you suspect the cache table drifted.
+// BackfillDailyPnL is an admin-only handler that kicks off (in the background)
+// a re-pull of the daily PnL aggregation from Binance for the past N days
+// (default 400). Use after a first deploy or whenever you suspect the cache
+// table drifted. Returns immediately; rebuildDailyPnL is single-flighted so
+// repeated triggers won't stack Binance load.
 //
 // Query: ?days=N (1..3650, default 400)
 func BackfillDailyPnL(c *gin.Context) {
@@ -49,15 +51,15 @@ func BackfillDailyPnL(c *gin.Context) {
 			days = n
 		}
 	}
-	startedAt := time.Now()
-	rebuildDailyPnL(days)
+	// 后台异步跑:带节流的全量回填可能耗时较久(每 symbol 间隔涓流),同步返回会挂住请求;
+	// rebuildDailyPnL 内部有 single-flight 保护,重复触发不会叠加币安压力。
+	go rebuildDailyPnL(days)
 
-	c.JSON(http.StatusOK, gin.H{
-		"status":      "ok",
-		"days":        days,
-		"source":      "binance",
-		"duration_ms": time.Since(startedAt).Milliseconds(),
-		"hint":        "前端「数据面板」刷新一下,应该能看到日历填充",
+	c.JSON(http.StatusAccepted, gin.H{
+		"status": "started",
+		"days":   days,
+		"source": "binance",
+		"hint":   "已在后台按币安重建,过一会儿刷新「数据面板」查看",
 	})
 }
 
@@ -70,9 +72,22 @@ func StartDailyPnLJob(ctx context.Context) {
 }
 
 func runDailyPnLLoop(ctx context.Context) {
-	// 启动全量刷新：把缓存表 400 天的历史全部按币安重建（income 分页后成本很低，
-	// 且覆盖任何旧版本遗留的本地口径数据）。
-	rebuildDailyPnL(400)
+	// 启动全量刷新前先等一会,避开进程启动时的下单/持仓/K线请求高峰,
+	// 免得批量回填的突发请求把每分钟权重打满、触发 429 拖累持仓同步。
+	if !sleepCtx(ctx, startupBackfillDelay) {
+		return
+	}
+	// 全量刷新:按币安重建缓存表 400 天历史(income 分页后成本很低,且覆盖旧版本遗留的
+	// 本地口径数据)。若遭遇限频,隔几分钟重试,最多 3 次。
+	for attempt := 0; attempt < 3; attempt++ {
+		if !rebuildDailyPnL(400) {
+			break // 完成(或非限频原因结束)
+		}
+		logger.Errorf("daily pnl: startup backfill hit rate limit, retry in 3m (attempt %d)", attempt+1)
+		if !sleepCtx(ctx, 3*time.Minute) {
+			return
+		}
+	}
 	for {
 		next := nextLocalTime(0, 5, 0)
 		timer := time.NewTimer(time.Until(next))
@@ -85,6 +100,18 @@ func runDailyPnLLoop(ctx context.Context) {
 		timer.Stop()
 		// 每天 00:05 刷新最近几天（覆盖刚过去的昨天完整值）。历史日一旦过完即不再变。
 		rebuildDailyPnL(3)
+	}
+}
+
+// sleepCtx 睡 d,期间若 ctx 取消则提前返回 false。
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
@@ -113,9 +140,17 @@ type binanceDayAgg struct {
 func (a *binanceDayAgg) trades() int { return len(a.closeOrders) }
 
 const (
-	binancePageLimit     = 1000
-	binanceMaxPages      = 120 // 120*1000=12w 条,足够覆盖 400 天
-	binanceFetchThrottle = 120 * time.Millisecond
+	binancePageLimit = 1000
+	binanceMaxPages  = 120 // 120*1000=12w 条,足够覆盖 400 天
+	// 后台批量回填:慢速涓流,避免突发把每分钟权重打满触发 429
+	//（一旦 429,币安客户端会设 2 分钟全局 ban 窗口,连累 2s 一次的持仓同步)。
+	binanceBulkThrottle = 900 * time.Millisecond
+	// 当天实时:调用量小,轻throttle 即可。
+	binanceLiveThrottle = 150 * time.Millisecond
+	// 「今天」实时值缓存 TTL:让 60s 一次的快照/其它调用复用,进一步压低币安调用频率。
+	todayEntryTTL = 120 * time.Second
+	// 启动后延迟再做全量回填,避开进程启动时的下单/持仓/K线请求高峰。
+	startupBackfillDelay = 60 * time.Second
 )
 
 func binanceExchangeUSDM() (*exchange.BinanceExchange, bool) {
@@ -129,9 +164,24 @@ func binanceExchangeUSDM() (*exchange.BinanceExchange, bool) {
 	return bx, true
 }
 
+// isBinanceRateLimited 判断错误是否为币安限频(429 / -1003 / IP ban)。命中时应立刻
+// 停手,把每分钟权重让给更关键的持仓同步等调用,而不是继续 hammer。
+func isBinanceRateLimited(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "\"code\":429") ||
+		strings.Contains(msg, "\"code\":-1003") ||
+		strings.Contains(msg, "rate limited") ||
+		strings.Contains(msg, "too many request") ||
+		strings.Contains(msg, "ip banned")
+}
+
 // computeBinanceDailyBuckets 拉 [start,end] 区间的币安真实数据,按本地日聚合。
+// throttle 是每次分页/每个 symbol 之间的间隔(批量回填用大值涓流,当天实时用小值)。
 // 任一分页出错立即返回 error,调用方据此保留旧缓存 / 返回 0,不写脏数据。
-func computeBinanceDailyBuckets(uid uint, start, end time.Time) (map[string]*binanceDayAgg, error) {
+func computeBinanceDailyBuckets(uid uint, start, end time.Time, throttle time.Duration) (map[string]*binanceDayAgg, error) {
 	bx, ok := binanceExchangeUSDM()
 	if !ok {
 		return nil, fmt.Errorf("binance usdm not available")
@@ -187,7 +237,7 @@ func computeBinanceDailyBuckets(uid uint, start, end time.Time) (map[string]*bin
 			break
 		}
 		cursor = next
-		time.Sleep(binanceFetchThrottle)
+		time.Sleep(throttle)
 	}
 
 	// 2) userTrades 逐 symbol 分页:只统计带 realizedPnl 的平仓成交,得每日平仓名义额 + 平仓单数。
@@ -196,7 +246,10 @@ func computeBinanceDailyBuckets(uid uint, start, end time.Time) (map[string]*bin
 		for page := 0; page < binanceMaxPages; page++ {
 			fills, err := bx.USDMUserTrades(uid, sym, scursor, end, binancePageLimit)
 			if err != nil {
-				break // 单 symbol 失败不阻塞其它 symbol
+				if isBinanceRateLimited(err) {
+					return nil, err // 限频:立刻停手,让出权重
+				}
+				break // 其它错误:单 symbol 失败不阻塞其它 symbol
 			}
 			if len(fills) == 0 {
 				break
@@ -221,36 +274,49 @@ func computeBinanceDailyBuckets(uid uint, start, end time.Time) (map[string]*bin
 				break
 			}
 			scursor = next
-			time.Sleep(binanceFetchThrottle)
+			time.Sleep(throttle)
 		}
-		time.Sleep(binanceFetchThrottle)
+		time.Sleep(throttle)
 	}
 	return buckets, nil
 }
 
 // rebuildDailyPnL 拉取每个用户最近 days 天的币安数据并写入缓存表(覆盖历史 1..days 天;
-// 当天由读取路径实时计算,这里不写)。任一用户拉取失败只记录日志、保留其旧缓存。
-func rebuildDailyPnL(days int) {
+// 当天由读取路径实时计算,这里不写)。返回值 rateLimited 表示中途遭遇币安限频而提前中止
+// ——调用方可据此延后重试。任一用户普通拉取失败只记录日志、保留其旧缓存。
+var dailyPnLRebuildMu sync.Mutex // single-flight:同一时刻只允许一个回填,避免叠加币安压力
+
+func rebuildDailyPnL(days int) (rateLimited bool) {
 	if database.DB == nil || days <= 0 {
-		return
+		return false
 	}
 	if _, ok := binanceExchangeUSDM(); !ok {
-		return // 非币安 usdm,无数据源
+		return false // 非币安 usdm,无数据源
 	}
+	if !dailyPnLRebuildMu.TryLock() {
+		logger.Infof("daily pnl: rebuild already running, skip days=%d", days)
+		return false
+	}
+	defer dailyPnLRebuildMu.Unlock()
 	var users []models.User
 	if err := database.DB.Select("id").Find(&users).Error; err != nil {
 		logger.Errorf("daily pnl: list users failed err=%v", err)
-		return
+		return false
 	}
 	now := time.Now()
 	loc := now.Location()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	start := today.AddDate(0, 0, -days)
 	for _, u := range users {
-		buckets, err := computeBinanceDailyBuckets(u.ID, start, now)
+		buckets, err := computeBinanceDailyBuckets(u.ID, start, now, binanceBulkThrottle)
 		if err != nil {
+			if isBinanceRateLimited(err) {
+				// 限频:立刻整体中止,把权重让给持仓同步,避免持续踩 429 触发全局 ban。
+				logger.Errorf("daily pnl: binance rate limited, abort rebuild uid=%d err=%v", u.ID, err)
+				return true
+			}
 			logger.Errorf("daily pnl: binance fetch failed uid=%d err=%v", u.ID, err)
-			continue // 保留旧缓存,不写脏
+			continue // 其它错误:保留旧缓存,不写脏
 		}
 		for i := 1; i <= days; i++ {
 			dayStart := today.AddDate(0, 0, -i)
@@ -261,6 +327,7 @@ func rebuildDailyPnL(days int) {
 			}
 		}
 	}
+	return false
 }
 
 // upsertDailyPnLRow 原子 upsert(owner_id, day)。agg 为 nil 表示当天无成交,写 0 占位
@@ -388,28 +455,54 @@ func monthlyFromDailyEntries(daysData []DailyPnLEntry) []MonthlyPnLEntry {
 	return out
 }
 
-// buildTodayPnLEntry 实时从币安算「今天」的盈亏(读取路径用,不落库)。币安拉失败则返回 0。
+// 「今天」实时值缓存:loadDailyPnLCalendar 会被快照任务(60s)/optimize/按需构建等多处调用,
+// 每次都实时打币安太费权重。用 TTL 缓存把频率压到 ~每 todayEntryTTL 一次。
+type cachedTodayEntry struct {
+	entry DailyPnLEntry
+	at    time.Time
+}
+
+var (
+	todayEntryMu    sync.RWMutex
+	todayEntryCache = map[uint]cachedTodayEntry{}
+)
+
+// buildTodayPnLEntry 实时从币安算「今天」的盈亏(读取路径用,不落库),带 TTL 缓存。
+// 币安拉失败时:有旧缓存则沿用旧值(哪怕过期),否则返回 0——避免瞬时限频把今天清零。
 func buildTodayPnLEntry(uid uint, start time.Time, end time.Time) DailyPnLEntry {
 	day := start.Format("2006-01-02")
-	buckets, err := computeBinanceDailyBuckets(uid, start, end)
+
+	todayEntryMu.RLock()
+	cached, ok := todayEntryCache[uid]
+	todayEntryMu.RUnlock()
+	if ok && cached.entry.Day == day && time.Since(cached.at) < todayEntryTTL {
+		return cached.entry
+	}
+
+	buckets, err := computeBinanceDailyBuckets(uid, start, end, binanceLiveThrottle)
 	if err != nil {
+		if ok && cached.entry.Day == day {
+			return cached.entry // 沿用旧值,别因瞬时限频清零
+		}
 		return DailyPnLEntry{Day: day}
 	}
-	agg := buckets[day]
-	if agg == nil {
-		return DailyPnLEntry{Day: day}
+
+	entry := DailyPnLEntry{Day: day}
+	if agg := buckets[day]; agg != nil {
+		ret := 0.0
+		if agg.RealizedNotional > 0 {
+			ret = (agg.RealizedPnL / agg.RealizedNotional) * 100
+		}
+		entry.RealizedPnL = roundMoney2(agg.RealizedPnL)
+		entry.RealizedNotional = agg.RealizedNotional
+		entry.RealizedReturnPct = ret
+		entry.Trades = agg.trades()
 	}
-	ret := 0.0
-	if agg.RealizedNotional > 0 {
-		ret = (agg.RealizedPnL / agg.RealizedNotional) * 100
-	}
-	return DailyPnLEntry{
-		Day:               day,
-		RealizedPnL:       roundMoney2(agg.RealizedPnL),
-		RealizedNotional:  agg.RealizedNotional,
-		RealizedReturnPct: ret,
-		Trades:            agg.trades(),
-	}
+
+	todayEntryMu.Lock()
+	todayEntryCache[uid] = cachedTodayEntry{entry: entry, at: time.Now()}
+	todayEntryMu.Unlock()
+	return entry
 }
 
 func dailyPnLEntryFromRow(r models.DailyPnL) DailyPnLEntry {
