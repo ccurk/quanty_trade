@@ -189,15 +189,29 @@ func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, sta
 		return nil, fmt.Errorf("no historical data found for the given time range")
 	}
 
+	// Every simulation gets its own loopback fake-redis. Evolved strategies
+	// ignore the stdin shim entirely and dial config redis_addr with their own
+	// embedded client; without this override a backtest subprocess joins the
+	// PRODUCTION bus — it consumes live candles, never reads stdin (hanging the
+	// feed loop on a full pipe), and can publish signals under the live
+	// strategy_id, which the engine filter (strategy_id only, no boot_id)
+	// would execute as real orders.
+	fake, err := newBacktestFakeRedis()
+	if err != nil {
+		return nil, fmt.Errorf("start backtest fake redis: %v", err)
+	}
+	defer fake.Close()
+
 	// Mirror the live start path (strategy_start.go): strategies abort with
 	// "missing strategy_id" unless it is injected into the runtime config.
 	// inst.Config holds only user params (symbol/windows/...), not identity.
-	runCfg := make(map[string]interface{}, len(inst.Config)+3)
+	runCfg := make(map[string]interface{}, len(inst.Config)+4)
 	for k, v := range inst.Config {
 		runCfg[k] = v
 	}
 	runCfg["strategy_id"] = id
 	runCfg["owner_id"] = inst.OwnerID
+	runCfg["redis_addr"] = fake.addr
 	// Let the strategy know it is being simulated. Wall-clock driven logic
 	// (cooldowns, best-pick batching) can key off this to use candle time —
 	// simulated feeds compress hours into seconds, so wall-clock timers that
@@ -268,6 +282,10 @@ func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, sta
 			lev = int(v)
 		}
 	}
+	// Engine-style sizing: the live order path sizes by avail×pct×lev (the
+	// strategy's signal "amount" is a placeholder the engine overrides), so the
+	// simulation does the same whenever order_amount_pct is configured.
+	sizingPct := getNumber(inst.Config["order_amount_pct"])
 
 	// Hold-based exits, mirroring the live engine's three exit layers
 	// (quick_trade_monitor.go): the platform TP/SL bracket, the hunger-mode
@@ -292,31 +310,116 @@ func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, sta
 		entryTime = time.Time{}
 	}
 
-	orderChan := make(chan map[string]interface{}, 10)
+	stdinOrders := make(chan map[string]interface{}, 10)
 	go func() {
 		scanner := bufio.NewScanner(stdout)
+		logLines := 0
 		for scanner.Scan() {
 			var msg map[string]interface{}
 			if err := json.Unmarshal(scanner.Bytes(), &msg); err == nil {
-				if msg["type"] == "order" {
-					orderChan <- msg["data"].(map[string]interface{})
+				switch msg["type"] {
+				case "order":
+					if data, ok := msg["data"].(map[string]interface{}); ok {
+						select {
+						case stdinOrders <- data:
+						default:
+						}
+					}
+				case "log":
+					// Strategies write their own log lines to stdout; forward a
+					// bounded number so a backtest's behavior (registrations,
+					// gates, emitted signals) is inspectable afterwards.
+					if data, ok := msg["data"].(string); ok {
+						logLines++
+						if logLines <= 500 {
+							emitStrategyLog(inst, "info", "[backtest strategy] "+data)
+						}
+					}
 				}
 			}
 		}
 	}()
 
+	// Transport detection: an evolved strategy dials the fake redis and
+	// SUBSCRIBEs its candle channel within moments of starting; template-era
+	// strategies (whose prepended MiniRedis shim reads stdin) never will.
+	redisMode := false
+	select {
+	case ch := <-fake.subbed:
+		redisMode = true
+		emitStrategyLog(inst, "info", fmt.Sprintf("[backtest] strategy subscribed %s on fake redis, feeding candles over RESP", ch))
+	case <-time.After(5 * time.Second):
+		emitStrategyLog(inst, "info", "[backtest] no redis subscription after 5s, feeding candles over stdin (template shim mode)")
+	}
+
+	// Watchdog: the run must finish within a budget scaled to the feed size.
+	// A backtest that outlives it is killed and recorded as failed instead of
+	// sitting in status=running forever (tasks 7/8/10 did exactly that).
+	deadline := time.Now().Add(90*time.Second + time.Duration(len(candles))*30*time.Millisecond)
+
+	takeOrder := func(orderReq map[string]interface{}, price float64, ts time.Time) {
+		side, _ := orderReq["side"].(string)
+		amount, _ := orderReq["amount"].(float64)
+		tp, _ := orderReq["take_profit"].(float64)
+		sl, _ := orderReq["stop_loss"].(float64)
+		if sizingPct > 0 && price > 0 {
+			amount = balance * sizingPct * float64(lev) / price
+		}
+		// One position per symbol at a time (matches the backend's single-slot +
+		// per-symbol cooldown model). New opens are ignored while in a position.
+		if positionAmount == 0 && amount > 0 && (side == "buy" || side == "sell") {
+			requiredMargin := (amount * price) / float64(lev)
+			if balance >= requiredMargin {
+				fee := amount * price * takerFee
+				balance -= requiredMargin + fee
+				totalFees += fee
+				positionMargin = requiredMargin
+				entryPrice = price
+				entryTime = ts
+				posTP = tp
+				posSL = sl
+				if side == "buy" {
+					positionAmount = amount
+				} else {
+					positionAmount = -amount
+				}
+				totalTrades++
+			}
+		}
+	}
+
 	lastProgressEmit := time.Now()
 	for _, candle := range candles {
-		candleMsg := map[string]interface{}{"type": "candle", "data": map[string]interface{}{
-			"symbol":    symbol,
-			"timestamp": candle.Timestamp,
-			"open":      candle.Open,
-			"high":      candle.High,
-			"low":       candle.Low,
-			"close":     candle.Close,
-			"volume":    candle.Volume,
-		}}
-		json.NewEncoder(stdin).Encode(candleMsg)
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("backtest watchdog: exceeded time budget with %d candles (strategy not consuming feed?)", len(candles))
+		}
+		if redisMode {
+			payload, _ := json.Marshal(map[string]interface{}{
+				"type":        "candle",
+				"strategy_id": id,
+				"symbol":      symbol,
+				"timestamp":   candle.Timestamp,
+				"open":        candle.Open,
+				"high":        candle.High,
+				"low":         candle.Low,
+				"close":       candle.Close,
+				"volume":      candle.Volume,
+			})
+			if err := fake.pushCandle(payload); err != nil {
+				return nil, fmt.Errorf("backtest feed: strategy connection lost: %v", err)
+			}
+		} else {
+			candleMsg := map[string]interface{}{"type": "candle", "data": map[string]interface{}{
+				"symbol":    symbol,
+				"timestamp": candle.Timestamp,
+				"open":      candle.Open,
+				"high":      candle.High,
+				"low":       candle.Low,
+				"close":     candle.Close,
+				"volume":    candle.Volume,
+			}}
+			json.NewEncoder(stdin).Encode(candleMsg)
+		}
 		time.Sleep(10 * time.Millisecond)
 
 		// Exit layer ①: close the open position when this candle's range hits
@@ -365,33 +468,10 @@ func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, sta
 		}
 
 		select {
-		case orderReq := <-orderChan:
-			side, _ := orderReq["side"].(string)
-			amount, _ := orderReq["amount"].(float64)
-			tp, _ := orderReq["take_profit"].(float64)
-			sl, _ := orderReq["stop_loss"].(float64)
-			price := candle.Close
-			// One position per symbol at a time (matches the backend's single-slot +
-			// per-symbol cooldown model). New opens are ignored while in a position.
-			if positionAmount == 0 && amount > 0 && (side == "buy" || side == "sell") {
-				requiredMargin := (amount * price) / float64(lev)
-				if balance >= requiredMargin {
-					fee := amount * price * takerFee
-					balance -= requiredMargin + fee
-					totalFees += fee
-					positionMargin = requiredMargin
-					entryPrice = price
-					entryTime = candle.Timestamp
-					posTP = tp
-					posSL = sl
-					if side == "buy" {
-						positionAmount = amount
-					} else {
-						positionAmount = -amount
-					}
-					totalTrades++
-				}
-			}
+		case orderReq := <-fake.orders:
+			takeOrder(orderReq, candle.Close, candle.Timestamp)
+		case orderReq := <-stdinOrders:
+			takeOrder(orderReq, candle.Close, candle.Timestamp)
 		default:
 		}
 

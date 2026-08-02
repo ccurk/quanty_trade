@@ -13,6 +13,7 @@ import (
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/lark"
 	"quanty_trade/internal/logger"
+	"quanty_trade/internal/models"
 	"quanty_trade/internal/ws"
 	"runtime/debug"
 	"strconv"
@@ -116,6 +117,15 @@ func main() {
 
 	// Initialize Database
 	database.InitDB()
+
+	// Backtests only run inside this process; any row still pending/running at
+	// boot is an orphan of a previous instance (crash, restart, watchdog-less
+	// hang) and would otherwise show "running" forever.
+	if database.DB != nil {
+		database.DB.Model(&models.Backtest{}).
+			Where("status IN ?", []string{"pending", "running"}).
+			Updates(map[string]interface{}{"status": "failed", "error": "interrupted by backend restart"})
+	}
 
 	if mode := conf.C().Server.Mode; mode != "" {
 		gin.SetMode(mode)
