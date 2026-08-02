@@ -23,6 +23,11 @@ type BacktestRequest struct {
 	StartTime      time.Time `json:"start_time"`
 	EndTime        time.Time `json:"end_time"`
 	InitialBalance float64   `json:"initial_balance"`
+	// Symbol is required for auto_symbols strategies (their config has no fixed
+	// symbol); optional otherwise. e.g. "BTC/USDT".
+	Symbol string `json:"symbol"`
+	// Timeframe is the candle interval; defaults to 1m, matching the live feed.
+	Timeframe string `json:"timeframe"`
 }
 
 type UpdateConfigRequest struct {
@@ -109,7 +114,7 @@ func BacktestStrategy(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 
 	if async {
-		taskID, err := stratMgr.StartBacktest(id, req.StartTime, req.EndTime, req.InitialBalance, userID.(uint))
+		taskID, err := stratMgr.StartBacktest(id, req.Symbol, req.Timeframe, req.StartTime, req.EndTime, req.InitialBalance, userID.(uint))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -118,7 +123,7 @@ func BacktestStrategy(c *gin.Context) {
 		return
 	}
 
-	result, err := stratMgr.Backtest(id, req.StartTime, req.EndTime, req.InitialBalance, userID.(uint))
+	result, err := stratMgr.Backtest(id, req.Symbol, req.Timeframe, req.StartTime, req.EndTime, req.InitialBalance, userID.(uint))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

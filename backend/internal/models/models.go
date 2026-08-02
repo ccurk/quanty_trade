@@ -133,6 +133,16 @@ type Backtest struct {
 	ReturnRate float64 `json:"return_rate"`
 	// Status tracks lifecycle: pending/running/completed/failed.
 	Status string `json:"status"`
+	// Symbol is the market the simulation ran on. Auto-symbol strategies have no
+	// config symbol, so the request supplies one and it is recorded here.
+	Symbol string `json:"symbol"`
+	// Timeframe is the candle interval fed to the strategy (default 1m, the same
+	// interval the live engine pushes).
+	Timeframe string `json:"timeframe"`
+	// Error preserves the failure reason. Failures used to be broadcast on the
+	// websocket only, leaving failed rows with an empty Result and no way to
+	// diagnose them afterwards through the REST API.
+	Error string `gorm:"type:text" json:"error"`
 	// Result stores the full JSON payload of the backtest result (equity curve, etc).
 	Result string `gorm:"type:text" json:"result"`
 	// UserID is the owner who initiated the backtest.
