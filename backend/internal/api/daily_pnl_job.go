@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"quanty_trade/internal/database"
+	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 
@@ -18,15 +20,27 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// BackfillDailyPnL is an admin-only handler that synchronously re-runs the
-// daily PnL aggregation for the past N days (default 400). Use after a first
-// deploy, after the daily_pn_ls table got truncated, or whenever you suspect
-// the nightly job has missed days.
+// 盈亏日历完全以币安为数据源：
+//   - 已实现盈亏 / 盈亏拆分 / 有成交的 symbol ← /fapi/v1/income (REALIZED_PNL)
+//   - 平仓名义额(收益率分母) / 交易数(不同平仓单) ← /fapi/v1/userTrades
+//
+// 不再读取本地 StrategyPosition。因为币安接口单次上限 1000 条、userTrades 还要
+// 逐 symbol 拉，无法在每次请求里全量实时拉 400 天，所以历史每天的值由后台任务
+// 逐日拉取后**缓存**进 daily_pnls 表（启动全量刷新一次 + 每天 00:05 刷新最近几天），
+// 「今天」的值则在读取时实时从币安计算。缓存表里的数据 100% 来自币安。
+
+// BackfillDailyPnL is an admin-only handler that synchronously re-pulls the
+// daily PnL aggregation from Binance for the past N days (default 400). Use
+// after a first deploy or whenever you suspect the cache table drifted.
 //
 // Query: ?days=N (1..3650, default 400)
 func BackfillDailyPnL(c *gin.Context) {
 	if database.DB == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "db not ready"})
+		return
+	}
+	if _, ok := binanceExchangeUSDM(); !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "当前交易所非币安 USDM,盈亏日历无数据源"})
 		return
 	}
 	days := 400
@@ -36,18 +50,14 @@ func BackfillDailyPnL(c *gin.Context) {
 		}
 	}
 	startedAt := time.Now()
-	backfillDailyPnL(days)
-	// also force today's snapshot
-	runDailyPnLForYesterday()
-	now := time.Now()
-	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	runDailyPnLForRange(startOfToday.Format("2006-01-02"), startOfToday, now)
+	rebuildDailyPnL(days)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":      "ok",
 		"days":        days,
+		"source":      "binance",
 		"duration_ms": time.Since(startedAt).Milliseconds(),
-		"hint":        "前端「数据面板」刷新一下，应该能看到日历填充",
+		"hint":        "前端「数据面板」刷新一下,应该能看到日历填充",
 	})
 }
 
@@ -60,7 +70,9 @@ func StartDailyPnLJob(ctx context.Context) {
 }
 
 func runDailyPnLLoop(ctx context.Context) {
-	backfillDailyPnL(400)
+	// 启动全量刷新：把缓存表 400 天的历史全部按币安重建（income 分页后成本很低，
+	// 且覆盖任何旧版本遗留的本地口径数据）。
+	rebuildDailyPnL(400)
 	for {
 		next := nextLocalTime(0, 5, 0)
 		timer := time.NewTimer(time.Until(next))
@@ -71,7 +83,8 @@ func runDailyPnLLoop(ctx context.Context) {
 		case <-timer.C:
 		}
 		timer.Stop()
-		runDailyPnLForYesterday()
+		// 每天 00:05 刷新最近几天（覆盖刚过去的昨天完整值）。历史日一旦过完即不再变。
+		rebuildDailyPnL(3)
 	}
 }
 
@@ -85,85 +98,199 @@ func nextLocalTime(h, m, s int) time.Time {
 	return next
 }
 
-func runDailyPnLForYesterday() {
-	if database.DB == nil {
-		return
-	}
-	now := time.Now()
-	loc := now.Location()
-	end := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-	start := end.Add(-24 * time.Hour)
-	day := start.Format("2006-01-02")
-	runDailyPnLForRange(day, start, end.Add(-time.Nanosecond))
+// ===========================================================================
+// 币安数据源
+// ===========================================================================
+
+type binanceDayAgg struct {
+	GrossProfit      float64
+	GrossLoss        float64
+	RealizedPnL      float64
+	RealizedNotional float64
+	closeOrders      map[int64]struct{} // 当日不同平仓单 → 交易数
 }
 
-func backfillDailyPnL(days int) {
+func (a *binanceDayAgg) trades() int { return len(a.closeOrders) }
+
+const (
+	binancePageLimit     = 1000
+	binanceMaxPages      = 120 // 120*1000=12w 条,足够覆盖 400 天
+	binanceFetchThrottle = 120 * time.Millisecond
+)
+
+func binanceExchangeUSDM() (*exchange.BinanceExchange, bool) {
+	if stratMgr == nil || stratMgr.GetExchange() == nil {
+		return nil, false
+	}
+	bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange)
+	if !ok || bx.Market() != "usdm" {
+		return nil, false
+	}
+	return bx, true
+}
+
+// computeBinanceDailyBuckets 拉 [start,end] 区间的币安真实数据,按本地日聚合。
+// 任一分页出错立即返回 error,调用方据此保留旧缓存 / 返回 0,不写脏数据。
+func computeBinanceDailyBuckets(uid uint, start, end time.Time) (map[string]*binanceDayAgg, error) {
+	bx, ok := binanceExchangeUSDM()
+	if !ok {
+		return nil, fmt.Errorf("binance usdm not available")
+	}
+	loc := time.Now().Location()
+	dayKey := func(ms int64) string { return time.UnixMilli(ms).In(loc).Format("2006-01-02") }
+
+	buckets := map[string]*binanceDayAgg{}
+	getBucket := func(k string) *binanceDayAgg {
+		b := buckets[k]
+		if b == nil {
+			b = &binanceDayAgg{closeOrders: map[int64]struct{}{}}
+			buckets[k] = b
+		}
+		return b
+	}
+	symbolSet := map[string]struct{}{}
+
+	// 1) income 分页(按时间游标翻页):每日已实现盈亏 + 盈/亏拆分 + 有成交的 symbol。
+	cursor := start
+	for page := 0; page < binanceMaxPages; page++ {
+		events, err := bx.USDMIncomeHistory(uid, cursor, end, binancePageLimit)
+		if err != nil {
+			return nil, fmt.Errorf("income: %w", err)
+		}
+		if len(events) == 0 {
+			break
+		}
+		var lastTime int64
+		for _, e := range events {
+			if e.Time > lastTime {
+				lastTime = e.Time
+			}
+			if e.IncomeType != "REALIZED_PNL" {
+				continue
+			}
+			b := getBucket(dayKey(e.Time))
+			b.RealizedPnL += e.Income
+			if e.Income > 0 {
+				b.GrossProfit += e.Income
+			} else if e.Income < 0 {
+				b.GrossLoss += e.Income
+			}
+			if e.Symbol != "" {
+				symbolSet[e.Symbol] = struct{}{}
+			}
+		}
+		if len(events) < binancePageLimit {
+			break
+		}
+		next := time.UnixMilli(lastTime + 1)
+		if !next.After(cursor) || !next.Before(end) {
+			break
+		}
+		cursor = next
+		time.Sleep(binanceFetchThrottle)
+	}
+
+	// 2) userTrades 逐 symbol 分页:只统计带 realizedPnl 的平仓成交,得每日平仓名义额 + 平仓单数。
+	for sym := range symbolSet {
+		scursor := start
+		for page := 0; page < binanceMaxPages; page++ {
+			fills, err := bx.USDMUserTrades(uid, sym, scursor, end, binancePageLimit)
+			if err != nil {
+				break // 单 symbol 失败不阻塞其它 symbol
+			}
+			if len(fills) == 0 {
+				break
+			}
+			var lastTime int64
+			for _, t := range fills {
+				if t.Time > lastTime {
+					lastTime = t.Time
+				}
+				if t.RealizedPnL == 0 {
+					continue // 只有平仓成交才带已实现盈亏
+				}
+				b := getBucket(dayKey(t.Time))
+				b.RealizedNotional += math.Abs(t.QuoteQty)
+				b.closeOrders[t.OrderID] = struct{}{}
+			}
+			if len(fills) < binancePageLimit {
+				break
+			}
+			next := time.UnixMilli(lastTime + 1)
+			if !next.After(scursor) || !next.Before(end) {
+				break
+			}
+			scursor = next
+			time.Sleep(binanceFetchThrottle)
+		}
+		time.Sleep(binanceFetchThrottle)
+	}
+	return buckets, nil
+}
+
+// rebuildDailyPnL 拉取每个用户最近 days 天的币安数据并写入缓存表(覆盖历史 1..days 天;
+// 当天由读取路径实时计算,这里不写)。任一用户拉取失败只记录日志、保留其旧缓存。
+func rebuildDailyPnL(days int) {
 	if database.DB == nil || days <= 0 {
 		return
 	}
-	now := time.Now()
-	loc := now.Location()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-	for i := 1; i <= days; i++ {
-		start := today.AddDate(0, 0, -i)
-		end := start.Add(24 * time.Hour).Add(-time.Nanosecond)
-		day := start.Format("2006-01-02")
-		runDailyPnLForRange(day, start, end)
+	if _, ok := binanceExchangeUSDM(); !ok {
+		return // 非币安 usdm,无数据源
 	}
-}
-
-func runDailyPnLForRange(day string, start time.Time, end time.Time) {
 	var users []models.User
 	if err := database.DB.Select("id").Find(&users).Error; err != nil {
 		logger.Errorf("daily pnl: list users failed err=%v", err)
 		return
 	}
+	now := time.Now()
+	loc := now.Location()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	start := today.AddDate(0, 0, -days)
 	for _, u := range users {
-		if err := upsertDailyPnL(u.ID, day, start, end); err != nil {
-			logger.Errorf("daily pnl: compute failed uid=%d day=%s err=%v", u.ID, day, err)
+		buckets, err := computeBinanceDailyBuckets(u.ID, start, now)
+		if err != nil {
+			logger.Errorf("daily pnl: binance fetch failed uid=%d err=%v", u.ID, err)
+			continue // 保留旧缓存,不写脏
+		}
+		for i := 1; i <= days; i++ {
+			dayStart := today.AddDate(0, 0, -i)
+			dayEnd := dayStart.Add(24*time.Hour - time.Nanosecond)
+			day := dayStart.Format("2006-01-02")
+			if err := upsertDailyPnLRow(u.ID, day, dayStart, dayEnd, buckets[day]); err != nil {
+				logger.Errorf("daily pnl: upsert failed uid=%d day=%s err=%v", u.ID, day, err)
+			}
 		}
 	}
 }
 
-func upsertDailyPnL(uid uint, day string, start time.Time, end time.Time) error {
+// upsertDailyPnLRow 原子 upsert(owner_id, day)。agg 为 nil 表示当天无成交,写 0 占位
+// (这样也会覆盖旧版本遗留的本地口径行)。
+func upsertDailyPnLRow(uid uint, day string, start, end time.Time, agg *binanceDayAgg) error {
 	if database.DB == nil || uid == 0 {
 		return fmt.Errorf("missing db/uid")
 	}
-
-	var row struct {
-		GrossProfit      float64
-		GrossLoss        float64
-		RealizedPnL      float64
-		RealizedNotional float64
-		Trades           int64
+	var (
+		grossProfit, grossLoss, realized, notional float64
+		trades                                     int
+	)
+	if agg != nil {
+		grossProfit = agg.GrossProfit
+		grossLoss = agg.GrossLoss
+		realized = roundMoney2(agg.RealizedPnL)
+		notional = agg.RealizedNotional
+		trades = agg.trades()
 	}
-	if err := database.DB.Model(&models.StrategyPosition{}).
-		Select(`
-			COALESCE(SUM(CASE WHEN realized_pn_l > 0 THEN realized_pn_l ELSE 0 END), 0) AS gross_profit,
-			COALESCE(SUM(CASE WHEN realized_pn_l < 0 THEN realized_pn_l ELSE 0 END), 0) AS gross_loss,
-			COALESCE(SUM(realized_pn_l), 0) AS realized_pnl,
-			COALESCE(SUM(realized_notional), 0) AS realized_notional,
-			COALESCE(COUNT(*), 0) AS trades
-		`).
-		Where("owner_id = ? AND status = ? AND close_time >= ? AND close_time <= ?", uid, "closed", start, end).
-		Scan(&row).Error; err != nil {
-		return err
-	}
-
 	now := time.Now()
-	// Atomic upsert keyed on the (owner_id, day) unique index. The previous
-	// Find -> Update / Create split could lose data or duplicate-key under
-	// concurrent runs (e.g. backfill racing the 00:05 scheduled job).
 	record := models.DailyPnL{
 		OwnerID:          uid,
 		Day:              day,
 		StartTime:        start,
 		EndTime:          end,
-		GrossProfit:      row.GrossProfit,
-		GrossLoss:        row.GrossLoss,
-		RealizedPnL:      row.RealizedPnL,
-		RealizedNotional: row.RealizedNotional,
-		Trades:           int(row.Trades),
+		GrossProfit:      grossProfit,
+		GrossLoss:        grossLoss,
+		RealizedPnL:      realized,
+		RealizedNotional: notional,
+		Trades:           trades,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -172,15 +299,19 @@ func upsertDailyPnL(uid uint, day string, start time.Time, end time.Time) error 
 		DoUpdates: clause.Assignments(map[string]interface{}{
 			"start_time":        start,
 			"end_time":          end,
-			"gross_profit":      row.GrossProfit,
-			"gross_loss":        row.GrossLoss,
-			"realized_pn_l":     row.RealizedPnL,
-			"realized_notional": row.RealizedNotional,
-			"trades":            int(row.Trades),
+			"gross_profit":      grossProfit,
+			"gross_loss":        grossLoss,
+			"realized_pn_l":     realized,
+			"realized_notional": notional,
+			"trades":            trades,
 			"updated_at":        now,
 		}),
 	}).Create(&record).Error
 }
+
+// ===========================================================================
+// 读取路径:历史读缓存表,今天实时算币安
+// ===========================================================================
 
 func loadDailyPnLCalendar(uid uint, days int) []DailyPnLEntry {
 	if database.DB == nil || uid == 0 || days <= 0 {
@@ -191,7 +322,7 @@ func loadDailyPnLCalendar(uid uint, days int) []DailyPnLEntry {
 	loc := time.Now().Location()
 	today := time.Now()
 	todayStart := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, loc)
-	todayEntry := buildDailyPnLEntryForRange(uid, todayStart, today)
+	todayEntry := buildTodayPnLEntry(uid, todayStart, today)
 	entryMap := map[string]DailyPnLEntry{}
 	for _, r := range rows {
 		entryMap[r.Day] = dailyPnLEntryFromRow(r)
@@ -216,8 +347,8 @@ func loadDailyPnLCalendar(uid uint, days int) []DailyPnLEntry {
 	return out
 }
 
-func loadMonthlyPnLCalendar(uid uint, days int) []MonthlyPnLEntry {
-	daysData := loadDailyPnLCalendar(uid, days)
+// monthlyFromDailyEntries 把已算好的每日数组聚合成月度汇总,避免重复拉一遍数据。
+func monthlyFromDailyEntries(daysData []DailyPnLEntry) []MonthlyPnLEntry {
 	if len(daysData) == 0 {
 		return nil
 	}
@@ -257,30 +388,27 @@ func loadMonthlyPnLCalendar(uid uint, days int) []MonthlyPnLEntry {
 	return out
 }
 
-func buildDailyPnLEntryForRange(uid uint, start time.Time, end time.Time) DailyPnLEntry {
-	var row struct {
-		RealizedPnL      float64
-		RealizedNotional float64
-		Trades           int64
+// buildTodayPnLEntry 实时从币安算「今天」的盈亏(读取路径用,不落库)。币安拉失败则返回 0。
+func buildTodayPnLEntry(uid uint, start time.Time, end time.Time) DailyPnLEntry {
+	day := start.Format("2006-01-02")
+	buckets, err := computeBinanceDailyBuckets(uid, start, end)
+	if err != nil {
+		return DailyPnLEntry{Day: day}
 	}
-	_ = database.DB.Model(&models.StrategyPosition{}).
-		Select(`
-			COALESCE(SUM(realized_pn_l), 0) AS realized_pnl,
-			COALESCE(SUM(realized_notional), 0) AS realized_notional,
-			COALESCE(COUNT(*), 0) AS trades
-		`).
-		Where("owner_id = ? AND status = ? AND close_time >= ? AND close_time <= ?", uid, "closed", start, end).
-		Scan(&row).Error
+	agg := buckets[day]
+	if agg == nil {
+		return DailyPnLEntry{Day: day}
+	}
 	ret := 0.0
-	if row.RealizedNotional > 0 {
-		ret = (row.RealizedPnL / row.RealizedNotional) * 100
+	if agg.RealizedNotional > 0 {
+		ret = (agg.RealizedPnL / agg.RealizedNotional) * 100
 	}
 	return DailyPnLEntry{
-		Day:               start.Format("2006-01-02"),
-		RealizedPnL:       row.RealizedPnL,
-		RealizedNotional:  row.RealizedNotional,
+		Day:               day,
+		RealizedPnL:       roundMoney2(agg.RealizedPnL),
+		RealizedNotional:  agg.RealizedNotional,
 		RealizedReturnPct: ret,
-		Trades:            int(row.Trades),
+		Trades:            agg.trades(),
 	}
 }
 
