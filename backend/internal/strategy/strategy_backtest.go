@@ -13,13 +13,36 @@ import (
 	"quanty_trade/internal/models"
 )
 
-// StartBacktest starts an asynchronous backtest and returns the Backtest row id.
-func (m *Manager) StartBacktest(id string, startTime, endTime time.Time, initialBalance float64, userID uint) (uint, error) {
+// resolveBacktestMarket picks the symbol/timeframe a simulation will run on.
+// Symbol precedence: request > config["symbol"]. Auto-symbol strategies keep
+// config["symbol"] empty, which is why every backtest of such a strategy used
+// to fail before the request could override it.
+func (m *Manager) resolveBacktestMarket(id string, reqSymbol, reqTimeframe string) (string, string, error) {
 	m.mu.RLock()
-	_, ok := m.instances[id]
+	inst, ok := m.instances[id]
 	m.mu.RUnlock()
 	if !ok {
-		return 0, fmt.Errorf("strategy %s not found", id)
+		return "", "", fmt.Errorf("strategy %s not found", id)
+	}
+	symbol := reqSymbol
+	if symbol == "" {
+		symbol, _ = inst.Config["symbol"].(string)
+	}
+	if symbol == "" {
+		return "", "", fmt.Errorf("strategy has no fixed symbol (auto_symbols mode): pass \"symbol\" (e.g. \"BTC/USDT\") in the backtest request body")
+	}
+	timeframe := reqTimeframe
+	if timeframe == "" {
+		timeframe = "1m"
+	}
+	return symbol, timeframe, nil
+}
+
+// StartBacktest starts an asynchronous backtest and returns the Backtest row id.
+func (m *Manager) StartBacktest(id string, symbol, timeframe string, startTime, endTime time.Time, initialBalance float64, userID uint) (uint, error) {
+	symbol, timeframe, err := m.resolveBacktestMarket(id, symbol, timeframe)
+	if err != nil {
+		return 0, err
 	}
 
 	bt := &models.Backtest{
@@ -28,6 +51,8 @@ func (m *Manager) StartBacktest(id string, startTime, endTime time.Time, initial
 		EndTime:        endTime,
 		InitialBalance: initialBalance,
 		Status:         "pending",
+		Symbol:         symbol,
+		Timeframe:      timeframe,
 		UserID:         userID,
 		CreatedAt:      time.Now(),
 	}
@@ -44,9 +69,10 @@ func (m *Manager) StartBacktest(id string, startTime, endTime time.Time, initial
 			"status":      "running",
 		})
 
-		result, err := m.runBacktestSimulation(id, startTime, endTime, initialBalance, userID, bt.ID)
+		result, err := m.runBacktestSimulation(id, symbol, timeframe, startTime, endTime, initialBalance, userID, bt.ID)
 		if err != nil {
 			bt.Status = "failed"
+			bt.Error = err.Error()
 			database.DB.Save(bt)
 			m.hub.BroadcastJSON(map[string]interface{}{
 				"type":        "backtest_status",
@@ -80,12 +106,10 @@ func (m *Manager) StartBacktest(id string, startTime, endTime time.Time, initial
 }
 
 // Backtest runs a synchronous backtest and returns the result immediately.
-func (m *Manager) Backtest(id string, startTime, endTime time.Time, initialBalance float64, userID uint) (*BacktestResult, error) {
-	m.mu.RLock()
-	_, ok := m.instances[id]
-	m.mu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("strategy %s not found", id)
+func (m *Manager) Backtest(id string, symbol, timeframe string, startTime, endTime time.Time, initialBalance float64, userID uint) (*BacktestResult, error) {
+	symbol, timeframe, err := m.resolveBacktestMarket(id, symbol, timeframe)
+	if err != nil {
+		return nil, err
 	}
 
 	bt := &models.Backtest{
@@ -94,6 +118,8 @@ func (m *Manager) Backtest(id string, startTime, endTime time.Time, initialBalan
 		EndTime:        endTime,
 		InitialBalance: initialBalance,
 		Status:         "running",
+		Symbol:         symbol,
+		Timeframe:      timeframe,
 		UserID:         userID,
 		CreatedAt:      time.Now(),
 	}
@@ -106,9 +132,10 @@ func (m *Manager) Backtest(id string, startTime, endTime time.Time, initialBalan
 		"status":      "running",
 	})
 
-	result, err := m.runBacktestSimulation(id, startTime, endTime, initialBalance, userID, bt.ID)
+	result, err := m.runBacktestSimulation(id, symbol, timeframe, startTime, endTime, initialBalance, userID, bt.ID)
 	if err != nil {
 		bt.Status = "failed"
+		bt.Error = err.Error()
 		database.DB.Save(bt)
 		m.hub.BroadcastJSON(map[string]interface{}{
 			"type":        "backtest_status",
@@ -140,7 +167,7 @@ func (m *Manager) Backtest(id string, startTime, endTime time.Time, initialBalan
 	return result, nil
 }
 
-func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time, initialBalance float64, userID uint, backtestID uint) (*BacktestResult, error) {
+func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, startTime, endTime time.Time, initialBalance float64, userID uint, backtestID uint) (*BacktestResult, error) {
 	m.mu.RLock()
 	inst, ok := m.instances[id]
 	m.mu.RUnlock()
@@ -148,11 +175,13 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 		return nil, fmt.Errorf("strategy %s not found", id)
 	}
 
-	symbol, _ := inst.Config["symbol"].(string)
 	if symbol == "" {
-		return nil, fmt.Errorf("strategy config must have a symbol")
+		return nil, fmt.Errorf("backtest symbol not resolved")
 	}
-	candles, err := m.exchange.FetchHistoricalCandles(symbol, "1h", startTime, endTime)
+	if timeframe == "" {
+		timeframe = "1m"
+	}
+	candles, err := m.exchange.FetchHistoricalCandles(symbol, timeframe, startTime, endTime)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch historical data: %v", err)
 	}
@@ -163,12 +192,17 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 	// Mirror the live start path (strategy_start.go): strategies abort with
 	// "missing strategy_id" unless it is injected into the runtime config.
 	// inst.Config holds only user params (symbol/windows/...), not identity.
-	runCfg := make(map[string]interface{}, len(inst.Config)+2)
+	runCfg := make(map[string]interface{}, len(inst.Config)+3)
 	for k, v := range inst.Config {
 		runCfg[k] = v
 	}
 	runCfg["strategy_id"] = id
 	runCfg["owner_id"] = inst.OwnerID
+	// Let the strategy know it is being simulated. Wall-clock driven logic
+	// (cooldowns, best-pick batching) can key off this to use candle time —
+	// simulated feeds compress hours into seconds, so wall-clock timers that
+	// are correct live would otherwise freeze trading after the first entry.
+	runCfg["backtest"] = true
 	configJSON, _ := json.Marshal(runCfg)
 	absPath, cleanup, err := m.prepareBacktestStrategyFile(inst, backtestID)
 	if err != nil {
@@ -211,6 +245,7 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 	entryPrice := 0.0
 	posTP := 0.0
 	posSL := 0.0
+	var entryTime time.Time
 	totalTrades := 0
 	totalProfit := 0.0
 	totalFees := 0.0
@@ -225,6 +260,36 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 		if v, ok := raw.(float64); ok && v >= 0 {
 			takerFee = v
 		}
+	}
+
+	lev := 1
+	if raw, ok := inst.Config["leverage"]; ok {
+		if v, ok := raw.(float64); ok && int(v) > 0 {
+			lev = int(v)
+		}
+	}
+
+	// Hold-based exits, mirroring the live engine's three exit layers
+	// (quick_trade_monitor.go): the platform TP/SL bracket, the hunger-mode
+	// harvest and the unconditional max-hold timeout. Hold duration uses candle
+	// time, matching the wall-clock semantics of the live monitor. Before these
+	// were modelled, a backtest exercised only layer ① — useless for judging
+	// exit-system changes, which live entirely in layers ② and ③.
+	hungerEnabled, hungerAfter, hungerTPPct, hungerSLPct := resolveHungerMode(inst)
+	maxHold := resolveMaxHoldTimeout(inst)
+
+	closePosition := func(exitPrice float64) {
+		amt := math.Abs(positionAmount)
+		pnl := amt * (exitPrice - entryPrice)
+		if positionAmount < 0 {
+			pnl = amt * (entryPrice - exitPrice)
+		}
+		fee := amt * exitPrice * takerFee
+		balance += positionMargin + pnl - fee
+		totalFees += fee
+		totalTrades++
+		positionAmount, positionMargin, entryPrice, posTP, posSL = 0, 0, 0, 0, 0
+		entryTime = time.Time{}
 	}
 
 	orderChan := make(chan map[string]interface{}, 10)
@@ -254,10 +319,11 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 		json.NewEncoder(stdin).Encode(candleMsg)
 		time.Sleep(10 * time.Millisecond)
 
-		// Bracket exit: close the open position when this candle's range hits TP/SL.
-		// Live runs delegate exits to the backend TP/SL monitor; without modelling
-		// it here the backtest would just accumulate and mark-to-market (which made a
-		// pumped meme look like +800%). Stop is checked before target (pessimistic).
+		// Exit layer ①: close the open position when this candle's range hits
+		// TP/SL. Live runs delegate this to the backend TP/SL monitor; without
+		// modelling it here the backtest would just accumulate and mark-to-market
+		// (which made a pumped meme look like +800%). Stop is checked before
+		// target (pessimistic).
 		if positionAmount != 0 {
 			exit, exitPrice := false, 0.0
 			if positionAmount > 0 { // long
@@ -274,16 +340,27 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 				}
 			}
 			if exit {
-				amt := math.Abs(positionAmount)
-				pnl := amt * (exitPrice - entryPrice)
+				closePosition(exitPrice)
+			}
+		}
+
+		// Exit layers ② and ③, evaluated at candle close like the live 10s tick.
+		// Hard timeout runs first (unconditional), then hunger mode: after
+		// hunger_after the position is harvested once |roi| crosses the hunger
+		// thresholds, where roi is margin-relative (price move × leverage).
+		if positionAmount != 0 && !entryTime.IsZero() {
+			held := candle.Timestamp.Sub(entryTime)
+			if maxHold > 0 && held >= maxHold {
+				closePosition(candle.Close)
+			} else if hungerEnabled && hungerAfter > 0 && held >= hungerAfter {
+				movePct := (candle.Close - entryPrice) / entryPrice * 100
 				if positionAmount < 0 {
-					pnl = amt * (entryPrice - exitPrice)
+					movePct = -movePct
 				}
-				fee := amt * exitPrice * takerFee
-				balance += positionMargin + pnl - fee
-				totalFees += fee
-				totalTrades++
-				positionAmount, positionMargin, entryPrice, posTP, posSL = 0, 0, 0, 0, 0
+				roi := movePct * float64(lev)
+				if (hungerTPPct > 0 && roi >= hungerTPPct*100) || (hungerSLPct > 0 && roi <= -hungerSLPct*100) {
+					closePosition(candle.Close)
+				}
 			}
 		}
 
@@ -294,15 +371,6 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 			tp, _ := orderReq["take_profit"].(float64)
 			sl, _ := orderReq["stop_loss"].(float64)
 			price := candle.Close
-			lev := 1
-			if raw, ok := inst.Config["leverage"]; ok {
-				if v, ok := raw.(float64); ok && int(v) > 0 {
-					lev = int(v)
-				}
-			}
-			if lev <= 0 {
-				lev = 1
-			}
 			// One position per symbol at a time (matches the backend's single-slot +
 			// per-symbol cooldown model). New opens are ignored while in a position.
 			if positionAmount == 0 && amount > 0 && (side == "buy" || side == "sell") {
@@ -313,6 +381,7 @@ func (m *Manager) runBacktestSimulation(id string, startTime, endTime time.Time,
 					totalFees += fee
 					positionMargin = requiredMargin
 					entryPrice = price
+					entryTime = candle.Timestamp
 					posTP = tp
 					posSL = sl
 					if side == "buy" {
