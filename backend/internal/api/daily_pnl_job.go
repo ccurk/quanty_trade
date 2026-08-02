@@ -151,6 +151,11 @@ const (
 	todayEntryTTL = 120 * time.Second
 	// 启动后延迟再做全量回填,避开进程启动时的下单/持仓/K线请求高峰。
 	startupBackfillDelay = 60 * time.Second
+	// 权重让路阈值:最近 1 分钟已用权重超过此百分比,日历回填就退让,把额度让给
+	// 下单/持仓/K线等实时交易请求(它们和日历共用同一个每分钟权重预算和 429 ban 窗口)。
+	binanceWeightYieldPct = 50
+	// 每次日历调用前最多等待几轮空档,超过就放弃本轮、稍后重试。
+	binanceHeadroomWaitMax = 5
 )
 
 func binanceExchangeUSDM() (*exchange.BinanceExchange, bool) {
@@ -162,6 +167,25 @@ func binanceExchangeUSDM() (*exchange.BinanceExchange, bool) {
 		return nil, false
 	}
 	return bx, true
+}
+
+// waitBinanceHeadroom 在每次日历相关调用前调用:若币安权重吃紧就退让等待,直到出现空档
+// 或超过等待上限。返回 false 表示始终吃紧 / 已在 ban 窗口,应放弃本轮(稍后重试),
+// 从而保证盈亏日历永远不会因为抢占权重把实时交易请求挤到 429。
+func waitBinanceHeadroom(bx *exchange.BinanceExchange, throttle time.Duration) bool {
+	if bx == nil {
+		return true
+	}
+	for i := 0; i < binanceHeadroomWaitMax; i++ {
+		if bx.RateLimited() {
+			return false // 已在 ban 窗口,别浪费时间,直接放弃
+		}
+		if bx.WeightUsedPct() < binanceWeightYieldPct {
+			return true
+		}
+		time.Sleep(throttle)
+	}
+	return !bx.RateLimited() && bx.WeightUsedPct() < binanceWeightYieldPct
 }
 
 // isBinanceRateLimited 判断错误是否为币安限频(429 / -1003 / IP ban)。命中时应立刻
@@ -203,6 +227,9 @@ func computeBinanceDailyBuckets(uid uint, start, end time.Time, throttle time.Du
 	// 1) income 分页(按时间游标翻页):每日已实现盈亏 + 盈/亏拆分 + 有成交的 symbol。
 	cursor := start
 	for page := 0; page < binanceMaxPages; page++ {
+		if !waitBinanceHeadroom(bx, throttle) {
+			return nil, fmt.Errorf("binance api error: {\"code\":429,\"msg\":\"weight busy, yield\"}")
+		}
 		events, err := bx.USDMIncomeHistory(uid, cursor, end, binancePageLimit)
 		if err != nil {
 			return nil, fmt.Errorf("income: %w", err)
@@ -244,6 +271,9 @@ func computeBinanceDailyBuckets(uid uint, start, end time.Time, throttle time.Du
 	for sym := range symbolSet {
 		scursor := start
 		for page := 0; page < binanceMaxPages; page++ {
+			if !waitBinanceHeadroom(bx, throttle) {
+				return nil, fmt.Errorf("binance api error: {\"code\":429,\"msg\":\"weight busy, yield\"}")
+			}
 			fills, err := bx.USDMUserTrades(uid, sym, scursor, end, binancePageLimit)
 			if err != nil {
 				if isBinanceRateLimited(err) {

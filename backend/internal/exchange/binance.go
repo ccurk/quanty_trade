@@ -144,6 +144,21 @@ func (b *BinanceExchange) GetName() string { return b.name }
 
 func (b *BinanceExchange) Market() string { return b.market }
 
+// WeightUsedPct 返回最近 1 分钟已用权重占限额的百分比(0..~100+);未知时返回 0。
+// 供后台低优先级任务(如盈亏日历回填)判断是否该给实时交易请求让路。
+// 读的是与 signedRequest/publicRequest 同一批无锁字段,属既有的良性竞态,仅用于协作式退让。
+func (b *BinanceExchange) WeightUsedPct() int {
+	if b.rateLimitWeight1m <= 0 {
+		return 0
+	}
+	return b.usedWeight1m * 100 / b.rateLimitWeight1m
+}
+
+// RateLimited 报告当前是否处于 429/ban 冷却窗口(此期间所有签名/公共请求都会被本地直接拒绝)。
+func (b *BinanceExchange) RateLimited() bool {
+	return !b.requestBanUntil.IsZero() && time.Now().Before(b.requestBanUntil)
+}
+
 func (b *BinanceExchange) LastPrice(symbol string) (float64, error) {
 	sym := binanceSymbol(symbol)
 	params := url.Values{}
