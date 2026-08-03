@@ -87,7 +87,7 @@ func TestBacktestProducesTrades(t *testing.T) {
 	}
 
 	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	res, err := m.runBacktestSimulation(instID, "BTCUSDT", "1h", start, start.Add(200*time.Hour), 10000, 1, 1)
+	res, err := m.runBacktestSimulation(instID, "BTCUSDT", "1h", start, start.Add(200*time.Hour), 10000, nil, 1, 1)
 	if err != nil {
 		t.Fatalf("backtest failed: %v", err)
 	}

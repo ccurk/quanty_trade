@@ -39,7 +39,7 @@ func (m *Manager) resolveBacktestMarket(id string, reqSymbol, reqTimeframe strin
 }
 
 // StartBacktest starts an asynchronous backtest and returns the Backtest row id.
-func (m *Manager) StartBacktest(id string, symbol, timeframe string, startTime, endTime time.Time, initialBalance float64, userID uint) (uint, error) {
+func (m *Manager) StartBacktest(id string, symbol, timeframe string, startTime, endTime time.Time, initialBalance float64, overrides map[string]interface{}, userID uint) (uint, error) {
 	symbol, timeframe, err := m.resolveBacktestMarket(id, symbol, timeframe)
 	if err != nil {
 		return 0, err
@@ -53,6 +53,7 @@ func (m *Manager) StartBacktest(id string, symbol, timeframe string, startTime, 
 		Status:         "pending",
 		Symbol:         symbol,
 		Timeframe:      timeframe,
+		Overrides:      marshalOverrides(overrides),
 		UserID:         userID,
 		CreatedAt:      time.Now(),
 	}
@@ -69,7 +70,7 @@ func (m *Manager) StartBacktest(id string, symbol, timeframe string, startTime, 
 			"status":      "running",
 		})
 
-		result, err := m.runBacktestSimulation(id, symbol, timeframe, startTime, endTime, initialBalance, userID, bt.ID)
+		result, err := m.runBacktestSimulation(id, symbol, timeframe, startTime, endTime, initialBalance, overrides, userID, bt.ID)
 		if err != nil {
 			bt.Status = "failed"
 			bt.Error = err.Error()
@@ -106,7 +107,7 @@ func (m *Manager) StartBacktest(id string, symbol, timeframe string, startTime, 
 }
 
 // Backtest runs a synchronous backtest and returns the result immediately.
-func (m *Manager) Backtest(id string, symbol, timeframe string, startTime, endTime time.Time, initialBalance float64, userID uint) (*BacktestResult, error) {
+func (m *Manager) Backtest(id string, symbol, timeframe string, startTime, endTime time.Time, initialBalance float64, overrides map[string]interface{}, userID uint) (*BacktestResult, error) {
 	symbol, timeframe, err := m.resolveBacktestMarket(id, symbol, timeframe)
 	if err != nil {
 		return nil, err
@@ -120,6 +121,7 @@ func (m *Manager) Backtest(id string, symbol, timeframe string, startTime, endTi
 		Status:         "running",
 		Symbol:         symbol,
 		Timeframe:      timeframe,
+		Overrides:      marshalOverrides(overrides),
 		UserID:         userID,
 		CreatedAt:      time.Now(),
 	}
@@ -132,7 +134,7 @@ func (m *Manager) Backtest(id string, symbol, timeframe string, startTime, endTi
 		"status":      "running",
 	})
 
-	result, err := m.runBacktestSimulation(id, symbol, timeframe, startTime, endTime, initialBalance, userID, bt.ID)
+	result, err := m.runBacktestSimulation(id, symbol, timeframe, startTime, endTime, initialBalance, overrides, userID, bt.ID)
 	if err != nil {
 		bt.Status = "failed"
 		bt.Error = err.Error()
@@ -167,7 +169,7 @@ func (m *Manager) Backtest(id string, symbol, timeframe string, startTime, endTi
 	return result, nil
 }
 
-func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, startTime, endTime time.Time, initialBalance float64, userID uint, backtestID uint) (*BacktestResult, error) {
+func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, startTime, endTime time.Time, initialBalance float64, overrides map[string]interface{}, userID uint, backtestID uint) (*BacktestResult, error) {
 	m.mu.RLock()
 	inst, ok := m.instances[id]
 	m.mu.RUnlock()
@@ -205,10 +207,7 @@ func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, sta
 	// Mirror the live start path (strategy_start.go): strategies abort with
 	// "missing strategy_id" unless it is injected into the runtime config.
 	// inst.Config holds only user params (symbol/windows/...), not identity.
-	runCfg := make(map[string]interface{}, len(inst.Config)+4)
-	for k, v := range inst.Config {
-		runCfg[k] = v
-	}
+	runCfg := mergeBacktestConfig(inst.Config, overrides)
 	runCfg["strategy_id"] = id
 	runCfg["owner_id"] = inst.OwnerID
 	runCfg["redis_addr"] = fake.addr
@@ -269,15 +268,19 @@ func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, sta
 	// leverage — matches Binance USDM. Configurable; default ~taker fee.
 	// Without this a backtest overstates profit exactly where real accounts
 	// bleed (the live strategy lost ~23%, almost all of it fees).
+	// Shadow instance carrying the merged (base+overrides) config so the exit
+	// simulation and sizing read exactly what the strategy subprocess reads.
+	simInst := &StrategyInstance{ID: inst.ID, OwnerID: inst.OwnerID, Config: runCfg}
+
 	takerFee := 0.0004
-	if raw, ok := inst.Config["taker_fee"]; ok {
+	if raw, ok := simInst.Config["taker_fee"]; ok {
 		if v, ok := raw.(float64); ok && v >= 0 {
 			takerFee = v
 		}
 	}
 
 	lev := 1
-	if raw, ok := inst.Config["leverage"]; ok {
+	if raw, ok := simInst.Config["leverage"]; ok {
 		if v, ok := raw.(float64); ok && int(v) > 0 {
 			lev = int(v)
 		}
@@ -285,7 +288,7 @@ func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, sta
 	// Engine-style sizing: the live order path sizes by avail×pct×lev (the
 	// strategy's signal "amount" is a placeholder the engine overrides), so the
 	// simulation does the same whenever order_amount_pct is configured.
-	sizingPct := getNumber(inst.Config["order_amount_pct"])
+	sizingPct := getNumber(simInst.Config["order_amount_pct"])
 
 	// Hold-based exits, mirroring the live engine's three exit layers
 	// (quick_trade_monitor.go): the platform TP/SL bracket, the hunger-mode
@@ -293,8 +296,8 @@ func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, sta
 	// time, matching the wall-clock semantics of the live monitor. Before these
 	// were modelled, a backtest exercised only layer ① — useless for judging
 	// exit-system changes, which live entirely in layers ② and ③.
-	hungerEnabled, hungerAfter, hungerTPPct, hungerSLPct := resolveHungerMode(inst)
-	maxHold := resolveMaxHoldTimeout(inst)
+	hungerEnabled, hungerAfter, hungerTPPct, hungerSLPct := resolveHungerMode(simInst)
+	maxHold := resolveMaxHoldTimeout(simInst)
 
 	closePosition := func(exitPrice float64) {
 		amt := math.Abs(positionAmount)
@@ -517,4 +520,34 @@ func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, sta
 		FinalBalance:   finalBalance,
 		EquityCurve:    equityCurve,
 	}, nil
+}
+
+// mergeBacktestConfig overlays simulation-only overrides on the live config.
+// Identity/transport keys are dropped from overrides: letting a request point
+// redis_addr back at production would recreate the clone-on-live-bus incident
+// the fake redis exists to prevent.
+func mergeBacktestConfig(base map[string]interface{}, overrides map[string]interface{}) map[string]interface{} {
+	merged := make(map[string]interface{}, len(base)+len(overrides)+4)
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range overrides {
+		switch k {
+		case "strategy_id", "owner_id", "redis_addr", "redis_password", "redis_db", "redis_prefix", "backtest":
+			continue
+		}
+		merged[k] = v
+	}
+	return merged
+}
+
+func marshalOverrides(overrides map[string]interface{}) string {
+	if len(overrides) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(overrides)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }

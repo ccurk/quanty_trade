@@ -139,6 +139,9 @@ type Backtest struct {
 	// Timeframe is the candle interval fed to the strategy (default 1m, the same
 	// interval the live engine pushes).
 	Timeframe string `json:"timeframe"`
+	// Overrides records the simulation-only config_overrides the run used, so
+	// A/B experiment rows are self-describing.
+	Overrides string `gorm:"type:text" json:"overrides"`
 	// Error preserves the failure reason. Failures used to be broadcast on the
 	// websocket only, leaving failed rows with an empty Result and no way to
 	// diagnose them afterwards through the REST API.
