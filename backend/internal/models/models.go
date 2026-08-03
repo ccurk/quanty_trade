@@ -99,17 +99,21 @@ type StrategyInstance struct {
 }
 
 // StrategyLog stores user-visible logs emitted by the running Python strategy.
+// 复合索引 (strategy_id, created_at) 服务 GetStrategyLogs 的
+// WHERE strategy_id=? ORDER BY created_at DESC LIMIT 100——表在 debug 档以
+// ~15 行/秒增长，缺该索引时这条查询要对单策略全部行做 filesort（实测 33s）。
+// created_at 单列索引服务保留清扫（log_retention_job）的过期行定位。
 type StrategyLog struct {
 	// ID is the auto-increment primary key.
 	ID uint `gorm:"primaryKey" json:"id"`
 	// StrategyID is the StrategyInstance ID.
-	StrategyID string `gorm:"index" json:"strategy_id"`
+	StrategyID string `gorm:"index;index:idx_strategy_logs_sid_created,priority:1" json:"strategy_id"`
 	// Level indicates severity (info/error).
 	Level string `json:"level"`
 	// Message is the raw log message string.
 	Message string `json:"message"`
 	// CreatedAt is the log creation time.
-	CreatedAt time.Time `json:"created_at"`
+	CreatedAt time.Time `gorm:"index;index:idx_strategy_logs_sid_created,priority:2" json:"created_at"`
 }
 
 // Backtest records a historical simulation run for a strategy instance.
@@ -173,8 +177,9 @@ type APILog struct {
 	// Username is denormalized for easier querying.
 	Username string `json:"username"`
 	TraceID  string `gorm:"index" json:"trace_id"`
-	// CreatedAt is the request timestamp.
-	CreatedAt time.Time `json:"created_at"`
+	// CreatedAt is the request timestamp. Indexed for retention pruning
+	// (log_retention_job) —— 每请求一行，无索引时过期行定位退化为全表扫。
+	CreatedAt time.Time `gorm:"index" json:"created_at"`
 }
 
 // ExchangeOrderEvent is an append-only raw stream of exchange order events.
