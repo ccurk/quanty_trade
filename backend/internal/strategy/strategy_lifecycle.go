@@ -1,14 +1,51 @@
 package strategy
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 )
+
+// RestoreRunningStrategies 开机自恢复：backend 重启后，把重启前期望状态为
+// running/starting 的策略自动拉起。SyncFromDB 刻意把所有运行时实例初始化为
+// stopped（DB 的 Status 列即是关机前的期望状态快照），没有这一步，每次部署/
+// 重启都要等人或下一个 cron 轮来手动 start。人为 stop 的策略 DB 状态是
+// stopped，不会被本函数触碰——"非人为关闭才自动重启"的边界由此成立。
+func (m *Manager) RestoreRunningStrategies(ctx context.Context) {
+	if m == nil || database.DB == nil {
+		return
+	}
+	// 等交易所/redis 接线与各监控 goroutine 就位后再入队。
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(5 * time.Second):
+	}
+	var rows []models.StrategyInstance
+	if err := database.DB.Where("status IN ?", []string{string(StatusRunning), string(StatusStarting)}).Find(&rows).Error; err != nil {
+		logger.Errorf("[BOOT RESTORE] query desired-running strategies failed err=%v", err)
+		return
+	}
+	for _, r := range rows {
+		if err := m.StartStrategy(r.ID); err != nil {
+			logger.Errorf("[BOOT RESTORE] auto-start failed id=%s name=%s err=%v", r.ID, r.Name, err)
+			continue
+		}
+		logger.Infof("[BOOT RESTORE] auto-start queued id=%s name=%s (desired=%s before shutdown)", r.ID, r.Name, r.Status)
+		m.mu.RLock()
+		inst := m.instances[r.ID]
+		m.mu.RUnlock()
+		if inst != nil {
+			emitStrategyLog(inst, "info", "开机自恢复：backend 重启前该策略为 running，已自动重新启动")
+		}
+	}
+}
 
 func (m *Manager) StartStrategy(id string) error {
 	if m == nil {

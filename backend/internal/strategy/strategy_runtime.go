@@ -100,8 +100,15 @@ func (m *Manager) waitProcessLoop(inst *StrategyInstance) {
 		return
 	}
 
-	// 到这里才是真正的意外退出 → 告警 + 自动重启
+	// 到这里才是真正的意外退出 → 告警 + 自动重启。
+	// ⚠️ 顺序契约：必须先 requestRestart 再考虑置 Error——requestRestart 的守卫
+	// 只放行 Running/Starting，旧实现先 setStrategyStatus(Error) 再请求重启，
+	// 重启请求被自己刚设的状态挡掉静默丢弃，崩溃后策略一直躺到下个 cron。
+	restartAccepted := false
 	if active {
+		restartAccepted = m.requestRestart(inst, "process_exited")
+	}
+	if active && !restartAccepted {
 		m.setStrategyStatus(inst, StatusError)
 	}
 	if err != nil {
@@ -124,14 +131,15 @@ func (m *Manager) waitProcessLoop(inst *StrategyInstance) {
 	m.requestRestart(inst, "process_exited")
 }
 
-func (m *Manager) requestRestart(inst *StrategyInstance, reason string) {
+// requestRestart 返回是否接受了这次重启请求（false=被守卫拒绝，调用方自行善后）。
+func (m *Manager) requestRestart(inst *StrategyInstance, reason string) bool {
 	if inst == nil {
-		return
+		return false
 	}
 	inst.mu.Lock()
 	if inst.restarting || inst.stopping || (inst.Status != StatusRunning && inst.Status != StatusStarting) {
 		inst.mu.Unlock()
-		return
+		return false
 	}
 	inst.restarting = true
 	id := inst.ID
@@ -170,4 +178,5 @@ func (m *Manager) requestRestart(inst *StrategyInstance, reason string) {
 			inst.mu.Unlock()
 		}
 	}()
+	return true
 }
