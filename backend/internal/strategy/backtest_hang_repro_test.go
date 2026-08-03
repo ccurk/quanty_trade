@@ -119,7 +119,7 @@ func TestReproBacktestHang(t *testing.T) {
 	done := make(chan outcome, 1)
 	t0 := time.Now()
 	go func() {
-		res, err := m.runBacktestSimulation(instID, "BTC/USDT", "1m", start, end, 227, 1, 99)
+		res, err := m.runBacktestSimulation(instID, "BTC/USDT", "1m", start, end, 227, nil, 1, 99)
 		done <- outcome{res, err}
 	}()
 

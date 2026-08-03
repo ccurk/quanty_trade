@@ -41,6 +41,7 @@ func BuildStrategyManager(ctx context.Context, hub *ws.Hub) *strategy.Manager {
 	mgr.StartROISLScanMonitor(ctx)
 	mgr.StartTPSLGuardMonitor(ctx)
 	mgr.StartWorkers()
+	go mgr.RestoreRunningStrategies(ctx)
 	return mgr
 }
 
@@ -67,4 +68,5 @@ func StartBackgroundJobs(ctx context.Context, mgr *strategy.Manager) {
 	}
 	api.StartDashboardSnapshotJob(ctx)
 	api.StartDailyPnLJob(ctx)
+	api.StartLogRetentionJob(ctx)
 }

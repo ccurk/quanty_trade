@@ -28,6 +28,11 @@ type BacktestRequest struct {
 	Symbol string `json:"symbol"`
 	// Timeframe is the candle interval; defaults to 1m, matching the live feed.
 	Timeframe string `json:"timeframe"`
+	// ConfigOverrides patches the strategy config INSIDE THE SIMULATION ONLY
+	// (live config untouched). This is the A/B lever for parameter experiments:
+	// e.g. {"hunger_take_profit_pct":0.08,"max_hold_minutes":90}. Identity and
+	// transport keys (strategy_id/redis_*/backtest) cannot be overridden.
+	ConfigOverrides map[string]interface{} `json:"config_overrides"`
 }
 
 type UpdateConfigRequest struct {
@@ -114,7 +119,7 @@ func BacktestStrategy(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 
 	if async {
-		taskID, err := stratMgr.StartBacktest(id, req.Symbol, req.Timeframe, req.StartTime, req.EndTime, req.InitialBalance, userID.(uint))
+		taskID, err := stratMgr.StartBacktest(id, req.Symbol, req.Timeframe, req.StartTime, req.EndTime, req.InitialBalance, req.ConfigOverrides, userID.(uint))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -123,7 +128,7 @@ func BacktestStrategy(c *gin.Context) {
 		return
 	}
 
-	result, err := stratMgr.Backtest(id, req.Symbol, req.Timeframe, req.StartTime, req.EndTime, req.InitialBalance, userID.(uint))
+	result, err := stratMgr.Backtest(id, req.Symbol, req.Timeframe, req.StartTime, req.EndTime, req.InitialBalance, req.ConfigOverrides, userID.(uint))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
