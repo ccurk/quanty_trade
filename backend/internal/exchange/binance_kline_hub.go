@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -58,7 +59,39 @@ type klineHub struct {
 }
 
 func newKlineHub(b *BinanceExchange) *klineHub {
-	return &klineHub{b: b}
+	h := &klineHub{b: b}
+	go h.heartbeatLoop()
+	return h
+}
+
+// heartbeatLoop 每分钟打一条每条连接的心跳,直接把"这条连接挂了多少流、多久没收到
+// K 线"打进日志,补上"SUBSCRIBE 补订不落日志"的观测盲点。
+// 判活:streams>0 但超过 120s 没收到 K 线 = STALE(连上了却没数据,像端点/软ban)。
+func (h *klineHub) heartbeatLoop() {
+	t := time.NewTicker(60 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		h.mu.Lock()
+		shards := make([]*klineShard, len(h.shards))
+		copy(shards, h.shards)
+		h.mu.Unlock()
+		for _, s := range shards {
+			n := s.symbolCount()
+			last := atomic.LoadInt64(&s.lastKlineUnix)
+			age := "never"
+			status := "healthy"
+			if last > 0 {
+				secs := time.Now().Unix() - last
+				age = fmt.Sprintf("%ds", secs)
+				if n > 0 && secs > 120 {
+					status = "STALE-no-data"
+				}
+			} else if n > 0 {
+				status = "STALE-no-data"
+			}
+			log.Printf("[BINANCE WS] shard=%d heartbeat=%s streams=%d last_kline=%s", s.id, status, n, age)
+		}
+	}
 }
 
 // subscribe 把一个 symbol 的 1m kline 订阅挂到某条共享连接上,返回退订函数。
@@ -145,6 +178,8 @@ type klineShard struct {
 	ctrl     chan wsCtrl // 连接存活期间的增量订阅指令
 	stop     chan struct{}
 	stopOnce sync.Once
+
+	lastKlineUnix int64 // 最近一次分发 K 线的 Unix 秒(atomic),给心跳判活用
 }
 
 func newKlineShard(h *klineHub, id int) *klineShard {
@@ -459,6 +494,7 @@ func (s *klineShard) handleMessage(msg []byte) {
 	if payload.S == "" || !payload.K.X {
 		return // 订阅 ack 或未收盘
 	}
+	atomic.StoreInt64(&s.lastKlineUnix, time.Now().Unix())
 	open, _ := parseBinanceNum(payload.K.O)
 	high, _ := parseBinanceNum(payload.K.H)
 	low, _ := parseBinanceNum(payload.K.L)
