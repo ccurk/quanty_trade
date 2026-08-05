@@ -69,4 +69,5 @@ func StartBackgroundJobs(ctx context.Context, mgr *strategy.Manager) {
 	api.StartDashboardSnapshotJob(ctx)
 	api.StartDailyPnLJob(ctx)
 	api.StartLogRetentionJob(ctx)
+	api.StartTriArbDetectorJob(ctx)
 }
