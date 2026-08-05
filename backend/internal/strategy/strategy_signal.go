@@ -411,8 +411,12 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			baseAt = seenAt
 		}
 		if !baseAt.IsZero() {
+			// baseAt=最近一根 K 线的墙钟到达时刻。WS 修活后 K 线准点(:00)就到,而信号引擎
+			// 在 K 线到达后 ~30-55s 才出信号,原 +10s 上界会把当分钟晚出的正常信号全部误杀
+			// (→ 一单开不出)。放宽上界到 +70s:接受"K线准点到、信号本分钟内晚出"的情况,
+			// 同时仍拒绝真正跨分钟(>70s)的过期信号,保留原风控意图。下界仍 -10s 防时钟偏移。
 			early := baseAt.Add(-10 * time.Second)
-			late := baseAt.Add(10 * time.Second)
+			late := baseAt.Add(70 * time.Second)
 			ok = sig.GeneratedAt.After(early) && sig.GeneratedAt.Before(late)
 		} else {
 			ok = sig.GeneratedAt.After(now.Add(-10 * time.Second))
