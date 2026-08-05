@@ -8,10 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,8 +24,6 @@ import (
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/models"
 	"quanty_trade/internal/secure"
-
-	"github.com/gorilla/websocket"
 )
 
 type BinanceExchange struct {
@@ -76,6 +72,9 @@ type BinanceExchange struct {
 	lastRateLimitLoad time.Time
 	usedWeight1m      int
 	requestBanUntil   time.Time
+
+	// kline 合并订阅多路复用器:把 N 个 symbol 分片摊到少量共享 WS 连接上
+	klineHub *klineHub
 }
 
 type SymbolSelectCriteria struct {
@@ -137,6 +136,7 @@ func NewBinanceExchange() *BinanceExchange {
 	ex.marketCache = make(map[string]float64)
 	ex.marketCacheExp = make(map[string]time.Time)
 	ex.rateLimitWeight1m = 1200 // sensible default; will be overridden by exchangeInfo
+	ex.klineHub = newKlineHub(ex)
 	return ex
 }
 
@@ -2596,192 +2596,11 @@ func (b *BinanceExchange) SubscribeCandles(symbol string, callback func(Candle))
 	return b.SubscribeCandlesWithEvents(symbol, callback, nil)
 }
 
+// SubscribeCandlesWithEvents 订阅单个 symbol 的 1m K线。内部委托给 klineHub:
+// 多个 symbol 会被摊到少量共享 WS 连接上(合并订阅),而不是一 symbol 一连接。
+// 对外行为不变——仍返回一个退订函数,onStatus 仍会收到该连接的生命周期事件。
 func (b *BinanceExchange) SubscribeCandlesWithEvents(symbol string, callback func(Candle), onStatus func(event string, detail string, err error)) (func(), error) {
-	sym := strings.ToLower(binanceSymbol(symbol))
-	stream := sym + "@kline_1m"
-	wsURL := b.wsBaseURL + "/ws/" + stream
-
-	// Throttle initial dial：每个 SubscribeCandlesWithEvents 调用都过这个全局
-	// token bucket，防止启动期 N 个 symbol 同时握手撞 binance 限频（最大 5/s）。
-	wsDialTokenWait()
-
-	stop := make(chan struct{})
-	go func() {
-		// 两套 backoff：
-		// normalBackoff 处理握手失败/被动 disconnect，1s 起步翻倍封顶 30s。
-		// silentBackoff 专治 binance 软 ban——连接 OK 但不推数据，
-		//  探测到 N 秒无数据强制 close + 重连，按 silent 次数二次方退避到 5min。
-		// 关键修复：之前 dial 成功就 reset backoff，软 ban 时会立刻重连进死循环。
-		// 现在等到收到第一条 数据 才 reset。
-		const (
-			handshakeTimeout = 10 * time.Second
-			readDeadline     = 90 * time.Second // 90s 没数据 = 软 ban 信号
-			normalMaxBackoff = 30 * time.Second
-			silentBaseUnit   = 30 * time.Second
-			silentMaxBackoff = 5 * time.Minute
-		)
-		normalBackoff := 1 * time.Second
-		silentDisconnects := 0
-		dialer := websocket.Dialer{
-			Proxy:            http.ProxyFromEnvironment,
-			HandshakeTimeout: handshakeTimeout,
-			NetDialContext: (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-		}
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if onStatus != nil {
-				onStatus("dialing", wsURL, nil)
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-			conn, _, err := dialer.DialContext(ctx, wsURL, nil)
-			cancel()
-			if err != nil {
-				log.Printf("[BINANCE WS] kline connect failed symbol=%s url=%s err=%v", symbol, wsURL, err)
-				if onStatus != nil {
-					onStatus("connect_failed", wsURL, err)
-				}
-				sleepWithJitter(normalBackoff, stop)
-				normalBackoff *= 2
-				if normalBackoff > normalMaxBackoff {
-					normalBackoff = normalMaxBackoff
-				}
-				continue
-			}
-			log.Printf("[BINANCE WS] kline connected symbol=%s stream=%s", symbol, stream)
-			if onStatus != nil {
-				onStatus("connected", wsURL, nil)
-			}
-			// 注意：这里【不】重置 normalBackoff。等收到第一条 msg 才认为是
-			// 真正 "成功"，再 reset。
-			go func(c *websocket.Conn) {
-				<-stop
-				_ = c.Close()
-			}(conn)
-
-			gotFirst := false
-			gotFirstClosed := false
-			gotRawFirst := false
-			gotAnyData := false
-			loggedUnmarshalErr := false
-			for {
-				select {
-				case <-stop:
-					_ = conn.Close()
-					return
-				default:
-				}
-				// 读超时探测：90s 内没收到任何 frame → 视为软 ban / 静默断连
-				_ = conn.SetReadDeadline(time.Now().Add(readDeadline))
-				_, msg, err := conn.ReadMessage()
-				if err != nil {
-					_ = conn.Close()
-					// 区分两种情况：
-					// 1) 读超时且从未收到数据 → 软 ban 模式
-					// 2) 正常网络断开 / 读到 err → 普通重连
-					isTimeout := false
-					if ne, ok := err.(net.Error); ok && ne.Timeout() {
-						isTimeout = true
-					}
-					if isTimeout && !gotAnyData {
-						silentDisconnects++
-						penalty := time.Duration(silentDisconnects*silentDisconnects) * silentBaseUnit
-						if penalty > silentMaxBackoff {
-							penalty = silentMaxBackoff
-						}
-						log.Printf("[BINANCE WS] silent disconnect (likely soft-ban) symbol=%s consecutive=%d wait=%s", symbol, silentDisconnects, penalty)
-						if onStatus != nil {
-							onStatus("silent_disconnect", fmt.Sprintf("consecutive=%d wait=%s", silentDisconnects, penalty), nil)
-						}
-						sleepWithJitter(penalty, stop)
-						break
-					}
-					log.Printf("[BINANCE WS] kline disconnected symbol=%s err=%v (reconnect in %s)", symbol, err, normalBackoff)
-					if onStatus != nil {
-						onStatus("disconnected", wsURL, err)
-					}
-					sleepWithJitter(normalBackoff, stop)
-					normalBackoff *= 2
-					if normalBackoff > normalMaxBackoff {
-						normalBackoff = normalMaxBackoff
-					}
-					break
-				}
-				if !gotAnyData {
-					gotAnyData = true
-					// 真正的"健康"信号，全部退避计数清零
-					normalBackoff = 1 * time.Second
-					silentDisconnects = 0
-				}
-				if onStatus != nil && !gotRawFirst {
-					gotRawFirst = true
-					head := msg
-					if len(head) > 160 {
-						head = head[:160]
-					}
-					s := strings.ReplaceAll(string(head), "\n", " ")
-					s = strings.ReplaceAll(s, "\r", " ")
-					onStatus("rx_raw_first", fmt.Sprintf("len=%d head=%s", len(msg), s), nil)
-				}
-				var payload struct {
-					K struct {
-						T int64           `json:"t"`
-						O json.RawMessage `json:"o"`
-						H json.RawMessage `json:"h"`
-						L json.RawMessage `json:"l"`
-						C json.RawMessage `json:"c"`
-						V json.RawMessage `json:"v"`
-						X bool            `json:"x"`
-					} `json:"k"`
-				}
-				if err := json.Unmarshal(msg, &payload); err != nil {
-					if onStatus != nil && !loggedUnmarshalErr {
-						loggedUnmarshalErr = true
-						onStatus("unmarshal_failed", err.Error(), err)
-					}
-					continue
-				}
-				if onStatus != nil && !gotFirst {
-					gotFirst = true
-					onStatus("rx_first", fmt.Sprintf("x=%v t=%d c=%s", payload.K.X, payload.K.T, strings.TrimSpace(string(payload.K.C))), nil)
-				}
-				if onStatus != nil && payload.K.X && !gotFirstClosed {
-					gotFirstClosed = true
-					onStatus("rx_first_closed", fmt.Sprintf("t=%d c=%s", payload.K.T, strings.TrimSpace(string(payload.K.C))), nil)
-				}
-				if !payload.K.X {
-					continue
-				}
-				open, _ := parseBinanceNum(payload.K.O)
-				high, _ := parseBinanceNum(payload.K.H)
-				low, _ := parseBinanceNum(payload.K.L)
-				closeP, _ := parseBinanceNum(payload.K.C)
-				vol, _ := parseBinanceNum(payload.K.V)
-				callback(Candle{
-					Timestamp: time.UnixMilli(payload.K.T),
-					Open:      open,
-					High:      high,
-					Low:       low,
-					Close:     closeP,
-					Volume:    vol,
-				})
-			}
-		}
-	}()
-
-	return func() {
-		select {
-		case <-stop:
-		default:
-			close(stop)
-		}
-	}, nil
+	return b.klineHub.subscribe(symbol, callback, onStatus)
 }
 
 // ===========================================================================
