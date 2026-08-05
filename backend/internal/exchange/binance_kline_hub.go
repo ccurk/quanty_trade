@@ -287,9 +287,17 @@ func (s *klineShard) run() {
 		if len(streams) == 0 {
 			return // 分片已空(被回收)
 		}
-		// 连到 /ws/<第一个流>:沿用被验证过的 raw-stream URL 形式,保证初始至少订上一个
-		// 流;其余流连上后由 pumpCtrl 用 SUBSCRIBE 补订。消息与单流一样是 raw(未包装)。
-		wsURL := s.hub.b.wsBaseURL + "/ws/" + streams[0]
+		// 连到 <base>/ws/<第一个流>:沿用被验证过的 raw-stream URL 形式,保证初始至少订上
+		// 一个流;其余流连上后由 pumpCtrl 用 SUBSCRIBE 补订。消息与单流一样是 raw(未包装)。
+		//
+		// 币安 USDM 于 2026-04-23 迁移行情 WS:kline 等普通行情移到 /market 分支,老
+		// wss://fstream.binance.com/ws/... 连得上但不再推送 market 数据(实测零数据)。
+		// 故 usdm 必须走 /market/ws/;现货(stream.binance.com)不受此迁移影响。
+		base := s.hub.b.wsBaseURL
+		if s.hub.b.market == "usdm" {
+			base += "/market"
+		}
+		wsURL := base + "/ws/" + streams[0]
 
 		wsDialTokenWait()
 		s.emitStatus("dialing", wsURL, nil)
