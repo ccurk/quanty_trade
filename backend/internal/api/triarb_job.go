@@ -6,11 +6,13 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
 
@@ -94,6 +96,87 @@ func (b *triBook) evalNet(t triangleDef, feePerLeg float64) (float64, bool) {
 	return (r - 1) * 100, true
 }
 
+// ---- 状态快照(给前端 UI 的只读接口)-------------------------------------
+
+type triArbCycleState struct {
+	Name     string  `json:"name"`
+	NetPct   float64 `json:"net_pct"`
+	GrossPct float64 `json:"gross_pct"`
+	OK       bool    `json:"ok"`
+}
+
+type triArbOppState struct {
+	Name   string    `json:"name"`
+	NetPct float64   `json:"net_pct"`
+	At     time.Time `json:"at"`
+}
+
+// TriArbStatus 是 /api/triarb/status 返回体。
+type TriArbStatus struct {
+	Connected    bool               `json:"connected"`
+	UpdatedAt    time.Time          `json:"updated_at"`
+	FeePerLegPct float64            `json:"fee_per_leg_pct"`
+	BestNetPct   float64            `json:"best_net_pct"`
+	OppCount     int64              `json:"opp_count"` // 启动以来累计 net>0 机会数
+	Cycles       []triArbCycleState `json:"cycles"`    // 按净利降序
+	RecentOpps   []triArbOppState   `json:"recent_opps"`
+}
+
+var (
+	triArbMu   sync.RWMutex
+	triArbSnap TriArbStatus
+)
+
+func triArbSetConnected(v bool) {
+	triArbMu.Lock()
+	triArbSnap.Connected = v
+	triArbMu.Unlock()
+}
+
+func triArbAddOpp(name string, net float64) {
+	triArbMu.Lock()
+	triArbSnap.OppCount++
+	triArbSnap.RecentOpps = append([]triArbOppState{{Name: name, NetPct: net, At: time.Now()}}, triArbSnap.RecentOpps...)
+	if len(triArbSnap.RecentOpps) > 20 {
+		triArbSnap.RecentOpps = triArbSnap.RecentOpps[:20]
+	}
+	triArbMu.Unlock()
+}
+
+func triArbUpdateCycles(book *triBook) {
+	cycles := make([]triArbCycleState, 0, len(triArbTriangles))
+	best := -1e18
+	anyOK := false
+	for _, t := range triArbTriangles {
+		net, ok := book.evalNet(t, triFeePerLeg)
+		gross, _ := book.evalNet(t, 0)
+		cycles = append(cycles, triArbCycleState{Name: t.name, NetPct: net, GrossPct: gross, OK: ok})
+		if ok {
+			anyOK = true
+			if net > best {
+				best = net
+			}
+		}
+	}
+	sort.Slice(cycles, func(i, j int) bool { return cycles[i].NetPct > cycles[j].NetPct })
+	triArbMu.Lock()
+	triArbSnap.Cycles = cycles
+	if anyOK {
+		triArbSnap.BestNetPct = best
+	}
+	triArbSnap.FeePerLegPct = triFeePerLeg * 100
+	triArbSnap.UpdatedAt = time.Now()
+	triArbMu.Unlock()
+}
+
+// GetTriArbStatus 只读返回三角套利检测器当前状态。
+func GetTriArbStatus(c *gin.Context) {
+	triArbMu.RLock()
+	s := triArbSnap
+	triArbMu.RUnlock()
+	c.JSON(http.StatusOK, s)
+}
+
 var triArbOnce sync.Once
 
 // StartTriArbDetectorJob 启动三角套利检测器(进程内幂等)。只读现货公开行情。
@@ -129,6 +212,7 @@ func runTriArbLoop(ctx context.Context) {
 	wsURL := "wss://stream.binance.com:9443/stream?streams=" + strings.Join(streams, "/")
 
 	go runTriArbHeartbeat(ctx, book)
+	go runTriArbSnapshot(ctx, book)
 
 	backoff := time.Second
 	dialer := websocket.Dialer{
@@ -158,6 +242,7 @@ func runTriArbLoop(ctx context.Context) {
 			continue
 		}
 		log.Printf("[TRIARB] connected, watching %d symbols across %d cycles", len(syms), len(triArbTriangles))
+		triArbSetConnected(true)
 		go func() { <-ctx.Done(); _ = conn.Close() }()
 		backoff = time.Second
 
@@ -166,6 +251,7 @@ func runTriArbLoop(ctx context.Context) {
 			_, msg, rerr := conn.ReadMessage()
 			if rerr != nil {
 				_ = conn.Close()
+				triArbSetConnected(false)
 				log.Printf("[TRIARB] disconnected err=%v (reconnect in %s)", rerr, backoff)
 				if !sleepCtx(ctx, backoff) {
 					return
@@ -208,8 +294,23 @@ func runTriArbLoop(ctx context.Context) {
 				}
 				lastOppAt[t.name] = now
 				gross, _ := book.evalNet(t, 0)
+				triArbAddOpp(t.name, net)
 				log.Printf("[TRIARB] OPP %s net=%+.4f%% gross=%+.4f%% (fee=%.3f%%/leg)", t.name, net, gross, triFeePerLeg*100)
 			}
+		}
+	}
+}
+
+// runTriArbSnapshot 每 2 秒把所有环的当前净利刷进状态快照,供前端 UI 轮询。
+func runTriArbSnapshot(ctx context.Context, book *triBook) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			triArbUpdateCycles(book)
 		}
 	}
 }

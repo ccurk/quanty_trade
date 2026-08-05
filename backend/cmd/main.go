@@ -179,6 +179,9 @@ func main() {
 		protected.GET("/strategies/:id/symbols", api.GetRunningSymbols)                      // 运行中币种(动态选币)
 		protected.POST("/strategies/:id/symbols/rotate", api.RotateRunningSymbols)           // 热轮换币种(cron 驱动)
 
+		// 三角套利检测器状态(只读)
+		protected.GET("/triarb/status", api.GetTriArbStatus)
+
 		// Positions
 		protected.GET("/positions", api.ListPositions)
 		protected.POST("/positions/close", api.ClosePosition)

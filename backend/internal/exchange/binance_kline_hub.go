@@ -479,13 +479,15 @@ func (s *klineShard) handleMessage(msg []byte) {
 	var payload struct {
 		S string `json:"s"`
 		K struct {
-			T int64           `json:"t"`
-			O json.RawMessage `json:"o"`
-			H json.RawMessage `json:"h"`
-			L json.RawMessage `json:"l"`
-			C json.RawMessage `json:"c"`
-			V json.RawMessage `json:"v"`
-			X bool            `json:"x"`
+			T      int64           `json:"t"` // kline 开始时间(整分 :00)——策略时间窗校验依赖它
+			TClose int64           `json:"T"` // kline 结束时间(:59.999)——必须显式声明,否则 Go 大小写回退会用 "T" 覆盖 "t"
+			O      json.RawMessage `json:"o"`
+			H      json.RawMessage `json:"h"`
+			L      json.RawMessage `json:"l"`
+			C      json.RawMessage `json:"c"`
+			V      json.RawMessage `json:"v"` // 成交量
+			VTaker json.RawMessage `json:"V"` // 主动买入量——同上,防止 "V" 覆盖 "v"
+			X      bool            `json:"x"`
 		} `json:"k"`
 	}
 	if err := json.Unmarshal(msg, &payload); err != nil {
