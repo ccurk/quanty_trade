@@ -516,6 +516,14 @@ const App: React.FC = () => {
     }
   }, [user, token, dashboardRange]);
 
+  useEffect(() => {
+    if (!user || !token || activeTab !== 'triarb') return;
+    fetchTriArb();
+    const id = setInterval(fetchTriArb, 3000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, token, activeTab]);
+
   const fetchUsers = async () => {
     try {
       const res = await axios.get('/api/admin/users');
@@ -1865,6 +1873,88 @@ const App: React.FC = () => {
               })()}
             </div>
 
+          </div>
+        )}
+
+        {activeTab === 'triarb' && (
+          <div className="space-y-4">
+            <div className={`p-4 rounded-2xl border ${isDarkMode ? 'bg-blue-900/20 border-blue-800/50 text-blue-200' : 'bg-blue-50 border-blue-200 text-blue-800'}`}>
+              <div className="font-bold mb-1">三角套利检测器（只读 · 不下单）</div>
+              <div className="text-xs leading-relaxed">
+                实时监控币安现货三角环（USDT→A→B→USDT），算扣手续费后的净利。
+                <b>纯观测，不接账户、不影响你的量化下单。</b>
+                实测结论：币安内三角毛差仅 ~0.2bp、远小于 ~30bp 手续费，净利恒为负、无可套空间——这个面板就是持续验证该结论。
+              </div>
+            </div>
+
+            {(() => {
+              const t = triArb;
+              if (!t) return <div className="text-sm text-gray-500">加载中…</div>;
+              const pct = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(4)}%`;
+              return (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {[
+                      { k: '连接状态', v: t.connected ? '已连接' : '断开', tone: t.connected ? 'text-green-500' : 'text-red-500' },
+                      { k: '最优环净利', v: pct(t.best_net_pct), tone: t.best_net_pct > 0 ? 'text-green-500' : 'text-red-500' },
+                      { k: '累计正机会', v: String(t.opp_count), tone: t.opp_count > 0 ? 'text-green-500' : 'text-gray-400' },
+                      { k: '单腿手续费', v: `${t.fee_per_leg_pct.toFixed(3)}%`, tone: '' },
+                    ].map((c) => (
+                      <div key={c.k} className={`rounded-xl border p-3 ${isDarkMode ? 'border-gray-800 bg-gray-950/40' : 'border-gray-200 bg-gray-50'}`}>
+                        <div className="text-xs text-gray-500 mb-1">{c.k}</div>
+                        <div className={`font-mono font-bold ${c.tone}`}>{c.v}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className={`rounded-2xl border overflow-hidden ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-white'}`}>
+                    <div className={`px-4 py-3 border-b text-sm font-bold ${isDarkMode ? 'border-gray-800' : 'border-gray-200'}`}>各三角环实时净利（按净利降序）</div>
+                    <div className="max-h-[26rem] overflow-auto">
+                      <table className="w-full text-sm">
+                        <thead className={`${isDarkMode ? 'bg-gray-900/60 text-gray-400' : 'bg-gray-50 text-gray-500'}`}>
+                          <tr>
+                            <th className="px-4 py-3 text-left">三角环</th>
+                            <th className="px-4 py-3 text-right">净利(扣费)</th>
+                            <th className="px-4 py-3 text-right">毛利(未扣费)</th>
+                          </tr>
+                        </thead>
+                        <tbody className={`${isDarkMode ? 'divide-y divide-gray-800' : 'divide-y divide-gray-200'}`}>
+                          {t.cycles.map((cy) => (
+                            <tr key={cy.name} className={isDarkMode ? 'hover:bg-gray-900/40' : 'hover:bg-gray-50'}>
+                              <td className="px-4 py-3 font-mono">{cy.name}{!cy.ok && <span className="text-gray-500"> (无报价)</span>}</td>
+                              <td className={`px-4 py-3 text-right font-mono ${cy.net_pct > 0 ? 'text-green-500' : 'text-red-500'}`}>{cy.ok ? pct(cy.net_pct) : '-'}</td>
+                              <td className={`px-4 py-3 text-right font-mono ${cy.gross_pct > 0 ? 'text-green-500' : 'text-gray-400'}`}>{cy.ok ? pct(cy.gross_pct) : '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className={`rounded-2xl border overflow-hidden ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-white'}`}>
+                    <div className={`px-4 py-3 border-b text-sm font-bold ${isDarkMode ? 'border-gray-800' : 'border-gray-200'}`}>最近正机会（net&gt;0）</div>
+                    {t.recent_opps.length === 0 ? (
+                      <div className="px-4 py-6 text-sm text-gray-500">暂无（符合实测结论：币安内三角几乎不出现可套的正机会）</div>
+                    ) : (
+                      <div className="max-h-64 overflow-auto">
+                        <table className="w-full text-sm">
+                          <tbody className={`${isDarkMode ? 'divide-y divide-gray-800' : 'divide-y divide-gray-200'}`}>
+                            {t.recent_opps.map((o, i) => (
+                              <tr key={i}>
+                                <td className="px-4 py-2 font-mono">{o.name}</td>
+                                <td className="px-4 py-2 text-right font-mono text-green-500">{pct(o.net_pct)}</td>
+                                <td className="px-4 py-2 text-right font-mono text-gray-500">{new Date(o.at).toLocaleTimeString()}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-500">更新时间：{t.updated_at ? new Date(t.updated_at).toLocaleTimeString() : '-'}（每 3 秒刷新）</div>
+                </>
+              );
+            })()}
           </div>
         )}
 
