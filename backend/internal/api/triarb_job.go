@@ -177,14 +177,18 @@ func runTriArbLoop(ctx context.Context) {
 			}
 			var env struct {
 				Data struct {
-					S string `json:"s"`
-					B string `json:"b"`
-					A string `json:"a"`
+					S  string `json:"s"`
+					B  string `json:"b"` // bidPrice
+					BQ string `json:"B"` // bidQty —— 必须显式声明,否则 Go 大小写回退会用 "B"(量)覆盖 "b"(价)
+					A  string `json:"a"` // askPrice
+					AQ string `json:"A"` // askQty —— 同上
 				} `json:"data"`
 			}
 			if json.Unmarshal(msg, &env) != nil || env.Data.S == "" {
 				continue
 			}
+			_ = env.Data.BQ
+			_ = env.Data.AQ
 			bid, _ := strconv.ParseFloat(env.Data.B, 64)
 			ask, _ := strconv.ParseFloat(env.Data.A, 64)
 			if bid <= 0 || ask <= 0 {
@@ -242,19 +246,5 @@ func runTriArbHeartbeat(ctx context.Context, book *triBook) {
 		}
 		log.Printf("[TRIARB] heartbeat best=%s net=%+.4f%% gross=%+.4f%% (>0才有套利,费=%.3f%%/腿)",
 			bestName, bestNet, bestGross, triFeePerLeg*100)
-
-		// DEBUG: dump book values to locate wrong prices
-		book.mu.RLock()
-		var sb strings.Builder
-		for _, s := range triArbSymbols() {
-			sb.WriteString(s)
-			sb.WriteString("=")
-			sb.WriteString(strconv.FormatFloat(book.bid[s], 'g', -1, 64))
-			sb.WriteString("/")
-			sb.WriteString(strconv.FormatFloat(book.ask[s], 'g', -1, 64))
-			sb.WriteString(" ")
-		}
-		book.mu.RUnlock()
-		log.Printf("[TRIARB] DEBUG book: %s", sb.String())
 	}
 }
