@@ -827,6 +827,10 @@ func ApplyOptimization(c *gin.Context) {
 		return
 	}
 
+	// owner 直令 2026-08-05：DB 只保留最新 3 版 auto 模板（当前+2 步 rollback 深度）；
+	// 代码全史档案在 git 仓库 strategies/ 目录，删 DB 行不丢历史。
+	pruneAutoTemplates(req.StrategyID, row.Name, row.OwnerID)
+
 	// Restart strategy if currently active
 	needsRestart := row.Status == "running" || row.Status == "starting"
 	if needsRestart && stratMgr != nil {
@@ -950,4 +954,79 @@ func nextAutoVersionNumber(prefix string) int {
 		}
 	}
 	return maxN + 1
+}
+
+
+// templateRetentionKeep 每策略保留的最新 auto 模板数。
+// 环境变量 TEMPLATE_RETENTION_KEEP 可覆盖；<=0 停用清扫。默认 3（owner 直令 2026-08-05）。
+func templateRetentionKeep() int {
+	if v := strings.TrimSpace(os.Getenv("TEMPLATE_RETENTION_KEEP")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return 3
+}
+
+// pruneAutoTemplates 按 apply 血缘清扫某策略的历史 auto 模板，只保留最新 keep 版。
+// 四重安全护栏（全部满足才删）：
+//  1. 只删本策略 apply 血缘内的模板（StrategyOptimizationRun.new_template_id）
+//  2. 只删 auto 命名模板（name LIKE '<策略名>_auto_v%'）且 author 为该 owner
+//  3. 不删任何仍被 strategy_instances.template_id 引用的模板（含其他策略）
+//  4. 不删最新 keep 版（含刚绑定的当前版）
+func pruneAutoTemplates(strategyID string, strategyName string, ownerID uint) {
+	keep := templateRetentionKeep()
+	if keep <= 0 {
+		return
+	}
+	var rawLineage []uint
+	if err := database.DB.Model(&models.StrategyOptimizationRun{}).
+		Where("strategy_id = ? AND applied = ? AND new_template_id > 0", strategyID, true).
+		Order("new_template_id DESC").
+		Pluck("new_template_id", &rawLineage).Error; err != nil {
+		logger.Errorf("[OPTIMIZE] template retention lineage query failed strategy=%s err=%v", strategyID, err)
+		return
+	}
+	seen := make(map[uint]bool, len(rawLineage))
+	lineage := make([]uint, 0, len(rawLineage))
+	for _, id := range rawLineage {
+		if !seen[id] {
+			seen[id] = true
+			lineage = append(lineage, id)
+		}
+	}
+	if len(lineage) <= keep {
+		return
+	}
+	drop := lineage[keep:]
+
+	var inUse []uint
+	_ = database.DB.Model(&models.StrategyInstance{}).
+		Where("template_id > 0").
+		Pluck("template_id", &inUse).Error
+	inUseSet := make(map[uint]bool, len(inUse))
+	for _, id := range inUse {
+		inUseSet[id] = true
+	}
+	deletable := make([]uint, 0, len(drop))
+	for _, id := range drop {
+		if !inUseSet[id] {
+			deletable = append(deletable, id)
+		}
+	}
+	if len(deletable) == 0 {
+		return
+	}
+	res := database.DB.
+		Where("id IN ? AND author_id = ? AND template_type = ? AND name LIKE ?",
+			deletable, ownerID, "strategy", strategyName+"_auto_v%").
+		Delete(&models.StrategyTemplate{})
+	if res.Error != nil {
+		logger.Errorf("[OPTIMIZE] template retention prune failed strategy=%s err=%v", strategyID, res.Error)
+		return
+	}
+	if res.RowsAffected > 0 {
+		logger.Infof("[OPTIMIZE] template retention pruned=%d strategy=%s keep=%d (git strategies/ 目录为全史档案)",
+			res.RowsAffected, strategyID, keep)
+	}
 }
