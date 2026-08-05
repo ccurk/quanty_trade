@@ -242,5 +242,19 @@ func runTriArbHeartbeat(ctx context.Context, book *triBook) {
 		}
 		log.Printf("[TRIARB] heartbeat best=%s net=%+.4f%% gross=%+.4f%% (>0才有套利,费=%.3f%%/腿)",
 			bestName, bestNet, bestGross, triFeePerLeg*100)
+
+		// DEBUG: dump book values to locate wrong prices
+		book.mu.RLock()
+		var sb strings.Builder
+		for _, s := range triArbSymbols() {
+			sb.WriteString(s)
+			sb.WriteString("=")
+			sb.WriteString(strconv.FormatFloat(book.bid[s], 'g', -1, 64))
+			sb.WriteString("/")
+			sb.WriteString(strconv.FormatFloat(book.ask[s], 'g', -1, 64))
+			sb.WriteString(" ")
+		}
+		book.mu.RUnlock()
+		log.Printf("[TRIARB] DEBUG book: %s", sb.String())
 	}
 }
