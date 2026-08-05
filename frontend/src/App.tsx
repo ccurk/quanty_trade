@@ -113,6 +113,18 @@ interface PnLSummaryResponse {
   monthly?: MonthlyPnLEntry[];
 }
 
+interface TriArbCycle { name: string; net_pct: number; gross_pct: number; ok: boolean; }
+interface TriArbOpp { name: string; net_pct: number; at: string; }
+interface TriArbStatus {
+  connected: boolean;
+  updated_at: string;
+  fee_per_leg_pct: number;
+  best_net_pct: number;
+  opp_count: number;
+  cycles: TriArbCycle[];
+  recent_opps: TriArbOpp[];
+}
+
 interface DashboardResponse {
   updated_at: string;
   account: {
@@ -313,7 +325,8 @@ const App: React.FC = () => {
   const [showCandleLogs, setShowCandleLogs] = useState(false);
   const [showWsErrorToasts, setShowWsErrorToasts] = useState(() => localStorage.getItem('show_ws_error_toasts') === 'true');
   const [users, setUsers] = useState<User[]>([]);
-  const [activeTab, setActiveTab] = useState<'strategies' | 'templates' | 'positions' | 'stats' | 'logs' | 'square' | 'admin' | 'develop'>('stats');
+  const [activeTab, setActiveTab] = useState<'strategies' | 'templates' | 'positions' | 'stats' | 'logs' | 'square' | 'admin' | 'develop' | 'triarb'>('stats');
+  const [triArb, setTriArb] = useState<TriArbStatus | null>(null);
   const showCandleLogsRef = useRef(showCandleLogs);
   const showWsErrorToastsRef = useRef(showWsErrorToasts);
   const activeTabRef = useRef(activeTab);
@@ -783,6 +796,15 @@ const App: React.FC = () => {
     }
   };
 
+  const fetchTriArb = async () => {
+    try {
+      const res = await axios.get('/api/triarb/status');
+      setTriArb(res.data);
+    } catch (err) {
+      console.error('Failed to fetch triarb', err);
+    }
+  };
+
   const closePosition = async (symbol: string) => {
     customConfirm('手动平仓', `确定要手动平仓 ${symbol} 吗？此操作将立即在交易所下单。`, async () => {
       try {
@@ -1084,6 +1106,7 @@ const App: React.FC = () => {
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'develop'} onClick={() => { setActiveTab('develop'); setIsSidebarOpen(false); }} icon={<Code size={20} />} label="模版开发" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'square'} onClick={() => { setActiveTab('square'); setIsSidebarOpen(false); }} icon={<ShoppingBag size={20} />} label="策略广场" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'positions'} onClick={() => { setActiveTab('positions'); setIsSidebarOpen(false); }} icon={<List size={20} />} label="仓位管理" />
+          <NavItem isDarkMode={isDarkMode} active={activeTab === 'triarb'} onClick={() => { setActiveTab('triarb'); setIsSidebarOpen(false); }} icon={<Share2 size={20} />} label="套利检测" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'logs'} onClick={() => { setActiveTab('logs'); setIsSidebarOpen(false); }} icon={<Terminal size={20} />} label="系统日志" />
           {user.role === 'admin' && (
             <NavItem isDarkMode={isDarkMode} active={activeTab === 'admin'} onClick={() => { setActiveTab('admin'); setIsSidebarOpen(false); }} icon={<ShieldCheck size={20} />} label="系统管理" />
@@ -1154,6 +1177,7 @@ const App: React.FC = () => {
               {activeTab === 'square' && '策略广场'}
               {activeTab === 'positions' && '实时持仓'}
               {activeTab === 'stats' && '数据面板'}
+              {activeTab === 'triarb' && '三角套利检测'}
               {activeTab === 'logs' && '实时日志'}
               {activeTab === 'admin' && '用户管理'}
             </h2>
@@ -1790,6 +1814,7 @@ const App: React.FC = () => {
                             if (!d) return <div key={`empty-${idx}`} className="h-16" />;
                             const dayNum = d.day.slice(-2);
                             const pnl = d.realized_pnl || 0;
+                            const noData = (d.trades || 0) === 0 && pnl === 0;
                             const title = `${d.day}  已实现: ${formatMoney(pnl, 2)}  回报率: ${formatPct(d.realized_return_pct || 0, 2)}  交易数: ${d.trades || 0}`;
                             return (
                               <div
@@ -1798,7 +1823,7 @@ const App: React.FC = () => {
                                 className={`h-16 rounded-lg border p-2 flex flex-col justify-between text-xs font-mono select-none ${isDarkMode ? 'border-gray-800' : 'border-gray-200'} ${getHeat(pnl)}`}
                               >
                                 <span className={`text-[11px] font-bold ${isDarkMode ? 'text-gray-100' : 'text-gray-800'}`}>{dayNum}</span>
-                                <span className={`text-[10px] truncate ${toneClass(pnl)}`}>{formatMoney(pnl, 0)}</span>
+                                <span className={`text-[10px] truncate ${noData ? 'text-gray-600' : toneClass(pnl)}`}>{noData ? '-' : formatMoney(pnl, 0)}</span>
                               </div>
                             );
                           })}
