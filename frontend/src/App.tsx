@@ -1890,7 +1890,9 @@ const App: React.FC = () => {
             {(() => {
               const t = triArb;
               if (!t) return <div className="text-sm text-gray-500">加载中…</div>;
-              const pct = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(4)}%`;
+              const pct = (v: number) => `${v >= 0 ? '+' : ''}${(v ?? 0).toFixed(4)}%`;
+              const cycles = t.cycles || [];
+              const opps = t.recent_opps || [];
               return (
                 <>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1919,7 +1921,7 @@ const App: React.FC = () => {
                           </tr>
                         </thead>
                         <tbody className={`${isDarkMode ? 'divide-y divide-gray-800' : 'divide-y divide-gray-200'}`}>
-                          {t.cycles.map((cy) => (
+                          {cycles.map((cy) => (
                             <tr key={cy.name} className={isDarkMode ? 'hover:bg-gray-900/40' : 'hover:bg-gray-50'}>
                               <td className="px-4 py-3 font-mono">{cy.name}{!cy.ok && <span className="text-gray-500"> (无报价)</span>}</td>
                               <td className={`px-4 py-3 text-right font-mono ${cy.net_pct > 0 ? 'text-green-500' : 'text-red-500'}`}>{cy.ok ? pct(cy.net_pct) : '-'}</td>
@@ -1933,13 +1935,13 @@ const App: React.FC = () => {
 
                   <div className={`rounded-2xl border overflow-hidden ${isDarkMode ? 'border-gray-800 bg-gray-950/30' : 'border-gray-200 bg-white'}`}>
                     <div className={`px-4 py-3 border-b text-sm font-bold ${isDarkMode ? 'border-gray-800' : 'border-gray-200'}`}>最近正机会（net&gt;0）</div>
-                    {t.recent_opps.length === 0 ? (
+                    {opps.length === 0 ? (
                       <div className="px-4 py-6 text-sm text-gray-500">暂无（符合实测结论：币安内三角几乎不出现可套的正机会）</div>
                     ) : (
                       <div className="max-h-64 overflow-auto">
                         <table className="w-full text-sm">
                           <tbody className={`${isDarkMode ? 'divide-y divide-gray-800' : 'divide-y divide-gray-200'}`}>
-                            {t.recent_opps.map((o, i) => (
+                            {opps.map((o, i) => (
                               <tr key={i}>
                                 <td className="px-4 py-2 font-mono">{o.name}</td>
                                 <td className="px-4 py-2 text-right font-mono text-green-500">{pct(o.net_pct)}</td>
