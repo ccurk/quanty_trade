@@ -137,6 +137,7 @@
 
 | # | 类型 | 内容（含完整意图） | 登记轮 | 状态 |
 |---|---|---|---|---|
+| 31 | BRAKE | **order_amount_pct 0.11→0.055**+_exp.brake_20260807 追加(全文存 scratchpad patch_brake.json;#20主体原样保留+分段注记):09:50Z哨 6h−23.86=钱包196.3的12.1%≥8%线;病根=全向快SL churn(新批6快SL/−10.59含L5,ACE/BICO急再入+2→#29 14/20);不选premium hike因conf零判别(S18)+高conf高mult反向选择;恢复=6h/24h双转正逐档回 | 08-07 09:5xZ哨 | **open·抢窗中**(3仓09:28-36开~10:36出清;哨内Monitor抓空仓窗stop→PATCH→start;≤2次stop纪律;11:1x轮兜底落地) |
 > 维护注 08-06 20:2xZ：#28(_exp归位) **落地结案删行**——20:24Z 空仓窗(RIF 20:18硬超时自然出清)stop→confirm→PATCH→start ~10s；_exp=S20头+RECOVER2 continuation+r2_verdict(ts=1786047842)落库；全量diff仅_exp单字段零漂移(tpl564/owner值完好)；RECOVER2@33笔裁决同步入册(详§7 20:1x行)。
 > 维护注 08-07 04:3xZ：#20 **落地结案删行**——04:29Z空仓窗(ESPORTS 04:16硬超时自然出清)stop→confirm→PATCH→start~10s;hunger_take_profit_pct 0.06→0.08+_exp(#20预注册+s20_verdict=KEEP@n33)单PATCH原子落库ts=1786076684;全量diff仅hunger_tp单字段零漂移(tpl564/owner解锁值完好);S20正式裁决同轮入册(详§7 04:1x行);规格原文存config._exp。
 
