@@ -114,6 +114,8 @@
 - **[新增 08-07 22:5xZ] apply baseline_hash=TrimSpace口径**：resolveCodeForOptimize对模板code做strings.TrimSpace后sha256=ctx.current_code原文hash(81b5cf37族)≠存储模板hash(尾换行,2cab9833族)。apply 409 baseline_race时先按TrimSpace口径重算再重试,勿盲目省略baseline_hash。
 
 - **max_hold 时钟=币安 updateTime，可被资金费结算等事件重置（08-08 02:1x 源码+逐笔实锤）**: 适配层把 positionRisk.UpdateTime 映射为 pos.OpenTime（binance.go L1540-1542），quick_trade_monitor.go L84-89 计 max_hold(60m) 优先用币安钟，本地 open_time 仅在币安钟为零时兜底 → updateTime 被刷新（资金费结算/保证金变动）即重置 60m 时钟。证据: LA 84.7m(+0.98)/RIVER 120.2m(+1.45) 赢单超 60m 仍持（ACE 64.9m 边际=tick 延迟域）。风险有界: 饥饿层按源码注释仍用本地 open_time 计时，亏损仓 45m 后照常被 −5%roi 收割，滞留域仅 (−5%,+8%)roi 带。现净影响 +2.43 良性（赢单多跑）。判据: 亏损腿 hold>75m ≥3 例或单笔 ≥5U → M 通道修复（binanceOpen=min(币安,本地)）；赢单跑长=良性不动。
+- **[新增 08-08 10:5xZ] 双会话抢窗双写首例（#32 落地 audit 归属注记）**：10:54 空仓窗被两会话抢窗器同窗双擒——audit 10:54:45.961Z=08:1x 会话 v3（stop 10:54:44→start 10:54:54）,10:54:50.895Z=10:1x 会话 v3b（§7 10:1x 行所记,后写者胜=终态 recover/carry 措辞）。两载荷语义同源（均执行 §5#32）,S21/S22 十二键双方保全,终态零冲突。机制：①PATCH=_exp 全量替换 last-writer-wins ②stop 对已停/start 对启动中幂等→双会话可各自"成功"互不感知 ③audit 两条均有主,此注即归属。风险边界：同源载荷无害;**异源载荷同窗竞写会静默丢先写改动**→跨会话互斥靠 §5 认领行声明抢窗器 armed 时限,后启会话见在飞认领先探 audit 再动手。
+
 ## 4. 假设库·候选队列（v2 迁移注记 @08-01 16:40Z：本节与 §6 观察计数合并为【假设库】，内容全量保留；prompt v2 起执行门槛=逐笔证据标准[≥20 笔同型死法或机制落到源码行为]，旧 v12 Step 4.6c 门槛作历史参照）
 
 | # | 类型 | 内容 | 依据 | 复现计数 | 状态 |
