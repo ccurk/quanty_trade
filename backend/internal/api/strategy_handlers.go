@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -319,8 +320,20 @@ func jsonEqual(a, b interface{}) bool {
 
 func GetStrategyLogs(c *gin.Context) {
 	id := c.Param("id")
+	limit := 100
+	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 {
+		if v > 2000 {
+			v = 2000
+		}
+		limit = v
+	}
+	q := database.DB.Where("strategy_id = ?", id)
+	// q: 按消息子串过滤（如 q=统计汇总 拉取周期统计行历史，绕开 100 行窗口冲刷）
+	if kw := c.Query("q"); kw != "" {
+		q = q.Where("message LIKE ?", "%"+kw+"%")
+	}
 	var logs []models.StrategyLog
-	database.DB.Where("strategy_id = ?", id).Order("created_at desc").Limit(100).Find(&logs)
+	q.Order("created_at desc").Limit(limit).Find(&logs)
 	c.JSON(http.StatusOK, logs)
 }
 
