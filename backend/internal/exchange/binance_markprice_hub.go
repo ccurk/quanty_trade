@@ -43,7 +43,15 @@ func (b *BinanceExchange) StartMarkPriceStream(ctx context.Context, cb func([]Ma
 var markStreamOn atomic.Bool
 
 func (b *BinanceExchange) runMarkPriceStream(ctx context.Context, cb func([]MarkTick)) {
-	url := b.wsBaseURL + "/ws/!markPrice@arr@1s"
+	// 币安 USDM 2026-04-23 行情 WS 迁移:普通行情流移到 /market 分支,老
+	// wss://fstream.binance.com/ws/... 连得上但零数据(详见 binance_kline_hub.go)。
+	// markprice@arr 同属 market 数据,必须走 /market/ws/,否则每 90s 读超时空转、
+	// 一个 tick 都收不到(WS 仓位守护静默失效,退回 5s 轮询)。
+	base := b.wsBaseURL
+	if b.Market() == "usdm" {
+		base += "/market"
+	}
+	url := base + "/ws/!markPrice@arr@1s"
 	backoff := time.Second
 	for {
 		select {
