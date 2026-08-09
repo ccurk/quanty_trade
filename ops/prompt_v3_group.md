@@ -43,11 +43,20 @@
 - 启动一个停机载具的固定 checklist（缺一不可）：
   ①activation_gate 全部满足 ②预注册该载具 _exp ③同窗把该池币加入 main
   symbol_blacklist（互斥不变式）④组保证金公式重算合规 ⑤start→验 running。
-- 池路由（组合经理职责，每轮第 6 步）：
-  升池=某币在现载具 20 笔逐笔证据显示与另一原型更配（或 3 轮持续同向）；
-  降池/入隔离=币在其池 20 笔净负 或 6h 单币刹车级失血；
-  改池动作=两端载具 config 同窗改（symbols 与 blacklist 原子对调），登记台账。
+- **池路由=动态对账（owner 直令 08-09：币池不写死，动态增删）**，每轮执行：
+  ①跑 `python3 ops/route_pools.py <closed48.json> - <trending.json>`（期望态对账器：
+  逐笔证据→期望池；GET 各载具 /symbols→实际池；输出 rotate 差分计划+隔离名单
+  +blacklist_sync）②核对计划与各载具 _exp/持仓无冲突后逐载具
+  `POST /strategies/:id/symbols/rotate {add,remove,reason:"ROUTE:..."}` 热执行
+  （不停机；remove 被 has_open_position 拒→下轮重试；churn 限流≤4 币/轮，
+  隔离动作不限流）③rotate 是内存态，任何载具重启后 feed 从 config.symbols
+  种子重建→漂移由下轮对账自愈；载具自然重启窗把当期期望池写回
+  config.symbols＋按 blacklist_sync 更新 main 黑名单（种子层）。
+  阈值与生命周期（发现→晋升→降级→隔离→rehab）以 route_pools.py 头注为
+  预注册权威；改阈值=ROUTE 预注册动作走 _exp。
 - 逐笔归因按池归属拆到载具（池互斥 ⇒ symbol→载具唯一；closed API 是账户级）。
+- 互斥三层：live feed 不相交（rotate 对账维护）> main blacklist 种子（重启窗同步）
+  > 引擎同币互斥闸（部署后兜底）。离池未隔离币=孤儿态（安全不交易）等种子同步释放。
 
 ═════════════════════════════════════════════════
 能力清单（v2 全量继承，组模式增补如下）
