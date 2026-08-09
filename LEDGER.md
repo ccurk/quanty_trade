@@ -107,7 +107,7 @@
 - **hold_distribution 只覆盖部分仓位**——死法分析以逐笔 API 为准。
 - **backtest 接口可用**：`POST /api/strategies/:id/backtest`（async=true），大改 apply 后烟雾测试用。
 - **[新增 08-02 15:11Z] ctx API 结构改版**：`paired_trades`→`trades_window`（键：count/win_count/win_rate_pct/realized_pnl/long_count/long_pnl/short_count/short_pnl/by_symbol；口径=fills 非配对，24h n58 vs 逐笔 24 对）；`.binance` 下 balance/available_balance/income_totals（含 **TRANSFER=入金检测直读字段**）/income_counts/open_positions。旧键名脚本全部需改。逐笔 API 不受影响仍为归因主武器。
-- **[新增 08-02 15:11Z] 监控盲区=DB↔币安失同步**：quick_trade_monitor 只扫 DB `status="open"` 行（L48），行缺失/早关 → 币安实仓脱离①②③三层出场全部管辖漂移。实证 KOMA S 07-31 15:16Z 开 →29h 漂移→08-01 20:25Z 收 −15.13（48h 单笔最大失血）；其 00:11Z"新开空单"记录=脱管仓重收养非 BRAKE 违规（S17+sides 双 gate 在位，income by_symbol 佐证该腿实际+0.70）。backend HEAD b12390a/3786e39（CloseTime 零值 1292 修复）疑即根因修复，部署态未知。候选#15 sweeper 登记 §4。**⚠️08-03 03:5xZ 重要修正：US"第二例漂移"证伪**（详见下条重建洞条目），KOMA 漂移维持 n=1，#15 升执行判据未触。
+- [速记] 监控盲区DB↔币安失同步: monitor只扫DB open行,行缺失→实仓脱管漂移(KOMA 29h/-15.13 n=1);#15 sweeper候选;US'第二例'证伪〔全文git dba6d19前史〕
 - **[新增 08-02 06:11Z] max_hold 计时锚 = 币安 pos.OpenTime(updateTime)，饥饿模式计时锚 = 本地 open_time**（quick_trade_monitor.go L85-89 vs L103 源码核实）：币安 updateTime 会被仓位变动刷新 → 实际 hold 可超 max_hold_minutes（post-FIX 实例 PROM 89.8m/120.3m，均盈利良性）。hold>60m 非故障；死法分类时 60m+ 桶不可武断归为硬超时。
 见 v10 附录C（stop 需空仓、apply 模板泄漏、Binance 直连 451、日志窗 ~100 条/几秒、`daily_pnl_7d` 停更等），不在此重复。
 - **[新增 07-22 16:16Z] `balance_usdt` = 可用余额（不含持仓保证金）**：16:11Z 空仓读 151.00 → 16:18Z 双仓在持读 81.82，差额 69.2 ≈ 两仓保证金 70.3 − 浮盈 1.15，精确吻合。钱包总值 = balance_usdt + Σ(名义/lev)，07-22 全日恒 ~152U。推论：①此前各轮报告的"余额 118-120.7"均为可用余额，钱包总值一直 ~150-157U；②入金检测/充值信号进度必须用钱包总值口径；③20U 硬边界执行基数沿用保守口径（开仓时可用余额）不受影响。
