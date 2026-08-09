@@ -578,6 +578,19 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		openSymbols[key] = struct{}{}
 		openCount++
 	}
+	// 策略组互斥：同 owner 其他策略在持的 symbol 本策略不开（一仓一主。
+	// USDM 单向持仓模式下同 symbol 双策略开仓会在交易所净额合并，出场三层
+	// 语义与归因全部错乱；组内币池应当不相交，这里是配置错误时的兜底闸）。
+	otherHeld := map[string]struct{}{}
+	{
+		var otherRows []models.StrategyPosition
+		_ = database.DB.Where("owner_id = ? AND strategy_id <> ? AND status = ?", inst.OwnerID, inst.ID, "open").Find(&otherRows).Error
+		for _, p := range otherRows {
+			if key := exchange.NormalizeSymbol(p.Symbol); key != "" {
+				otherHeld[key] = struct{}{}
+			}
+		}
+	}
 	var pendingRows []models.StrategyOrder
 	pendingCutoff := time.Now().Add(-2 * time.Minute)
 	_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND requested_at >= ? AND status IN ?", inst.OwnerID, inst.ID, pendingCutoff, []string{"requested", "new", "partially_filled"}).
@@ -644,6 +657,10 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		symKey := exchange.NormalizeSymbol(sig.Symbol)
 		if _, ok := openSymbols[symKey]; ok {
 			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 已有持仓", sig.Symbol))
+			continue
+		}
+		if _, ok := otherHeld[symKey]; ok {
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 组内其他策略持有（策略组互斥）", sig.Symbol))
 			continue
 		}
 		if _, ok := selectedSymbols[symKey]; ok {

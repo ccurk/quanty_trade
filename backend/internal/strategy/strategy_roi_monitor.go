@@ -100,6 +100,9 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 	}
 	m.mu.RUnlock()
 
+	// watchedAll: 本轮所有 owner 的在持 symbol 全集，喂给 WS 守护加速器与
+	// 金字塔计数清理（strategy_ws_guard.go / strategy_pyramid.go）。
+	watchedAll := map[string]struct{}{}
 	for uid, rows := range byOwner {
 		ps, err := bx.FetchPositions(uid, "active")
 		if err != nil {
@@ -108,6 +111,7 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 		posBySymbol := map[string]exchange.Position{}
 		for _, p := range ps {
 			posBySymbol[strings.ToUpper(p.Symbol)] = p
+			watchedAll[strings.ToUpper(p.Symbol)] = struct{}{}
 		}
 		trackedRows := append([]models.StrategyPosition(nil), rows...)
 		seenSymbols := map[string]struct{}{}
@@ -186,10 +190,12 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 					sl = rsl
 				}
 			}
-			// 出场推移（只在 5s 守护里做，分钟止损扫描不动）：先保本、再移动止盈
+			// 出场推移（只在 5s 守护里做，分钟止损扫描不动）：先保本、再移动止盈，
+			// 最后看赢家金字塔（默认关，config 显式开启；亏损仓在函数内硬拒）。
 			if !stopLossOnly {
 				m.maybeMoveBreakeven(inst, uid, r, pos, side, currentPrice, tp)
 				m.maybeTrail(inst, uid, r, pos, side, currentPrice, tp)
+				m.maybePyramid(inst, uid, r, pos, side, currentPrice)
 			}
 			reason := ""
 			if !stopLossOnly {
@@ -242,11 +248,20 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 			}
 		}
 	}
+	if !stopLossOnly {
+		m.setWSWatched(watchedAll)
+		m.prunePyramidCounters(watchedAll)
+	}
 }
 
 func findGuardStrategyInstance(insts []*StrategyInstance, symbol string) *StrategyInstance {
 	for _, inst := range insts {
 		if inst == nil {
+			continue
+		}
+		// 策略组模式：blacklist 是组内币池互斥的边界（main 拉黑专家池），
+		// 无主仓位收养时同样要尊重，否则会把专家池的仓位错认给 main。
+		if isBlacklistedSymbol(inst, symbol) {
 			continue
 		}
 		if isAllowedSymbol(inst, symbol) {

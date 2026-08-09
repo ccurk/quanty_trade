@@ -584,6 +584,12 @@ type Manager struct {
 	orderCh chan orderReq
 	startCh chan string
 	stopCh  chan stopReq
+
+	// wsGuard: 标记价流触发的守护加速状态（strategy_ws_guard.go）。
+	wsGuard wsGuardState
+	// pyramidAdds: 赢家金字塔加仓计数 uid|SYMBOL -> 已加次数（strategy_pyramid.go）。
+	pyramidMu   sync.Mutex
+	pyramidAdds map[string]int
 }
 
 func (m *Manager) ReleaseOpenSlot(strategyID string) {
@@ -904,6 +910,7 @@ func NewManager(hub *ws.Hub, ex exchange.Exchange) *Manager {
 		orderCh:         make(chan orderReq, 256),
 		startCh:         make(chan string, 128),
 		stopCh:          make(chan stopReq, 128),
+		pyramidAdds:     make(map[string]int),
 	}
 }
 
