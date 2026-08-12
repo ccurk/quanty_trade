@@ -20,6 +20,10 @@
 #   churn限流: 每轮membership变更≤4(隔离动作不计——止血不限流)
 #   出池语义 v1.1 (2026-08-10): remove 只由【出池规则或隔离】触发;失去入池资格=aging_watch
 #   advisory(保留在池)。breakout/lowvol 出池阈值未注册(#42)前无自动出口。
+#   add 语义 v1.2 (2026-08-12): add 排除任何【他载具 live 池在池币】——硬边界#9池互斥
+#   不变式的工具层执行(08-12 实证: TUT 闪崩 maxmv6.34%命中 breakout 入池条,但 TUT 在
+#   trend 池 aging_watch 保留=对账器自提名撞池,计划被执行层拒;此缺口自此在生成层封死)。
+#   头注阈值零改动(v1.2 非 ROUTE 阈值变更,是不变式 enforcement)。
 #   CLI: route_pools.py <closed48.json> <token_file> [trending.json] [registry_quarantine.json]
 #        arg4=台账§1.5隔离区数组(持久注册表,防窗口滚动放虎归山)
 import json, sys, os, datetime, subprocess
@@ -113,7 +117,9 @@ def main():
         is_run, sid = running.get(role, (False, None))
         if not is_run or live.get(role) is None: continue  # gated/停机载具不路由(启动窗才灌池)
         cur = live[role]
-        add = [s for s in want[role] - cur if s not in quarantine]
+        # v1.2: 他载具 live 池在池币不得提名 add(池互斥不变式,硬边界#9)
+        other_live = set().union(set(), *[live[r] for r in live if r != role and live[r]])
+        add = [s for s in want[role] - cur if s not in quarantine and s not in other_live]
         stale = sorted(cur - want[role])  # 在池但已不满足入池条的币
         rem = [s for s in stale if s in quarantine or out_rule(role, s)]  # 隔离(降级回main由auto漏斗接住)或出池规则命中
         aw = [s for s in stale if s not in rem]
