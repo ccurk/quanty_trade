@@ -41,17 +41,19 @@
 
 - **08-11 02:38Z(交互)停机直令·全组owner-gated**: owner令"先停止所有策略,目前已知在报错"→四载具全部stop并转**owner-gated**(硬边界#5的stopped→start自动恢复对全组悬停,恢复须owner明令)。执行实况:02:38首轮stop三空响应+fade522;02:40重试全线522(Cloudflare origin timeout);02:42-02:44连000=后端进程级不可达——"报错"本体疑似=后端宕/挂死,stop落地未确认,后台重试器在跑(结果见§7)。后端服务器处置权在owner(硬边界#6)。#42/#43随停机直令冻结。
 
+- **08-12 13:4x-14:0xZ(交互)部分复飞直令·单载具canary**: owner UI start×4(≈13:40-41Z,无audit=平台UI事实;非BOOT RESTORE[bt29仍挂+四DB态原stopped])+会话直令"看起来读个策略有一些问题,先用一个策略跑"→裁决=**qt-trend-long单跑**(段真值n5/+1.06组内唯一正净+保证金0.15最小+3币池可观测+恰持BICO仓),main/fade/brk当轮停回。三停载具gating基础更新=本直令(勿auto-start,恢复须owner令;取代08-11停机直令的gating基础)。canary自动保险预注册:trend复飞段(自13:41 start)6h净≤−5U→立即stop本载具,组刹车照常叠加。trend _exp(FIX S24)评期重锚=累计运行时口径(段前~31h,余~17h或段n≥15先到)。owner所见"读个策略有问题"最可能=stop不生效(回声行挡停,已定案入§3)或bt29挂死观感;已TG请owner给报错原文。
+
 ## 1.5 策略组注册表（08-09 起;池归属与载具状态权威节;roster 有变当轮必更）
 
 | 载具 | id | 原型 | 池 | 状态 | 门/备注 |
 |---|---|---|---|---|---|
-| main 通才 | 8eb182b6 | 通才(S18-S23栈) | auto(黑名单18在库) | **stopped已确认@08-11 02:52:12(重试器落地,日志窗终止实证)·owner-gated勿auto-start** | pct0.08 sides=[buy](刹车latched) tpl567;S23 A组评期(原08-11 05:00)顺延至复飞轮(停机零增量,预注册防换指标) |
-| qt-trend-long | 827ffe8c | 趋势动量多 | TUT/BICO/ACE(**种子已同步@08-11 06:4x停机窗**,KAITO移净) | **stopped已确认@08-11 02:52:10·owner-gated勿auto-start** | **tpl575(S24定制)** pct0.05 mcp3 buy trailing on;_exp FIX在飞,段真值**n5/+1.06 wr60**@08-11 06:4x纠错(前读+7.48误含段前行TUT19:05+5.13[S24上线19:30前];真段=TUT−1.25/+2.64+BICO+0.45/+0.50+KAITO−1.29);评期顺延至复飞;aging_watch=ACE(段0笔) |
-| qt-fade-short | 21519f1b | 冲高回落空 | 1000CAT/ARC(种子同步维持✓) | **stopped已确认@08-11 02:52:08·owner-gated勿auto-start** | **tpl576(S25定制)** pct0.04 mcp2 sell;_exp FLEET+FIX在飞,段真值**n8/−2.63 wr50**@08-11 06:4x纠错(前读n9混1笔段前行;BTW5/−1.79+BLUAI3/−0.84全属已移币,现池段0笔=模板责任与选币责任拆开裁);评期顺延至复飞;自动保险段6h≤−6U→stop |
-| qt-breakout-follow | 2111f5f9 | 突破追动量(顺bar,S23 W组实盘化) | COOKIE/DYM/BTR(**种子已同步@08-11 06:4x停机窗**,AIO/DODOX移净) | **stopped已确认@08-11 02:52:12·owner-gated勿auto-start** | **tpl577(S26新内核)** pct0.04 mcp2 buy hunger30 max_hold45 trail(1.0/0.8);_exp EXP在飞,段真值**n8/−1.05 wr62**@08-11 06:4x复算(+COOKIE 01:16+0.35断网重建空sid行按池归brk;COOKIE段3/3胜+1.19组内最佳;BMT−1.11已隔离);评期顺延至复飞(原08-12 19:48);自动保险段6h≤−5U→stop |
+| main 通才 | 8eb182b6 | 通才(S18-S23栈) | auto(黑名单18在库) | **stopped@08-12 14:07:26Z force停(普通stop被BICO回声行挡×3,见§3)·gated by 08-12单载具直令勿auto-start** | pct0.08 sides=[buy](刹车latched) tpl567;S23 A组评期(原08-11 05:00)顺延至复飞轮(停机零增量,预注册防换指标) |
+| qt-trend-long | 827ffe8c | 趋势动量多 | TUT/BICO/ACE(**种子已同步@08-11 06:4x停机窗**,KAITO移净) | **running(canary)@08-12 13:41Z owner UI start·组内唯一在跑** | **tpl575(S24定制)** pct0.05 mcp3 buy trailing on;_exp FIX在飞,段真值**n5/+1.06 wr60**@08-11 06:4x纠错(前读+7.48误含段前行TUT19:05+5.13[S24上线19:30前];真段=TUT−1.25/+2.64+BICO+0.45/+0.50+KAITO−1.29);评期顺延至复飞;aging_watch=ACE(段0笔) |
+| qt-fade-short | 21519f1b | 冲高回落空 | 1000CAT/ARC(种子同步维持✓) | **stopped@08-12 13:57Z(owner UI start 13:41→cron停回,窗内零开仓)·gated by 08-12直令** | **tpl576(S25定制)** pct0.04 mcp2 sell;_exp FLEET+FIX在飞,段真值**n8/−2.63 wr50**@08-11 06:4x纠错(前读n9混1笔段前行;BTW5/−1.79+BLUAI3/−0.84全属已移币,现池段0笔=模板责任与选币责任拆开裁);评期顺延至复飞;自动保险段6h≤−6U→stop |
+| qt-breakout-follow | 2111f5f9 | 突破追动量(顺bar,S23 W组实盘化) | COOKIE/DYM/BTR(**种子已同步@08-11 06:4x停机窗**,AIO/DODOX移净) | **stopped@08-12 13:57Z(owner UI start 13:41→cron停回,窗内零开仓)·gated by 08-12直令** | **tpl577(S26新内核)** pct0.04 mcp2 buy hunger30 max_hold45 trail(1.0/0.8);_exp EXP在飞,段真值**n8/−1.05 wr62**@08-11 06:4x复算(+COOKIE 01:16+0.35断网重建空sid行按池归brk;COOKIE段3/3胜+1.19组内最佳;BMT−1.11已隔离);评期顺延至复飞(原08-12 19:48);自动保险段6h≤−5U→stop |
 
 - 隔离区(规则≤−4U∧n≥4): 4/CYS/TST/龙虾/BMT/BTW; 孤儿4=AIO/BLUAI/DODOX/KAITO(黑名单内待main重启窗释,黑名单18=期望超集安全)。**池列值=快照,权威=每轮对账器输出**。**对账器v1.1@08-10 18:2x(0e6eecf)**:出池只认头注规则(trend nL≥6∧L<0/fade nS≥6∧S<0)或隔离,失格币走aging_watch保留在池;隔离表持久化arg4(治48h窗滚动放虎归山,龙虾案);brk/lowvol出池阈值未注册前无自动出口(#42)
-- 保证金: Σ(pct×mcp)=main0.08×5+trend0.05×3+fade0.04×2+brk0.04×2=**0.71≤0.75✓**(08-10 07:0x复核,无pct/mcp变更)
+- 保证金: Σ_running=trend0.05×3=**0.15≤0.75✓**(08-12单载具态;全组名义和0.71备查)
 - 互斥不变式: 全组stopped=无live feed层;**种子层08-11 06:4x起全同步**(main blacklist18⊇trend3+fade2+brk3+隔离6+孤儿4;专家种子=期望池零陈旧)→owner任意顺序UI重启均无失格币回feed风险;⚠️引擎互斥闸未部署,部署升急
 - lowvol(ad37d337)已删@08-09 17:0x owner拍板(无交易史,原型设计存git f970704 create_low.json可重建)
 - 载具归档目录: strategies/quicktrade-<id前8位>/ 一载具一目录(协议不变)
@@ -156,6 +158,9 @@
 
 - **[新增 08-12 06:3xZ] 回测挂死机制定案(bt29+源码)**: strategy_backtest.go 取数FetchHistoricalCandles(L~186)先于watchdog装载(L~360,预算=90s+30ms/根,7d窗≈6.6min)→取数阶段挂起=status=running永久无守护(bt7/8/10同型,源码注释自证"tasks 7/8/10 did exactly that");API无cancel端点(main.go仅POST创建/GET列表+详情)。bt29(7d COOKIE探针@08-11 06:33)running>24h定性挂死;不阻塞实盘/策略CRUD;owner下次重启后端清goroutine,DB行料残留running僵尸行。修复候选=fetch前置deadline或cancel端点(dev通道,低优先,列复飞之后)。
 
+- **stop异步+回声行挡停(08-12源码+实证定案)**: stop API返回{"status":"stopped"}仅=请求入队(lifecycle.go StopStrategy→stopCh),真停由runStopWorker执行,失败只写策略error日志行(实证14:05:15"Strategy stop failed: strategy has open positions")。validateStrategyCanStop数DB StrategyPosition(strategy_id=self∧status=open),而账户级对账器(manager.go:791)把交易所仓位按最近订单归因回声补建到各platform-owner名下(main=owner1,专家=owner2,同一Binance账户)→任何载具持仓期间main必有open回声行→**main空仓窗=全组空仓窗**,普通stop必拒。出口=stop?force=true:仅跳过该校验,teardown完全相同(kill python+断feed+置stopped),无撤单不碰他载具仓(实证14:07:26 force停main成功,trend/BICO无扰)。回声行=幻影行同源(closed48滤realized_pnl历史原因);修正08-06"状态传播延迟"认知=当时更可能同为回声行挡停。
+- **BOOT RESTORE开机自恢复(08-12源码定案)**: 后端重启自动拉起DB态running/starting策略(lifecycle.go RestoreRunningStrategies延5s);人为stop(DB=stopped)不触碰⇒trend单跑期间owner重启后端=trend自动恢复非无主start;挂死回测行(bt29类)重启无启动对账不自动清。?q=/limit logs过滤未部署实证@08-12(dev-logs-limit候部署;main日志100行窗≈1秒宽,error行需停机后或安静窗抓)。
+
 ## 4. 假设库·候选队列（v2 迁移注记 @08-01 16:40Z：本节与 §6 观察计数合并为【假设库】，内容全量保留；prompt v2 起执行门槛=逐笔证据标准[≥20 笔同型死法或机制落到源码行为]，旧 v12 Step 4.6c 门槛作历史参照）
 
 | # | 类型 | 内容 | 依据 | 复现计数 | 状态 |
@@ -192,6 +197,8 @@
 | #42(冻结@02:38Z停机直令) | ROUTE阈值 | breakout/lowvol出池阈值注册:建议=滚动n≥6∧净<0 或 在池7天零成交→回main(治pool-rot);v1.1已停其自动出口,失格币走aging_watch advisory | 08-10 18:2x | open,阻塞=改阈值须走ROUTE _exp而四载具_exp全在飞;首选brk评判(08-12或n≥15)后借位注册 |
 | #43(冻结@02:38Z停机直令) | RECOVER执行包 | 门=组逐笔6h≥0∧24h≥0(**≥0含0,n=0视为0**——latch下零成交是结构性上限,止血即达门;此解释先于数据登记防移门柱;组口径承12:3x轮先例)→步=main sides=[buy]→[buy,sell]空仓窗stop→PATCH→start原子,同PATCH写回刹线:unlatch后6h main空侧净≤−8U(≈钱包3.1%,镜像brake_20260809原触发型短burst)→重latch sides=[buy]续用同键;执行轮先复核无新刹车触线∧宏观降压未触发 | 08-10 18:2x | open,冻结维持;门读数: 12:38Z首读→18:14Z第2读→08-12 00:17Z第3读→06:26Z第4读→**12:34Z连续第5读达标**(第4/5读6h=0✓∧24h=0✓[双窗n=0=预注册视0];第3读6h=0✓∧24h=+0.35✓;无移门柱);**执行序=owner复飞令→载具start→门复核→#43**,冻结解除以复飞令为准 |
 
+| #44 | 数据卫生巡检 | main名下BICO回声行(open,13:41:31.436Z建)在main停机下待BICO平仓后核销:预期owner级对账器常跑自动close(08-11 COOKIE停机窗重建行先例);下轮巡检positions DB视图,若仍open才升处置(main短窗start→对账器close→force stop,或dev通道修validateStrategyCanStop改数direction≠\"\"行);悬挂行只挡main普通stop,force已知可用=非紧急 | 08-12 14:0x | open |
+
 > 维护注 08-10 12:5xZ：#41 **落地结案删行**——rotate −BTW/−BLUAI 12:46成功(06:44在途拒因素已消)+fade stop→PATCH symbols=[1000CAT,ARC]→start 13s原子(12:47:59-12:48:12)_exp/config完好;③修订:BTW未释反进隔离(48h−4.44/n8达线),blacklist维持含BTW。
 > 维护注 08-10 07:1xZ：#40 **落地结案删行**——blacklist13→18@06:59 2s原子(载荷升级:含#40原有+ARC/DODOX/DYM−STAR,加本轮ACE/AIO/COOKIE/BTW并入);fade symbols部分被BTW在途拒→转#41。
 
@@ -223,10 +230,8 @@
 
 | 时间(UTC) | 档位 | 五窗净额 1h/3h/6h/12h/24h | 世界 | 决策 | 备注 |
 |---|---|---|---|---|---|
+| 08-12 12:3x-14:1xZ | **部分复飞轮(HOLD例行段+交互段)**: 12:3x例行=HOLD×6四证全阴;≈13:41 owner现身UI start×4(无audit)+直令"先用一个策略跑"→裁决trend单跑canary(段真值n5/+1.06唯一正净+保证金0.15+3币池可观测+恰持仓)。执行:fade/brk 13:57普通停✓;main普通停×3被拒→安静窗探针抓真凶"stop failed: has open positions"=trend的BICO 13:41开仓被账户级对账器回声写入main名下open行挡停(源码定案入§3)→**14:07:26 force停✓**(teardown无撤单,BICO/trend无扰,14:08/14:09两分钟点静默实证)。canary保险预注册:trend段6h净≤−5U→stop;_exp评期重锚累计运行口径余~17h或n≥15 | close@12:34:五窗全0/48h+0.35(1);BICO多仓13:41开@0.03508在途(TP0.0421/SL0.0339/hold≤60m) | 单载具运行;组刹车基线重启(trend段);FGI27/BTC−0.13%无降压;费覆待段数据 | ①三停载具gating=08-12直令②#42/#43续冻(main停)③#44新增echo行自愈巡检④§7瘦身裁08-11两行⑤下轮:trend段逐笔+canary保险核+BICO结果+#44 |
 | 08-12 12:3x-12:5xZ | **owner-gated静默HOLD轮×6** (复飞令未到四证[TG getUpdates 0条+audit 08-11 06:37Z后零条目+四载具现拉stopped+config逐字段=§1.5快照零无主改动]+bt29仍running@30.0h=owner未重启后端旁证;0持仓✓钱包256.14六轮零变动✓income_totals24={}零交易所活动;四_exp在库完整评期续顺延) | close@12:34(1真/滤0):1h0/3h0/6h0/12h0/24h0(0)/48h+0.35(1,COOKIE存量,08-13 01:16Z滚出后48h窗全零) | 停机HOLD轮;刹车/自保险悬停(无交易);**#43门连续第5读达标**(6h=0∧24h=0,n=0视0=预注册解释);FGI27/BTC−0.13%/mcap+0.26%无降压;费覆悬停(窗内零新单) | ①0原子包0rotate(停机无live feed,种子同步维持)②§7瘦身裁08-11 02:38事故轮行(直令已入§1+§1.5,全史git)③TG极简报=复飞ask置顶+门五连+48h窗将归零预告④下轮:复飞令到→start×4→验running+K线回流→门复核→#43;未到→继续静默HOLD |
 | 08-12 06:2x-06:4xZ | **owner-gated静默HOLD轮×5** (复飞令未到[TG getUpdates 0条+audit 08-11 06:37Z后零条目+四载具现拉stopped+config逐字段=§1.5快照零无主改动];0持仓✓钱包256.14五轮零变动✓income24 by_symbol空;**bt29>24h正式定性挂死**(机制源码定案入§3:取数先于watchdog预算超200倍,无cancel端点,不阻塞实盘,owner重启后端时顺带清理);四_exp在库完整评期续顺延) | close@06:26(11真/滤0):1h0/3h0/6h0/12h0/24h0(0)/48h−2.26(11)wr55;**24h窗归零**(COOKIE+0.35@01:16Z滚出);载具48h:brk+0.21(4)/trend−0.78(2)/fade−1.68(5,全属已移币);钱包256.14零持仓 | 停机HOLD轮;刹车/自保险悬停(无交易);**#43门连续第4读达标**(6h=0∧24h=0,n=0视0=预注册解释);FGI27/BTC−0.52%无降压;费覆悬停(窗内零新单全存量) | ①0原子包0rotate(停机无live feed,种子层同步维持)②§7瘦身裁08-11 00:1x行(入git历史)③TG极简报=复飞ask置顶+门四连+bt29挂死定案④下轮:复飞令到→start×4→验running+K线回流→门复核→#43;未到→继续静默HOLD |
-| 08-12 00:1x-00:3xZ | **owner-gated静默HOLD轮×4** (复飞令未到[TG getUpdates 0条+audit 06:37Z后零条目+四载具现拉stopped+config逐字段=§1.5快照零无主改动];0持仓✓钱包256.14四轮零变动✓ctx income24 by_symbol空=零交易所活动;bt29仍running@17.8h[<24h阈值,06:33Z越线→下轮按挂死候处置];**#43恢复门连续第3读达标**@00:17Z见§5;四_exp在库完整评期续顺延) | close@00:17(17真/滤3):1h0/3h0/6h0/12h0(0)/24h+0.35(1,COOKIE归brk,01:16Z滚出)/48h−5.66(17)wr59;**窗口老化注记:48h净−2.48→−5.66零新交易纯滚动**(08-09晚盈利段滚出窗口);钱包256.14零持仓 | 停机HOLD轮;刹车/自保险悬停(无交易);FGI27/BTC−0.56%/mcap−0.21%无降压;费覆评估悬停(窗内全旧单老化中) | ①0原子包0rotate(停机无live feed,种子层同步维持)②TG极简报=复飞ask置顶+门三连达标+窗口老化教学③下轮:复飞令到→start×4→验running+K线回流→门复核→#43;未到→继续静默HOLD;bt29越24h线查挂死 |
-| 08-11 18:1x-18:3xZ | **owner-gated静默HOLD轮×3** (复飞令未到[TG getUpdates 0条+audit 06:37后零条目+§1无新交互+四载具现拉仍stopped];0持仓✓钱包256.14三轮零变动✓ctx income24 by_symbol空=无隐藏交易所活动;后端健康login/API全通,恢复后~12h稳定;无主改动巡检PASS[四载具config逐字段=§1.5快照:main tpl567/pct0.08/lev2/mcp200/sides=buy/cd180/bl18/etw""+trend tpl575/0.05/3+fade tpl576/0.04/2/sell+brk tpl577/0.04/2,专家种子池=期望池];bt29探针仍running@11.7h[7d窗不阻塞,>24h按挂死候处置];**#43恢复门连续第2读达标**@18:14Z见§5;四_exp在库完整评期续顺延;0无主改动) | close@18:14(26真/滤2):1h0/3h0/6h0/12h0(0)/24h+0.35(1,COOKIE按池归brk)/48h−2.48(26)wr50be55毛均−0.095🔴;钱包256.14零持仓 | 停机HOLD轮;刹车/自保险悬停(无交易);FGI29/BTC−0.53%/mcap−0.37%无降压;费覆🔴存量口径(窗内全为旧单,老化滚出中) | ①0原子包0rotate(停机无live feed,种子层同步维持)②TG极简报=复飞ask置顶+门连续达标事实③下轮:复飞令到→start×4→验running+K线回流→门复核→#43;未到→继续静默HOLD;bt29>24h查挂死 |
-| 08-11 06:2x-07:0xZ | **停机确认+事故定案轮** (后端已恢复[login/API全通];四载具stopped实证@02:52:08-13[四日志窗同批终止=上会话重试器落地];0持仓0敞口;根因定案=宿主DNS故障[100.100.100.100 MagicDNS超时→WS+REST双断=owner所见"报错";同窗522/000同根因;除连接错零Python异常];COOKIE 01:16+0.35断网中**交易所侧TP条件单成交**,重建行空sid按池归brk;ROUTE种子同步停机窗落地[trend−KAITO/brk−AIO−DODOX,消owner UI一键重启失格币回feed险];三专家段读数纠错[trend真n5/+1.06非+7.48(段前TUT污染)/fade n8/−2.63/brk n8/−1.05,COOKIE段3/3胜];四_exp评期顺延至复飞轮预注册;bt29连通探针误发7d窗running未决不阻塞) | close@06:29(60真/滤1):6h+0.35(1)/12h+0.35(1)/24h−2.26(11)wr55be68毛均−0.205🔴/48h−51.88(60);24h佣金−0.32资金费+0.39;钱包256.14零持仓 | 停机轮;刹车/自保险全未触且悬停;#42/#43冻结维持;FGI29/BTC−1.9%/mcap−1.6%;费覆🔴 | ①TG呈复飞方案等owner拍板(推荐:网络稳定即全组恢复,维持防御参数)②复飞轮checklist=start×4→验running+K线回流→段评判重排→#43门复核③无原子包(种子同步=ROUTE不计入) |
 
 > 瘦身注 08-10：更老运行日志行随轮裁剪,全史见 git 历史。
