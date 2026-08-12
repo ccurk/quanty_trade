@@ -1,2 +1,4 @@
 logs/
 .deploy_*
+__pycache__/
+*.pyc
