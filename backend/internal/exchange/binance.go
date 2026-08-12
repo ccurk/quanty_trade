@@ -54,9 +54,20 @@ type BinanceExchange struct {
 	symbolSelectCacheExp time.Time
 	symbolSelectBanUntil time.Time
 
+	// positionsCache 按【账户】(API key) 而非 ownerID 分桶:共用同一 Binance
+	// 账户的多个 owner 共享一份持仓缓存,一次 REST /positionRisk 服务所有人,
+	// 避免"同账户被逐 owner 重复查"随策略数线性放大 REST 权重。key 见
+	// positionsAccountKey。
 	positionsCacheMu  sync.Mutex
-	positionsCacheExp map[uint]time.Time
-	positionsCache    map[uint][]Position
+	positionsCacheExp map[string]time.Time
+	positionsCache    map[string][]Position
+
+	// acctKeyByOwner 记忆 ownerID -> 账户缓存 key,让 FetchPositions 热路径
+	// 用纯 map 读拿到账户 key,不必每次 getCred(全局 key 路径下 getCred 会打
+	// 一次 DB)。凭证在本进程生命周期内对某 owner 恒定;将来支持 per-strategy
+	// key 热切换时需在换 key 处清此项。
+	acctKeyMu      sync.RWMutex
+	acctKeyByOwner map[uint]string
 
 	usdmAvailMu    sync.Mutex
 	usdmAvailExp   map[uint]time.Time
@@ -129,8 +140,9 @@ func NewBinanceExchange() *BinanceExchange {
 	}
 	ex.streamsByID = make(map[uint]*binanceUserStream)
 	ex.leverageByKey = make(map[string]int)
-	ex.positionsCacheExp = make(map[uint]time.Time)
-	ex.positionsCache = make(map[uint][]Position)
+	ex.positionsCacheExp = make(map[string]time.Time)
+	ex.positionsCache = make(map[string][]Position)
+	ex.acctKeyByOwner = make(map[uint]string)
 	ex.usdmAvailExp = make(map[uint]time.Time)
 	ex.usdmAvailCache = make(map[uint]float64)
 	ex.marketCache = make(map[string]float64)
@@ -1473,16 +1485,51 @@ func (b *BinanceExchange) FetchOrders(ownerID uint, symbol string) ([]Order, err
 	return out, nil
 }
 
+// positionsAccountKey maps ownerID to the position-cache bucket key. Owners that
+// resolve to the same Binance account (same API key) share one bucket, so a
+// single /positionRisk call serves them all. Falls back to per-owner isolation
+// when creds are unavailable, so a resolution failure never lets two distinct
+// accounts collide in one bucket. Memoized to keep the hot path off getCred/DB.
+func (b *BinanceExchange) positionsAccountKey(ownerID uint) string {
+	b.acctKeyMu.RLock()
+	k, ok := b.acctKeyByOwner[ownerID]
+	b.acctKeyMu.RUnlock()
+	if ok {
+		return k
+	}
+	key := fmt.Sprintf("owner:%d", ownerID)
+	if cred, err := b.getCred(ownerID); err == nil && cred.APIKey != "" {
+		key = "acct:" + cred.APIKey
+	}
+	b.acctKeyMu.Lock()
+	b.acctKeyByOwner[ownerID] = key
+	b.acctKeyMu.Unlock()
+	return key
+}
+
+// stampPositionsOwner returns a copy of src with OwnerID set to ownerID. The
+// per-account cache is shared across owners, so on a cache hit the caller's own
+// ownerID is stamped onto the returned positions to preserve the prior
+// per-owner return contract.
+func stampPositionsOwner(src []Position, ownerID uint) []Position {
+	out := make([]Position, len(src))
+	for i, p := range src {
+		p.OwnerID = ownerID
+		out[i] = p
+	}
+	return out
+}
+
 func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Position, error) {
 	if status != "active" {
 		return []Position{}, nil
 	}
 
+	acctKey := b.positionsAccountKey(ownerID)
 	now := time.Now()
 	b.positionsCacheMu.Lock()
-	if exp, ok := b.positionsCacheExp[ownerID]; ok && now.Before(exp) {
-		cached := b.positionsCache[ownerID]
-		out := append([]Position(nil), cached...)
+	if exp, ok := b.positionsCacheExp[acctKey]; ok && now.Before(exp) {
+		out := stampPositionsOwner(b.positionsCache[acctKey], ownerID)
 		b.positionsCacheMu.Unlock()
 		return out, nil
 	}
@@ -1557,8 +1604,8 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 		}
 
 		b.positionsCacheMu.Lock()
-		b.positionsCache[ownerID] = append([]Position(nil), out...)
-		b.positionsCacheExp[ownerID] = time.Now().Add(5 * time.Second)
+		b.positionsCache[acctKey] = append([]Position(nil), out...)
+		b.positionsCacheExp[acctKey] = time.Now().Add(5 * time.Second)
 		b.positionsCacheMu.Unlock()
 		return out, nil
 	}
@@ -1608,8 +1655,8 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 		})
 	}
 	b.positionsCacheMu.Lock()
-	b.positionsCache[ownerID] = append([]Position(nil), out...)
-	b.positionsCacheExp[ownerID] = time.Now().Add(5 * time.Second)
+	b.positionsCache[acctKey] = append([]Position(nil), out...)
+	b.positionsCacheExp[acctKey] = time.Now().Add(5 * time.Second)
 	b.positionsCacheMu.Unlock()
 	return out, nil
 }
@@ -2269,11 +2316,13 @@ func (b *BinanceExchange) USDMMaxNotionalForLeverage(ownerID uint, symbol string
 }
 
 func (b *BinanceExchange) USDMPositionAmt(ownerID uint, symbol string) (float64, float64, float64, error) {
-	// Try cached positions first to avoid high-frequency polling
+	// Try cached positions first to avoid high-frequency polling. Keyed by
+	// account so it shares the bucket FetchPositions populated for this account.
+	acctKey := b.positionsAccountKey(ownerID)
 	now := time.Now()
 	b.positionsCacheMu.Lock()
-	if exp, ok := b.positionsCacheExp[ownerID]; ok && now.Before(exp) {
-		cached := b.positionsCache[ownerID]
+	if exp, ok := b.positionsCacheExp[acctKey]; ok && now.Before(exp) {
+		cached := b.positionsCache[acctKey]
 		target := strings.ToUpper(NormalizeSymbol(symbol))
 		for _, p := range cached {
 			if strings.ToUpper(NormalizeSymbol(p.Symbol)) == target {
