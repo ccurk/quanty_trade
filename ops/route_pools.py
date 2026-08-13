@@ -18,6 +18,14 @@
 #   lowvol进(载具live后): feed ATR%≤1.3 持续 (待画像通道,暂 manual)
 #   撞池优先级: 隔离 > fade/trend(方向净额大者) > breakout > main
 #   churn限流: 每轮membership变更≤4(隔离动作不计——止血不限流)
+#   出池语义 v1.1 (2026-08-10): remove 只由【出池规则或隔离】触发;失去入池资格=aging_watch
+#   advisory(保留在池)。breakout/lowvol 出池阈值未注册(#42)前无自动出口。
+#   add 语义 v1.2 (2026-08-12): add 排除任何【他载具 live 池在池币】——硬边界#9池互斥
+#   不变式的工具层执行(08-12 实证: TUT 闪崩 maxmv6.34%命中 breakout 入池条,但 TUT 在
+#   trend 池 aging_watch 保留=对账器自提名撞池,计划被执行层拒;此缺口自此在生成层封死)。
+#   头注阈值零改动(v1.2 非 ROUTE 阈值变更,是不变式 enforcement)。
+#   CLI: route_pools.py <closed48.json> <token_file> [trending.json] [registry_quarantine.json]
+#        arg4=台账§1.5隔离区数组(持久注册表,防窗口滚动放虎归山)
 import json, sys, os, datetime, subprocess
 from collections import defaultdict
 
@@ -85,13 +93,37 @@ def main():
         keyf = {"trend": lambda x: -stat[x]["L"], "fade": lambda x: -stat[x]["S"]}.get(role, lambda x: -stat[x]["maxmv"])
         want[role] = set(sorted(want[role], key=keyf)[:CAP[role]])
 
-    plan, churn = {}, 0
+    # v1.1 持久隔离注册表(arg4=json数组,取台账§1.5隔离区): 48h窗看不见老隔离币的历史证据
+    # (如 龙虾 证据老化后窗内净≈0),会把注册表在押币放回 want——隔离出必须走头注
+    # "7天无交易∧画像翻转∨owner令",不是窗口滚动。arg4 并入后从一切 want 剔除。
+    if len(sys.argv) > 4:
+        quarantine |= {norm(x) for x in json.load(open(sys.argv[4]))}
+    for role in want:
+        want[role] -= quarantine
+
+    # v1.1 remove 语义对齐头注: 出池只认头注"出池规则"(trend: nL≥6∧L净<0; fade: nS≥6∧S净<0)
+    # 或隔离命中。失去入池资格(典型=赢单老化出窗)≠出池——此类币保留在池并列入 aging_watch
+    # advisory(08-10 实证: ACE窗内0笔/BICO 2胜+0.96/ARC nS1 被旧版按入池差集误列移除,
+    # 会把无病币打成孤儿态=可交易宇宙单向棘轮收缩)。breakout/lowvol 头注无出池规则→
+    # 永不自动移除,其失格币全走 aging_watch,阈值注册候 ROUTE _exp(#42)。头注阈值零改动。
+    def out_rule(role, s):
+        st = stat.get(s)
+        if st is None: return False  # 窗内零交易=无出池证据(挂 aging_watch)
+        if role == "trend": return st["nL"] >= 6 and st["L"] < 0
+        if role == "fade":  return st["nS"] >= 6 and st["S"] < 0
+        return False  # breakout/lowvol: 出池阈值未注册(#42)
+    plan, churn, aging_watch = {}, 0, {}
     for role in ["trend", "fade", "breakout", "lowvol"]:
         is_run, sid = running.get(role, (False, None))
         if not is_run or live.get(role) is None: continue  # gated/停机载具不路由(启动窗才灌池)
         cur = live[role]
-        add = [s for s in want[role] - cur if s not in quarantine]
-        rem = [s for s in cur - want[role]]  # 含隔离命中(降级回main由main的auto发现漏斗接住)
+        # v1.2: 他载具 live 池在池币不得提名 add(池互斥不变式,硬边界#9)
+        other_live = set().union(set(), *[live[r] for r in live if r != role and live[r]])
+        add = [s for s in want[role] - cur if s not in quarantine and s not in other_live]
+        stale = sorted(cur - want[role])  # 在池但已不满足入池条的币
+        rem = [s for s in stale if s in quarantine or out_rule(role, s)]  # 隔离(降级回main由auto漏斗接住)或出池规则命中
+        aw = [s for s in stale if s not in rem]
+        if aw: aging_watch[role] = aw
         add2, rem2 = [], []
         for s in rem:
             if s in quarantine or churn < CHURN_LIMIT:
@@ -114,6 +146,7 @@ def main():
     desired_bl = sorted(quarantine | set().union(*post.values()) if post else quarantine)
     print(json.dumps({"generated_at": now.isoformat(), "quarantine": sorted(quarantine),
                       "want": {k: sorted(v) for k, v in want.items()}, "plan": plan,
+                      "aging_watch": aging_watch,
                       "blacklist_sync": {"desired_main_blacklist": desired_bl,
                                          "note": "重启窗才 PATCH;离池未隔离币=孤儿态(安全不交易)等此同步释放回main"},
                       "note": "执行=cron agent核对_exp与持仓后逐载具POST /symbols/rotate;remove被has_open_position拒→下轮重试;隔离新增须同步登台账§1.5"},
