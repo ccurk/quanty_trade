@@ -1520,6 +1520,15 @@ func stampPositionsOwner(src []Position, ownerID uint) []Position {
 	return out
 }
 
+// AccountKey returns a stable identifier for the exchange account an owner
+// trades on — owners sharing one API key share one account. The guard uses it to
+// enforce "one exchange net position -> one tracked position row per account",
+// so a single net position on a shared account is not adopted into one row per
+// owner. Falls back to per-owner isolation when creds are unresolved.
+func (b *BinanceExchange) AccountKey(ownerID uint) string {
+	return b.positionsAccountKey(ownerID)
+}
+
 func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Position, error) {
 	if status != "active" {
 		return []Position{}, nil
