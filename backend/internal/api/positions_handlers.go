@@ -621,7 +621,7 @@ func ClosePosition(c *gin.Context) {
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
 			for time.Now().Before(deadline) {
-				amt, _, _, e := bx.USDMPositionAmt(ownerID, sym)
+				amt, _, _, e := bx.USDMPositionAmtCached(ownerID, sym)
 				if e == nil && amt == 0 {
 					_, _ = bx.CancelUSDMAllSymbolOrdersDetailed(ownerID, sym)
 					return

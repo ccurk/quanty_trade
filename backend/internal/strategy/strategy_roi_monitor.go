@@ -100,7 +100,45 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 	}
 	m.mu.RUnlock()
 
+	// watchedAll: 本轮所有 owner 的在持 symbol 全集，喂给 WS 守护加速器与
+	// 金字塔计数清理（strategy_ws_guard.go / strategy_pyramid.go）。
+	watchedAll := map[string]struct{}{}
+	// 账户级收养去重:共用一个交易所账户(同 API key)的多个 owner,在单向持仓
+	// 下每个 symbol 只有一个净仓,只应有一行 DB 持仓行来守护它。按 (account,symbol)
+	// 记账,防止各 owner 的扫描把同一个净仓各收养一行(一仓多行、PnL 散落的根)。
+	// 先用已存在的开仓行播种(entry 建的行是权威归属),收养时再补进去。
+	trackedByAccount := map[string]map[string]struct{}{}
+	markAcctTracked := func(acct, sym string) {
+		if trackedByAccount[acct] == nil {
+			trackedByAccount[acct] = map[string]struct{}{}
+		}
+		trackedByAccount[acct][sym] = struct{}{}
+	}
+	acctTracked := func(acct, sym string) bool {
+		if m, ok := trackedByAccount[acct]; ok {
+			_, ok = m[sym]
+			return ok
+		}
+		return false
+	}
 	for uid, rows := range byOwner {
+		acct := bx.AccountKey(uid)
+		for _, r := range rows {
+			// 只用"确实能被某个 instance 守护"的行占坑。若该行的策略已停/被拉黑
+			// (guard 循环解析 inst 会得到 nil 而跳过它),就【不】标记 tracked,好让
+			// 同账户其他 owner 去收养它 —— 否则一个无法守护的陈旧行会把别人的收养也
+			// 抑制掉,导致这个净仓无人守护(CR P1)。解析方式与下方 guard 循环一致。
+			inst := ownerInstanceByID[uid][r.StrategyID]
+			if inst == nil {
+				inst = findGuardStrategyInstance(ownerInstances[uid], r.Symbol)
+			}
+			if inst != nil {
+				markAcctTracked(acct, strings.ToUpper(r.Symbol))
+			}
+		}
+	}
+	for uid, rows := range byOwner {
+		acct := bx.AccountKey(uid)
 		ps, err := bx.FetchPositions(uid, "active")
 		if err != nil {
 			continue
@@ -108,6 +146,7 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 		posBySymbol := map[string]exchange.Position{}
 		for _, p := range ps {
 			posBySymbol[strings.ToUpper(p.Symbol)] = p
+			watchedAll[strings.ToUpper(p.Symbol)] = struct{}{}
 		}
 		trackedRows := append([]models.StrategyPosition(nil), rows...)
 		seenSymbols := map[string]struct{}{}
@@ -117,6 +156,11 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 		for _, p := range ps {
 			symKey := strings.ToUpper(p.Symbol)
 			if _, ok := seenSymbols[symKey]; ok {
+				continue
+			}
+			// 同账户已有一行(别的 owner 的开仓行或先前收养)在守护这个净仓,不再重复收养。
+			// 那一行会在它自己 owner 的守护循环里被处理,净仓恰好被守护一次。
+			if acctTracked(acct, symKey) {
 				continue
 			}
 			inst := findGuardStrategyInstance(ownerInstances[uid], p.Symbol)
@@ -145,6 +189,7 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 			}
 			trackedRows = append(trackedRows, synthetic)
 			seenSymbols[symKey] = struct{}{}
+			markAcctTracked(acct, symKey)
 			var existing models.StrategyPosition
 			if err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", uid, inst.ID, p.Symbol, "open").First(&existing).Error; err != nil {
 				_ = database.DB.Create(&synthetic).Error
@@ -186,10 +231,12 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 					sl = rsl
 				}
 			}
-			// 出场推移（只在 5s 守护里做，分钟止损扫描不动）：先保本、再移动止盈
+			// 出场推移（只在 5s 守护里做，分钟止损扫描不动）：先保本、再移动止盈，
+			// 最后看赢家金字塔（默认关，config 显式开启；亏损仓在函数内硬拒）。
 			if !stopLossOnly {
 				m.maybeMoveBreakeven(inst, uid, r, pos, side, currentPrice, tp)
 				m.maybeTrail(inst, uid, r, pos, side, currentPrice, tp)
+				m.maybePyramid(inst, uid, r, pos, side, currentPrice)
 			}
 			reason := ""
 			if !stopLossOnly {
@@ -242,11 +289,20 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 			}
 		}
 	}
+	if !stopLossOnly {
+		m.setWSWatched(watchedAll)
+		m.prunePyramidCounters(watchedAll)
+	}
 }
 
 func findGuardStrategyInstance(insts []*StrategyInstance, symbol string) *StrategyInstance {
 	for _, inst := range insts {
 		if inst == nil {
+			continue
+		}
+		// 策略组模式：blacklist 是组内币池互斥的边界（main 拉黑专家池），
+		// 无主仓位收养时同样要尊重，否则会把专家池的仓位错认给 main。
+		if isBlacklistedSymbol(inst, symbol) {
 			continue
 		}
 		if isAllowedSymbol(inst, symbol) {

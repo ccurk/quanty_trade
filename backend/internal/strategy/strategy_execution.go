@@ -174,7 +174,7 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 		}
 		remCap := 0.0
 		if capN, err := bx.USDMMaxNotionalForLeverage(inst.OwnerID, symbol, l); err == nil && capN > 0 {
-			if posAmt, _, markPx, e2 := bx.USDMPositionAmt(inst.OwnerID, symbol); e2 == nil && markPx > 0 && posAmt != 0 {
+			if posAmt, _, markPx, e2 := bx.USDMPositionAmtCached(inst.OwnerID, symbol); e2 == nil && markPx > 0 && posAmt != 0 {
 				curN := math.Abs(posAmt) * markPx
 				rem := capN - curN
 				if rem > 0 {
@@ -455,7 +455,7 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for time.Now().Before(deadline) {
-			amt, _, _, e := bx.USDMPositionAmt(ownerID, symbol)
+			amt, _, _, e := bx.USDMPositionAmtCached(ownerID, symbol)
 			if e == nil && amt == 0 {
 				if summary, err := bx.CancelUSDMAllSymbolOrdersDetailed(ownerID, symbol); err != nil {
 					emitStrategyLog(inst, "error", fmt.Sprintf("仓位归零后撤销该交易对全部委托失败 symbol=%s err=%v", symbol, err))

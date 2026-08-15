@@ -40,6 +40,7 @@ func BuildStrategyManager(ctx context.Context, hub *ws.Hub) *strategy.Manager {
 	mgr.StartROIGuardMonitor(ctx)
 	mgr.StartROISLScanMonitor(ctx)
 	mgr.StartTPSLGuardMonitor(ctx)
+	mgr.StartWSPositionGuard(ctx)
 	mgr.StartWorkers()
 	go mgr.RestoreRunningStrategies(ctx)
 	return mgr

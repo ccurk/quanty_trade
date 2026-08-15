@@ -54,9 +54,26 @@ type BinanceExchange struct {
 	symbolSelectCacheExp time.Time
 	symbolSelectBanUntil time.Time
 
+	// positionsCache 按【账户】(API key) 而非 ownerID 分桶:共用同一 Binance
+	// 账户的多个 owner 共享一份持仓缓存,一次 REST /positionRisk 服务所有人,
+	// 避免"同账户被逐 owner 重复查"随策略数线性放大 REST 权重。key 见
+	// positionsAccountKey。
 	positionsCacheMu  sync.Mutex
-	positionsCacheExp map[uint]time.Time
-	positionsCache    map[uint][]Position
+	positionsCacheExp map[string]time.Time
+	positionsCache    map[string][]Position
+
+	// acctKeyByOwner 记忆 ownerID -> 账户缓存 key,让 FetchPositions 热路径
+	// 用纯 map 读拿到账户 key,不必每次 getCred(全局 key 路径下 getCred 会打
+	// 一次 DB)。凭证在本进程生命周期内对某 owner 恒定;将来支持 per-strategy
+	// key 热切换时需在换 key 处清此项。
+	acctKeyMu      sync.RWMutex
+	acctKeyByOwner map[uint]string
+
+	// positionsRefreshLock: 每账户一把刷新锁,给 FetchPositions 做 single-flight——
+	// 缓存过期时只允许一个在途 /positionRisk,并发 miss 的其余调用等它刷完再读缓存,
+	// 收掉"同账户并发双查"(429 本地熔断的直接来源)。
+	positionsRefreshMu   sync.Mutex
+	positionsRefreshLock map[string]*sync.Mutex
 
 	usdmAvailMu    sync.Mutex
 	usdmAvailExp   map[uint]time.Time
@@ -68,6 +85,7 @@ type BinanceExchange struct {
 	marketCacheExp map[string]time.Time
 
 	// rate limit tracking
+	rateLimitMu       sync.Mutex // guards the four rate-limit/ban scalars below (CR P1)
 	rateLimitWeight1m int
 	lastRateLimitLoad time.Time
 	usedWeight1m      int
@@ -129,8 +147,10 @@ func NewBinanceExchange() *BinanceExchange {
 	}
 	ex.streamsByID = make(map[uint]*binanceUserStream)
 	ex.leverageByKey = make(map[string]int)
-	ex.positionsCacheExp = make(map[uint]time.Time)
-	ex.positionsCache = make(map[uint][]Position)
+	ex.positionsCacheExp = make(map[string]time.Time)
+	ex.positionsCache = make(map[string][]Position)
+	ex.acctKeyByOwner = make(map[uint]string)
+	ex.positionsRefreshLock = make(map[string]*sync.Mutex)
 	ex.usdmAvailExp = make(map[uint]time.Time)
 	ex.usdmAvailCache = make(map[uint]float64)
 	ex.marketCache = make(map[string]float64)
@@ -148,6 +168,8 @@ func (b *BinanceExchange) Market() string { return b.market }
 // 供后台低优先级任务(如盈亏日历回填)判断是否该给实时交易请求让路。
 // 读的是与 signedRequest/publicRequest 同一批无锁字段,属既有的良性竞态,仅用于协作式退让。
 func (b *BinanceExchange) WeightUsedPct() int {
+	b.rateLimitMu.Lock()
+	defer b.rateLimitMu.Unlock()
 	if b.rateLimitWeight1m <= 0 {
 		return 0
 	}
@@ -156,7 +178,49 @@ func (b *BinanceExchange) WeightUsedPct() int {
 
 // RateLimited 报告当前是否处于 429/ban 冷却窗口(此期间所有签名/公共请求都会被本地直接拒绝)。
 func (b *BinanceExchange) RateLimited() bool {
+	b.rateLimitMu.Lock()
+	defer b.rateLimitMu.Unlock()
 	return !b.requestBanUntil.IsZero() && time.Now().Before(b.requestBanUntil)
+}
+
+// setUsedWeight/setBan/weightHigh/setRateLimitWeight/rateLimitFresh/stampRateLimitLoad
+// 都在 rateLimitMu 下读写那四个限流/封禁标量,消除 signedRequest/publicRequest/后台任务
+// 并发无锁读写 requestBanUntil(time.Time)导致的撕裂读——撕裂成远期时间会冻结全部下单/
+// 平仓、成过去时间则失效熔断招致真封禁(CR P1)。
+func (b *BinanceExchange) setUsedWeight(v int) {
+	b.rateLimitMu.Lock()
+	b.usedWeight1m = v
+	b.rateLimitMu.Unlock()
+}
+
+func (b *BinanceExchange) setBan(until time.Time) {
+	b.rateLimitMu.Lock()
+	b.requestBanUntil = until
+	b.rateLimitMu.Unlock()
+}
+
+func (b *BinanceExchange) weightHigh() bool {
+	b.rateLimitMu.Lock()
+	defer b.rateLimitMu.Unlock()
+	return b.rateLimitWeight1m > 0 && b.usedWeight1m*100/b.rateLimitWeight1m >= 80
+}
+
+func (b *BinanceExchange) setRateLimitWeight(v int) {
+	b.rateLimitMu.Lock()
+	b.rateLimitWeight1m = v
+	b.rateLimitMu.Unlock()
+}
+
+func (b *BinanceExchange) rateLimitFresh() bool {
+	b.rateLimitMu.Lock()
+	defer b.rateLimitMu.Unlock()
+	return !b.lastRateLimitLoad.IsZero() && time.Since(b.lastRateLimitLoad) < time.Hour && b.rateLimitWeight1m > 0
+}
+
+func (b *BinanceExchange) stampRateLimitLoad() {
+	b.rateLimitMu.Lock()
+	b.lastRateLimitLoad = time.Now()
+	b.rateLimitMu.Unlock()
 }
 
 func (b *BinanceExchange) LastPrice(symbol string) (float64, error) {
@@ -671,7 +735,7 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 	}
 
 	// Honor ban window if set
-	if !b.requestBanUntil.IsZero() && time.Now().Before(b.requestBanUntil) {
+	if b.RateLimited() {
 		return nil, 0, fmt.Errorf("binance api error: {\"code\":429,\"msg\":\"Rate limited\"}")
 	}
 	_ = b.loadRateLimitIfNeeded()
@@ -702,11 +766,11 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 	// Track used weight
 	if w := strings.TrimSpace(resp.Header.Get("X-MBX-USED-WEIGHT-1m")); w != "" {
 		if v, err := strconv.Atoi(w); err == nil {
-			b.usedWeight1m = v
+			b.setUsedWeight(v)
 		}
 	}
 	// If approaching limit, small cooperative delay
-	if b.rateLimitWeight1m > 0 && b.usedWeight1m*100/b.rateLimitWeight1m >= 80 {
+	if b.weightHigh() {
 		time.Sleep(200 * time.Millisecond)
 	}
 	body, _ := io.ReadAll(resp.Body)
@@ -733,9 +797,9 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 					}
 				}
 				if retryAfter > 0 {
-					b.requestBanUntil = time.UnixMilli(retryAfter)
+					b.setBan(time.UnixMilli(retryAfter))
 				} else {
-					b.requestBanUntil = time.Now().Add(2 * time.Minute)
+					b.setBan(time.Now().Add(2 * time.Minute))
 				}
 			}
 			return body, resp.StatusCode, formatBinanceAPIError(code, msg)
@@ -746,7 +810,7 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 }
 
 func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params url.Values) ([]byte, int, error) {
-	if !b.requestBanUntil.IsZero() && time.Now().Before(b.requestBanUntil) {
+	if b.RateLimited() {
 		return nil, 0, fmt.Errorf("binance api error: {\"code\":429,\"msg\":\"Rate limited\"}")
 	}
 	_ = b.loadRateLimitIfNeeded()
@@ -765,10 +829,10 @@ func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params
 	defer resp.Body.Close()
 	if w := strings.TrimSpace(resp.Header.Get("X-MBX-USED-WEIGHT-1m")); w != "" {
 		if v, err := strconv.Atoi(w); err == nil {
-			b.usedWeight1m = v
+			b.setUsedWeight(v)
 		}
 	}
-	if b.rateLimitWeight1m > 0 && b.usedWeight1m*100/b.rateLimitWeight1m >= 80 {
+	if b.weightHigh() {
 		time.Sleep(200 * time.Millisecond)
 	}
 	body, _ := io.ReadAll(resp.Body)
@@ -793,9 +857,9 @@ func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params
 					}
 				}
 				if retryAfter > 0 {
-					b.requestBanUntil = time.UnixMilli(retryAfter)
+					b.setBan(time.UnixMilli(retryAfter))
 				} else {
-					b.requestBanUntil = time.Now().Add(2 * time.Minute)
+					b.setBan(time.Now().Add(2 * time.Minute))
 				}
 			}
 			return body, resp.StatusCode, formatBinanceAPIError(code, msg)
@@ -807,9 +871,12 @@ func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params
 
 func (b *BinanceExchange) loadRateLimitIfNeeded() error {
 	// Load once per hour
-	if !b.lastRateLimitLoad.IsZero() && time.Since(b.lastRateLimitLoad) < time.Hour && b.rateLimitWeight1m > 0 {
+	if b.rateLimitFresh() {
 		return nil
 	}
+	// 无论成功或失败都盖时间戳:失败也退避一小时,避免节流/故障期每个请求都重发
+	// exchangeInfo 反而加重 weight(CR P2)。失败时沿用默认 rateLimitWeight1m=1200。
+	defer b.stampRateLimitLoad()
 	endpoint := "/api/v3/exchangeInfo"
 	if b.market == "usdm" {
 		endpoint = "/fapi/v1/exchangeInfo"
@@ -838,12 +905,11 @@ func (b *BinanceExchange) loadRateLimitIfNeeded() error {
 	if json.Unmarshal(body, &parsed) == nil {
 		for _, rl := range parsed.RateLimits {
 			if strings.EqualFold(rl.RateLimitType, "REQUEST_WEIGHT") && strings.EqualFold(rl.Interval, "MINUTE") {
-				b.rateLimitWeight1m = rl.Limit
+				b.setRateLimitWeight(rl.Limit)
 				break
 			}
 		}
 	}
-	b.lastRateLimitLoad = time.Now()
 	return nil
 }
 
@@ -1473,16 +1539,86 @@ func (b *BinanceExchange) FetchOrders(ownerID uint, symbol string) ([]Order, err
 	return out, nil
 }
 
+// positionsAccountKey maps ownerID to the position-cache bucket key. Owners that
+// resolve to the same Binance account (same API key) share one bucket, so a
+// single /positionRisk call serves them all. Falls back to per-owner isolation
+// when creds are unavailable, so a resolution failure never lets two distinct
+// accounts collide in one bucket. Memoized to keep the hot path off getCred/DB.
+func (b *BinanceExchange) positionsAccountKey(ownerID uint) string {
+	b.acctKeyMu.RLock()
+	k, ok := b.acctKeyByOwner[ownerID]
+	b.acctKeyMu.RUnlock()
+	if ok {
+		return k
+	}
+	key := fmt.Sprintf("owner:%d", ownerID)
+	if cred, err := b.getCred(ownerID); err == nil && cred.APIKey != "" {
+		key = "acct:" + cred.APIKey
+	}
+	b.acctKeyMu.Lock()
+	b.acctKeyByOwner[ownerID] = key
+	b.acctKeyMu.Unlock()
+	return key
+}
+
+// stampPositionsOwner returns a copy of src with OwnerID set to ownerID. The
+// per-account cache is shared across owners, so on a cache hit the caller's own
+// ownerID is stamped onto the returned positions to preserve the prior
+// per-owner return contract.
+func stampPositionsOwner(src []Position, ownerID uint) []Position {
+	out := make([]Position, len(src))
+	for i, p := range src {
+		p.OwnerID = ownerID
+		out[i] = p
+	}
+	return out
+}
+
+// AccountKey returns a stable identifier for the exchange account an owner
+// trades on — owners sharing one API key share one account. The guard uses it to
+// enforce "one exchange net position -> one tracked position row per account",
+// so a single net position on a shared account is not adopted into one row per
+// owner. Falls back to per-owner isolation when creds are unresolved.
+func (b *BinanceExchange) AccountKey(ownerID uint) string {
+	return b.positionsAccountKey(ownerID)
+}
+
+// acctRefreshLock returns the per-account refresh mutex (created lazily), used to
+// single-flight /positionRisk refreshes so concurrent cache-misses collapse to one call.
+func (b *BinanceExchange) acctRefreshLock(acctKey string) *sync.Mutex {
+	b.positionsRefreshMu.Lock()
+	mu := b.positionsRefreshLock[acctKey]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		b.positionsRefreshLock[acctKey] = mu
+	}
+	b.positionsRefreshMu.Unlock()
+	return mu
+}
+
 func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Position, error) {
 	if status != "active" {
 		return []Position{}, nil
 	}
 
+	acctKey := b.positionsAccountKey(ownerID)
 	now := time.Now()
 	b.positionsCacheMu.Lock()
-	if exp, ok := b.positionsCacheExp[ownerID]; ok && now.Before(exp) {
-		cached := b.positionsCache[ownerID]
-		out := append([]Position(nil), cached...)
+	if exp, ok := b.positionsCacheExp[acctKey]; ok && now.Before(exp) {
+		out := stampPositionsOwner(b.positionsCache[acctKey], ownerID)
+		b.positionsCacheMu.Unlock()
+		return out, nil
+	}
+	b.positionsCacheMu.Unlock()
+
+	// single-flight:同账户只放一个在途刷新;并发 miss 的其余调用在此排队,
+	// 拿到锁后先二次检查缓存(前一个刚刷好就直接命中),避免并发双查触发 429。
+	rl := b.acctRefreshLock(acctKey)
+	rl.Lock()
+	defer rl.Unlock()
+	b.positionsCacheMu.Lock()
+	if exp, ok := b.positionsCacheExp[acctKey]; ok && time.Now().Before(exp) {
+		out := stampPositionsOwner(b.positionsCache[acctKey], ownerID)
 		b.positionsCacheMu.Unlock()
 		return out, nil
 	}
@@ -1557,8 +1693,8 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 		}
 
 		b.positionsCacheMu.Lock()
-		b.positionsCache[ownerID] = append([]Position(nil), out...)
-		b.positionsCacheExp[ownerID] = time.Now().Add(5 * time.Second)
+		b.positionsCache[acctKey] = append([]Position(nil), out...)
+		b.positionsCacheExp[acctKey] = time.Now().Add(5 * time.Second)
 		b.positionsCacheMu.Unlock()
 		return out, nil
 	}
@@ -1608,8 +1744,8 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 		})
 	}
 	b.positionsCacheMu.Lock()
-	b.positionsCache[ownerID] = append([]Position(nil), out...)
-	b.positionsCacheExp[ownerID] = time.Now().Add(5 * time.Second)
+	b.positionsCache[acctKey] = append([]Position(nil), out...)
+	b.positionsCacheExp[acctKey] = time.Now().Add(5 * time.Second)
 	b.positionsCacheMu.Unlock()
 	return out, nil
 }
@@ -2269,26 +2405,10 @@ func (b *BinanceExchange) USDMMaxNotionalForLeverage(ownerID uint, symbol string
 }
 
 func (b *BinanceExchange) USDMPositionAmt(ownerID uint, symbol string) (float64, float64, float64, error) {
-	// Try cached positions first to avoid high-frequency polling
-	now := time.Now()
-	b.positionsCacheMu.Lock()
-	if exp, ok := b.positionsCacheExp[ownerID]; ok && now.Before(exp) {
-		cached := b.positionsCache[ownerID]
-		target := strings.ToUpper(NormalizeSymbol(symbol))
-		for _, p := range cached {
-			if strings.ToUpper(NormalizeSymbol(p.Symbol)) == target {
-				amt := p.Amount
-				if strings.EqualFold(p.Direction, "short") {
-					amt = -amt
-				}
-				entry := p.Price
-				mark := p.CurrentPrice
-				b.positionsCacheMu.Unlock()
-				return amt, entry, mark, nil
-			}
-		}
-	}
-	b.positionsCacheMu.Unlock()
+	// 实时:直接查 /positionRisk,【不读】5s 缓存。本函数专供对新鲜度敏感的调用方
+	// (挂交易所止损前的立即触发预检、开仓回滚核仓、仓位归零撤单);用陈旧 mark 预检会
+	// 误拒止损、把旧止损撤了却不补 → 裸奔一轮(CR P1)。可容忍陈旧的调用方走
+	// USDMPositionAmtCached(共享缓存+single-flight)。
 	cred, err := b.getCred(ownerID)
 	if err != nil {
 		return 0, 0, 0, err
@@ -2327,6 +2447,44 @@ func (b *BinanceExchange) USDMPositionAmt(ownerID uint, symbol string) (float64,
 		}
 	}
 	return positionAmt, entryPrice, markPrice, nil
+}
+
+// USDMPositionAmtCached 是 USDMPositionAmt 的"可容忍 5s 陈旧"版本:命中共享持仓
+// 缓存即返回;缓存新鲜但无此 symbol = 无仓,直接返回 0——【不再穿透打 REST】(未持仓
+// symbol 每次都查 positionRisk 是隐藏限流源);缓存过期则走 FetchPositions(单飞+回填)。
+// 仅供不需要亚 5s 新鲜度的调用方(已平仓轮询、加仓容量估算、前端展示);开仓后确认/
+// 回滚/挂交易所止损等对新鲜度敏感的路径必须继续用 USDMPositionAmt(实时)。
+func (b *BinanceExchange) USDMPositionAmtCached(ownerID uint, symbol string) (float64, float64, float64, error) {
+	acctKey := b.positionsAccountKey(ownerID)
+	target := strings.ToUpper(NormalizeSymbol(symbol))
+	find := func(ps []Position) (float64, float64, float64, bool) {
+		for _, p := range ps {
+			if strings.ToUpper(NormalizeSymbol(p.Symbol)) == target {
+				amt := p.Amount
+				if strings.EqualFold(p.Direction, "short") {
+					amt = -amt
+				}
+				return amt, p.Price, p.CurrentPrice, true
+			}
+		}
+		return 0, 0, 0, false
+	}
+	b.positionsCacheMu.Lock()
+	if exp, ok := b.positionsCacheExp[acctKey]; ok && time.Now().Before(exp) {
+		cached := append([]Position(nil), b.positionsCache[acctKey]...)
+		b.positionsCacheMu.Unlock()
+		if amt, entry, mark, ok := find(cached); ok {
+			return amt, entry, mark, nil
+		}
+		return 0, 0, 0, nil // 缓存新鲜且无此 symbol → 无仓,不打 REST
+	}
+	b.positionsCacheMu.Unlock()
+	ps, err := b.FetchPositions(ownerID, "active")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	amt, entry, mark, _ := find(ps)
+	return amt, entry, mark, nil
 }
 
 type USDMAlgoOrder struct {

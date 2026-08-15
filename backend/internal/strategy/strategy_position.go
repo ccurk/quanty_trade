@@ -59,6 +59,14 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	if normalizedSide != "buy" && normalizedSide != "sell" {
 		return
 	}
+	// allowed_sides 最终复检(下单前最后一道)。handleRedisSignal 把过关,但入队的是原始
+	// 信号、processSignalBatch 又把空/auto/both 独立重解析并强制成 buy 且不再复检 → 白名单
+	// 可被绕过(default_open_side 被忽略、甚至 allowed_sides=["sell"] 也可能实开 long)。
+	// 在这唯一的下单口重新断言,任何路径都逃不过(CR P1)。
+	if !isAllowedSide(inst, normalizedSide) {
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓:方向不在 allowed_sides symbol=%s side=%s", symbol, normalizedSide))
+		return
+	}
 	amount = clampOrderAmount(inst, amount)
 	if amount <= 0 {
 		return
@@ -95,7 +103,14 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		}
 		amount = resolvedAmount
 	}
-	if amount < 10 {
+	// 仅对非 USDM(现货)保留"基础币数量 < 10"的粗地板。USDM 的最小名义额已由
+	// resolveUSDMOrderAmount 保证(≥min-notional),这里再按数量卡会把高价币(如 BTC/ETH,
+	// 20U 名义 → 数量 ≪10)静默丢单(CR P1,动态换高价币时才暴露)。
+	isUSDMMkt := false
+	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		isUSDMMkt = true
+	}
+	if !isUSDMMkt && amount < 10 {
 		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：下单数量低于10 symbol=%s side=%s amount=%v", symbol, normalizedSide, amount))
 		return
 	}
@@ -405,12 +420,13 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 					var lastErr error
 					var pos models.StrategyPosition
 					errDB := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").First(&pos).Error
-					if errDB != nil || pos.Amount <= 0 {
-						now := time.Now()
-						direction := "long"
-						if positionAmt < 0 {
-							direction = "short"
-						}
+					now := time.Now()
+					direction := "long"
+					if positionAmt < 0 {
+						direction = "short"
+					}
+					if errDB != nil {
+						// 无现存开仓行 → 建一行
 						newPos := models.StrategyPosition{
 							StrategyID:   inst.ID,
 							StrategyName: inst.Name,
@@ -427,6 +443,17 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 							UpdatedAt:    now,
 						}
 						_ = database.DB.Create(&newPos).Error
+					} else if pos.Amount <= 0 {
+						// 已有开仓行但 amount 为空(占位 / 与成交回填竞态)→ 就地补全,
+						// 【不再另建一行】。旧代码在此 Create 第二行,是"同 owner 内一仓多行、
+						// PnL 散落"的根因(如 COOKIE 1829→1828 相隔 517ms 的重复行)。
+						_ = database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
+							Updates(map[string]interface{}{
+								"amount":     math.Abs(positionAmt),
+								"avg_price":  entryPx,
+								"direction":  direction,
+								"updated_at": now,
+							}).Error
 					}
 					side := "buy"
 					if positionAmt < 0 {

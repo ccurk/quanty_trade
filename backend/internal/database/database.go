@@ -11,6 +11,7 @@ import (
 	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 	"strings"
+	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
@@ -86,6 +87,14 @@ func InitDB() {
 
 	if err != nil {
 		fatalAlert("Failed to connect to database: %v", err)
+	}
+
+	// 连接池上限(CR P1):防突发请求(每请求异步 APILog 落库 + 2s/owner 对账循环)
+	// 无上限地开 MySQL 连接、打满 max_connections。
+	if sqlDB, e := DB.DB(); e == nil {
+		sqlDB.SetMaxOpenConns(40)
+		sqlDB.SetMaxIdleConns(10)
+		sqlDB.SetConnMaxLifetime(30 * time.Minute)
 	}
 
 	// Migrate user table first so we can bootstrap admin user safely.
@@ -179,6 +188,54 @@ func InitDB() {
 				author_id = IF(author_id = 0, ?, author_id)
 			WHERE name = '' OR name IS NULL OR author_id = 0
 		`, admin.ID).Error
+
+		// 一开仓一行(工业级去重,DB 层强制)。open_key 生成列:status='open' 时 =
+		// owner:strategy:规范symbol(与 exchange.NormalizeSymbol 一致:大写、去 / 和 -),
+		// 平仓自动变 NULL;唯一索引对 NULL 豁免 → 每 (owner,strategy,symbol) 至多一个
+		// open 行。任何建行入口的重复 INSERT 都被 DB 拒(各入口本就忽略 create error →
+		// 直接 no-op),从源头根治"一仓多行、PnL 散落",与代码路径无关、新增路径也自动受约束。
+		// 幂等(按 information_schema 判定已加过就跳过)、best-effort(清洗/建索引失败只告警不
+		// 阻断启动,运行期仍有 ③a 收养去重兜底)。
+		// 存量去重(每组保留 id 最大者,其余置 closed);加生成列 / 建唯一索引前各跑一次。
+		dedupOpenPositions := `
+			UPDATE strategy_positions p
+			JOIN (
+				SELECT owner_id, strategy_id, UPPER(REPLACE(REPLACE(symbol,'/',''),'-','')) nsym, MAX(id) keep_id
+				FROM strategy_positions WHERE status = 'open'
+				GROUP BY owner_id, strategy_id, nsym
+			) k ON p.owner_id = k.owner_id AND p.strategy_id = k.strategy_id
+				AND UPPER(REPLACE(REPLACE(p.symbol,'/',''),'-','')) = k.nsym
+				AND p.status = 'open' AND p.id <> k.keep_id
+			SET p.status = 'closed', p.close_time = NOW(), p.updated_at = NOW()`
+		var openKeyCol int
+		_ = DB.Raw(`SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name = 'strategy_positions' AND column_name = 'open_key'`).Scan(&openKeyCol).Error
+		if openKeyCol == 0 {
+			if err := DB.Exec(dedupOpenPositions).Error; err != nil {
+				logger.Warnf("open_key 迁移: 存量去重失败(继续): %v", err)
+			}
+			if err := DB.Exec("ALTER TABLE strategy_positions ADD COLUMN open_key VARCHAR(160) " +
+				"GENERATED ALWAYS AS (CASE WHEN status = 'open' THEN " +
+				"CONCAT(owner_id, ':', strategy_id, ':', UPPER(REPLACE(REPLACE(symbol,'/',''),'-',''))) " +
+				"ELSE NULL END) STORED").Error; err != nil {
+				logger.Warnf("open_key 迁移: 加生成列失败(继续,退回 ③a 兜底): %v", err)
+			}
+		}
+		// 唯一索引独立守卫:即使上次加了列但建索引失败(dedup 竞态/锁超时),下次仍重试——
+		// 不会因"列已存在"而永远跳过,否则"一开仓一行"的 DB 保证会静默丢失(agent CR P1)。
+		var openKeyIdx int
+		_ = DB.Raw(`SELECT COUNT(*) FROM information_schema.statistics
+			WHERE table_schema = DATABASE() AND table_name = 'strategy_positions' AND index_name = 'uniq_open_position'`).Scan(&openKeyIdx).Error
+		if openKeyIdx == 0 {
+			if err := DB.Exec(dedupOpenPositions).Error; err != nil {
+				logger.Warnf("open_key 迁移: 建索引前去重失败(继续): %v", err)
+			}
+			if err := DB.Exec("CREATE UNIQUE INDEX uniq_open_position ON strategy_positions (open_key)").Error; err != nil {
+				logger.Warnf("open_key 迁移: 建唯一索引失败(继续): %v", err)
+			} else {
+				logger.Infof("open_key 迁移: 一开仓一行唯一约束已就位")
+			}
+		}
 	} else {
 		_ = DB.Exec(`
 			UPDATE strategy_templates
