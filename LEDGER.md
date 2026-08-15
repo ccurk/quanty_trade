@@ -53,14 +53,14 @@
 
 | 载具 | id | 原型 | 池 | 状态 | 门/备注 |
 |---|---|---|---|---|---|
-| main 通才 | 8eb182b6 | 通才(S18-S23栈) | auto·feed86@16:1x(bl15种子=信号层免疫在防;重播种#7@15:5x-16:0x疑=owner部署做市模块3a59f34→feed回100,本轮heatclean-v3清−14→86 overlap0;当日7次重播种全自愈) | running | pct0.08 sides=[buy,sell] long_premium=0.35 tpl567;**FIX闭卷@15:32**(臂1✓长侧−1.44零新亏20h/臂2✗组净恶化但按侧拆臂=空侧因,premium留0.35,劣化条款'回0.15'之诊断被侧拆证伪不机械执行,owner在场);_exp=**FIX-GEO(#49)@15:32:13Z**: trailing(act1.0ATR/cb1.2%)+BE(1.0ATR),TP4.5/SL2.5/premium不动;基线=72h实现赔率0.88:1/SL率40%/均净−0.73;keep=n≥30或48h先到时赔率≥1.2∧段均净改善;回滚=4键回现值(te:false/be:0/ta:2/cb:1.5);eval 08-16 15:30Z;RECOVER刹线6h空≤−8U继承;#11空侧gate=下一槽 |
-| qt-trend-long | 827ffe8c | 趋势动量多 | ACE/TUT/BICO/COTI(feed4=种子4✓;aging_watch=TUT/BICO advisory@15:2x对账,COTI回want) | running | **tpl575(S24)** pct0.05 mcp3 buy trailing on;_exp v3常驻:**累计n32/+0.93转正**(15:12轮+5:ACE×3+BICO+0.27/−0.68净+1.05;6h n6/+1.32;48h窗ACE n12/+1.62扛旗∧trending);早结门=净>0✓但毛均净0.029<3×费0.084未达→continue;劣化−5U/canary(6h+1.32)未触;**终裁08-16 06:35Z**当值:净>0=keep(现值+0.93落此格,守住即keep);全史git+config._exp |
-| qt-fade-short | 21519f1b | 冲高回落空 | 1000CAT/ARC/BEAT/**VELVET**(+VELVET@08-15 16:1x ROUTE晋升 48h nS5/+7.03全空单纯冲高回落画像,种子写回候§5#51[live4≠种子3,重启会掉VELVET];+BEAT@12:26 ROUTE补灌;种子3币写回✓@14:5x;14:1x部署重启曾致BEAT掉池→main抢开14:27空单=归属main非fade首笔) | running@08-15 14:5x | **tpl576(S25)** pct0.04 mcp2 sell;_exp v2续:累计n8/−2.63(池含BEAT起可产样本;前12轮零成交根因=want.fade空,非载具故障);评期=累计n≥15或**08-16 12:50Z**(池补灌已先行,到点若仍n<15按证据不足格裁,停驶取舍届时议);自动保险6h≤−6U(0✓) |
+| main 通才 | 8eb182b6 | 通才(S18-S23栈) | auto·feed87@18:28(18:21对账heatclean-v4清13→87;18:27 #50抢窗stop后≤40s被引擎自动复活+重播种#9→103,grabber旋转清16→87 overlap0;bl15种子在防;当日9次重播种全自愈) | running | pct0.08 sides=[buy,sell] long_premium=0.35 tpl567;_exp=**FIX-GEO(#49)@15:32:13Z**: trailing(act1.0/cb1.2%)+BE(1.0),TP4.5/SL2.5/premium不动;基线=72h赔率0.88/SL率40%/均净−0.73;**段@18:35=n4/−4.27/赔率0.40/SL率50%**(VELVET 17:04空−1.70=main所开,日志17:04:33触发行实证;XNY硬超时−1.33/AIO SL−1.90/VELVET锁盈+0.65)→n<30且回滚线(赔率<1**∧**净≤−10)未触=continue;keep=n≥30或48h先到时赔率≥1.2∧段均净>−0.73;eval 08-16 15:30Z;RECOVER刹线6h空≤−8U继承(现+1.38✓);#11空侧gate=下一槽 |
+| qt-trend-long | 827ffe8c | 趋势动量多 | ACE/TUT/BICO/COTI(feed4=种子4✓;aging_watch=TUT/BICO/COTI advisory@18:21对账,仅ACE现达入池条) | running | **tpl575(S24)** pct0.05 mcp3 buy trailing on;_exp v3常驻:**累计链n33/+0.024**(16:06记n32/+0.93,+BICO−0.91@18:17饥饿带50m;链=终裁权威口径,72h重拉丢行不可用[§3]);早结门=净>0✓但毛均净0.03<3×费0.084→continue;劣化−5U/canary(6h+0.14)未触;**终裁明08-16 06:35Z**当值:净>0=keep,毫厘正——今晚任何trend亏笔翻'−5U<净≤0=证据不足结案S24留用'格;两格皆留S24,仅净≤−5U才rollback tpl567 |
+| qt-fade-short | 21519f1b | 冲高回落空 | 1000CAT/ARC/BEAT/VELVET(live=种子=4✓ **#51落地@18:26** stop-PATCH-start一气呵成,_exp完好,重启免疫恢复) | running@18:26 | **tpl576(S25)** pct0.04 mcp2 sell;_exp v2续:累计n8/−2.63,**新池仍0样本**(归因修正:08-14 06:23/08-15 10:15/12:18三笔BEAT空皆早于12:26入池=main;17:04 VELVET空=main日志实证→fade窗内零笔);**0.60墙发现@18:1x**:BEAT空头分=0.600整×20次(≈3h logs) vs 门=min0.55+short_prem0.05需**>**0.60→评分组合恰顶死在门槛,系统性拒发;评期=累计n≥15或**08-16 12:50Z**,到点n<15按证据不足格裁,处置候选=EXP:short_prem 0.05→0(评期时预注册执行,不中途改污染段);自动保险6h≤−6U(0笔✓) |
 | ~~qt-breakout-follow~~ | 2111f5f9 | **owner删除@08-15 15:5x**(UI删,承15:36复活事件后清理;评判FAIL史+S26谱系+tpl577存git可重建;#47 S27复活=建新载具走FLEET流程,同lowvol先例) | — | deleted | — |
 
 - 隔离区(规则≤−4U∧n≥4): 4/CYS/TST/龙虾/BMT/BTW/H/**APR**(+APR@08-15 12:2x,48h n5/−7.54,#30确认1+候审1在列;热移除✓种子候重启窗;H隔离史存git)。**池列值=快照,权威=每轮对账器输出**。**对账器现版v1.3权威副本=quanty-ledger分支ops/route_pools.py@08-14(=334dae1内容;谱系61b1bb4←377c567←f970704;默认分支工作树只有v1.0初版——禁直接跑,实证2例错误plan)**:出池只认头注规则或隔离(失格币aging_watch);隔离表arg4;add互斥只排他专家池(v1.2误把main feed入排除集=晋升封死,COTI案实证修复);晋升币同轮移出main(封v1.1单轮重叠窗,执行序=先main remove后专家add);brk/lowvol出池阈值未注册前无自动出口(#42)。**arg4输入纪律(08-15 12:2x实证):隔离表必须传X/USDT形态——裸名norm后不match feed键,5隔离币漏出remove计划,当轮补刀rotate清除;代码零改动,属输入格式纪律**
 - 保证金: Σ_running=main0.08×5+trend0.05×3+fade0.04×2=**0.63≤0.75✓**(08-14 14:4x复核,rotate不动pct/mcp)
-- 互斥不变式: feed层@08-15 16:1x=main86/trend4/fade4,**overlap0全绿**(heatclean-v3)>种子层=main bl15(候#50→bl16+VELVET)/trend4币✓/fade3币(候#51+VELVET,窗前fade重启会掉VELVET=安全侧漂移)>引擎互斥闸✓live;aging=trend2(TUT/BICO)/fade2(1000CAT/ARC) advisory;重播种规律第6例(15:36我方start触发,自愈同型)〔前5例与伪影注记压缩,全文git 541a2bc〕
+- 互斥不变式: feed层@18:28=main87/trend4/fade4,**overlap0全绿**(heatclean-v4×2)>种子层=main bl15(**#50在队**,18:27抢窗败于stop不粘[§3新条])/trend4币✓/fade4币✓(#51闭)>引擎互斥闸✓live;aging=trend3(TUT/BICO/COTI)/fade2(1000CAT/ARC) advisory;重播种#8(~16:2x-17:00无主,audit零条目,疑owner侧)+#9(18:27停复活)均对账自愈;隔离币15:32后零成交✓bl15信号层在防
 - lowvol(ad37d337)已删@08-09 17:0x owner拍板(无交易史,原型设计存git f970704 create_low.json可重建)
 - 载具归档目录: strategies/quicktrade-<id前8位>/ 一载具一目录(协议不变)
 
@@ -91,7 +91,7 @@
 
 ## 3. 已确认机制
 
-- **架构升级 v08-15 部署清单(owner 14:xx 通告,行为+源码双实证@14:4x)**: main分支87d88e6→f4848f8并入且已部署——①**引擎互斥闸live**(strategy_signal.go L581一仓一主,§1.5三层互斥第三层⚠️转✓)②**WS标记价守护live**(strategy_ws_guard.go+binance_markprice_hub.go,TP/SL反应5s→~1s)③**赢家金字塔live**(strategy_pyramid.go,默认关;roi≤0硬拒/SL重锚棘轮/TP原价;config键pyramid_enabled/trigger_roi默认6.0/add_frac0.5/max_adds1)④**DB一开仓一行**(open_key生成列+唯一索引8ba8754)+**账户级持仓收养去重**(③a/③b)→#18幻影行族预期归零(候观察)、#15脱管仓假设部署实证(FOLKS粉尘仓14:xx无closed行消失=收养清理)⑤**allowed_sides下单口复检**(latch类动作引擎级强化)+止损棘轮护栏+tpsl兜底+markprice复位⑥active行开始带真实strategy_id(BICO@trend实证;sid伪影修复中,跨轮确认后归因纪律可简化)。**未并入**: #37 logs?limit/?q(行为实证limit=300仍返100行)、#21 backtest看门狗、#35 CB持久化——dev分支仍候部署。**开机自恢复边界watch(未决@08-15)**:15:36 brk复活事件owner未证言点没点start(载具已删证据灭失);检验法=下次部署时若有DB-stopped载具翻running→keepalive误复活bug确证(风险面=自动保险停机的载具会在部署时带伤复活)。**部署副作用**: 重启重播种(当日第3次,部署型)——main feed回100致12:2x热清作废,APR/BEAT无bl保护窗口暴露,main 14:27开BEAT空(路由违规残留,互斥闸使fade被让开无双仓事故);处置见08-15 14:4x事件轮。
+- **架构升级 v08-15 部署清单(owner 14:xx 通告,行为+源码双实证@14:4x)**: main分支87d88e6→f4848f8并入且已部署——①**引擎互斥闸live**(strategy_signal.go L581一仓一主,§1.5三层互斥第三层⚠️转✓)②**WS标记价守护live**(strategy_ws_guard.go+binance_markprice_hub.go,TP/SL反应5s→~1s)③**赢家金字塔live**(strategy_pyramid.go,默认关;roi≤0硬拒/SL重锚棘轮/TP原价;config键pyramid_enabled/trigger_roi默认6.0/add_frac0.5/max_adds1)④**DB一开仓一行**(open_key生成列+唯一索引8ba8754)+**账户级持仓收养去重**(③a/③b)→#18幻影行族预期归零(候观察)、#15脱管仓假设部署实证(FOLKS粉尘仓14:xx无closed行消失=收养清理)⑤**allowed_sides下单口复检**(latch类动作引擎级强化)+止损棘轮护栏+tpsl兜底+markprice复位⑥active行开始带真实strategy_id(BICO@trend实证;sid伪影修复中,跨轮确认后归因纪律可简化)。**未并入**: #37 logs?limit/?q(行为实证limit=300仍返100行)、#21 backtest看门狗、#35 CB持久化——dev分支仍候部署。**开机自恢复边界=已裁决@08-15 18:27(源码+行为双证)**:RestoreRunningStrategies只在backend重启时拉DB=running/starting者,人为stop后DB=stopped不会被它碰(strategy_lifecycle.go L15-20注释明示)→部署不会复活自动保险停机载具✓;但18:27实测main的stop不粘(≤40s回running),机制=stop异步语义+复活路径三候选,详下条与#52。**部署副作用**: 重启重播种(当日第3次,部署型)——main feed回100致12:2x热清作废,APR/BEAT无bl保护窗口暴露,main 14:27开BEAT空(路由违规残留,互斥闸使fade被让开无双仓事故);处置见08-15 14:4x事件轮。
 
 ### 盈利侧
 - [已确认·速记] E2 空头门槛0.60对齐→空头转正(+11.27摆动);关账07-23✓〔全文git 29eb4c5〕
@@ -128,6 +128,7 @@
 - **[新增 08-09 18:4xZ·实锤] 镜像行双记账**：专家载具开仓时,若该 symbol 同时在 main 的 live feed 内,DB 会给 main 也写一条同 qty 的 StrategyPosition open 行(fade BLUAI 1359 与 brk BMT 832 双双复现;`?status=open` 原始视图可见,`?status=active` 合并视图不可见)。实仓归属以"谁设置 TP/SL 日志"裁定(BMT=brk 18:46:31 实锤)。危害:①镜像 open 行卡死 main 的 stop(validateStrategyCanStop 按 DB 行计数)与 rotate remove(has_open_position)②归因/前端幻影(=#18 家族)③若两载具反向,单向持仓模式下真实净额合并事故。根修=引擎同币互斥闸(dev-strategy-group-ws 候部署,升急)。缓解=live feed 严格不相交(rotate 已修复)。
 - **[新增 08-09 18:4xZ] stop 语义=入队异步**：POST /stop 回执 {"status":"stopped"} 仅=入队成功;真执行在单 stopWorker,失败只写策略 error 日志(如"has open positions"),API 无感。**stop 后必须 GET /api/strategies 轮询确认**,失败诊断=安静秒窗(:34-:59)发 stop 后 2s 拉 logs 抓 error 行(18:46 实证有效)。
 - **[新增 08-09 18:4xZ] start 中途不感知 stop**：start 亦入队(startCh 单 worker),boot 完成无条件写回 running(lifecycle 源码+4 连复活实测);对 running 实例发 start=纯 no-op(不重启进程,S23 分段无害)。窗口操作纪律:先静置排干队列→单发 stop→轮询确认→PATCH→单发 start。
+- **[新增 08-15 18:5xZ] stop=乐观回执,校验双洞,main上实测不粘**:①POST /stop 只入队+回显"stopped",真校验在stopWorker异步做(strategy_lifecycle.go L76-100)——回执≠沉降,轮询status才是真;②validateStrategyCanStop两洞(L233-270):DB侧只数strategy_id=本载具的open仓→**sid=""未归属仓隐形**;交易所侧校验在config.symbols为空(auto池)时**整个跳过**→main永远可带仓通过校验。18:27实证:XNY空(sid="")在场,stop被接受=硬边界5空仓前提被绕(自报违规1次,仓位全程exchange侧TP/SL在位+复活后续管,无损);③~40s后main自动回running+feed重播种#9(候选路径:runtime requestRestart健康检查[strategy_runtime.go L135,force stop+2s+start,会重播feed]/外部start;grabber日志无法分辨,复现待验)。**程序修正(#50起)**:执行器自查positions空仓(空sid行按main计)→stop→**立即1-2s紧循环PATCH竞速沉降窗**(勿等观测到stopped才动,18:27败因=首轮询耗40s)→start→验bl。引擎侧根治=#52。
 - **出场三层语义（源码核实）**：①策略 TP/SL(atr_tp/sl_mult×ATR，平台执行) ②饥饿模式(quick_trade_monitor.go，10s tick，持仓≥hunger_after_minutes 后首检 |roi|≥hunger_tp/sl_pct×100 即市价收割，roi=价格变动%×杠杆) ③max_hold_minutes 无条件平仓。②与①不匹配=已确认病灶（见亏损侧 08-01 条目）。
 - **hold_distribution 只覆盖部分仓位**——死法分析以逐笔 API 为准。
 - **backtest 接口可用**：`POST /api/strategies/:id/backtest`（async=true），大改 apply 后烟雾测试用。
@@ -202,6 +203,7 @@
 | 11 | E8 类 | short 方向跨币修补·**设计定稿@08-15 15:3x**: `breadth_max_for_short` null(引擎默认0.70)→**0.50**(config-only零代码;S13宽度门L1713既有veto路径:池内EMA上行占比>0.50拒空;与长侧breadth_min_for_long=0.50对称=regime分区;回滚=set null;_exp草案metric=main空侧24h n/net/wr+对照长侧,keep线=空侧24h净≥−8U∧均净改善于−0.541,劣化=≤−12U或n<5/24h窒息→回null) | 08-01登记0/2→**2/2@08-09**(24h short−15.20 n51跨16币同窗burst;门槛链git);15:12轮增证:FIX段空n23/−18.51 wr22跨8币在0.70门下全数放行=门未起regime保护作用(main统计行结构性不可观测,拦截计数不可直证;0.50收紧效果即_exp所测) | 2/2达成+段增证 | **下一槽候执行**(owner拍板#49几何包先行@15:3x;执行窗=#49评后[08-16 15:30Z或n≥30]主槽释放,或owner令提前;包已ready零设计欠账;注:#49若显著改善空侧亏损幅度,#11部署前须重算keep/劣化线基线) |
 | 30 | S21类(代码gate) | 追跌空反弹拒空veto候选(gate7e,暂缓中): short且跌势陈旧拒;draft单维300m阈值族证伪@08-07(误杀24%>10%门);下一迭代=加第二判别维(距60m低点反弹幅/自低点时间) | 追跌型累计10例/−24.28+晨午簇候审〔审计全史git 121e975/42e4fc8/541a2bc〕 | **n=17/−38.94**+候审16·暂缓(最新APR#2确认@08-15 12:3x;APR#1源分辨率存疑不强标;跨币同型US/AIO/ROBO/VELVET在列=系统性;逐例链git 541a2bc) | 执行门=确认型≥20或owner核准;#11 regime gate若上线将覆盖池级同窗burst亚型,#30残余=个币新鲜度维,定标继续 |
 | 47 | FLEET候选 | **S27突破追动量复活版**:入场核S26保留(30bar破位+量能推力+blowoff帽,wr60%段实证),出场重构=让赢家跑(trail回调≥0.5×池ATR%或trail激活后免45m硬帽);出池阈值同包注册(承#42:滚动n≥6∧净<0或在池7天零成交→回main) | S26段n15/−3.23评判@08-14:赢单被0.8%固定回调帽截(池ATR3.5-4.4%的1/5),亏单走满2.5ATR,EV/笔−0.22=出场结构性倒挂非信号伪;want.breakout候选池实时=APR/BEAT/COOKIE/EDEN/STORJ等 | n=15段档案 | 候选;门=组费覆🟢+新_exp预注册+ROUTE灌池;**载具已删@08-15→复活=POST建新壳(FLEET预注册+TG报备),tpl577/S26全史git在位** |
+| 52 | 引擎候修(M通道) | **stop校验双洞+复活路径**:①validateStrategyCanStop把sid=""仓当不存在+auto池跳过交易所侧校验→带仓stop可过闸(修法=exchange侧校验在auto池用全量active仓判);②stop后≤40s自动回running复现机制未定(requestRestart候选);顺手项=stop回执改真沉降或带async标注 | 18:27全录grab50.log+源码strategy_lifecycle.go L233-270/strategy_runtime.go L135;XNY sid=""行实证 | n=1(main) | 候选;dev分支claude/dev-*走M通道,部署权owner;先复现②再动手 |
 | 49 | 组共病(出场几何) | **出场几何倒挂重构**:main trailing_enabled+breakeven_trigger_atr(WS守护1s执行引擎已部署=配置即生效)±TP收进可达域;目标=实现赔率0.88→≥1.3,打平wr 53%→~43% | 72h审计n=96(15:2x轮):main(trail OFF)SL率40%/−49.67均−1.84,TP仅12%均+0.64(设计应+3.2),时间出场48%合计≈0,实现0.88:1 vs 设计1.8:1,wr34缺口−19pp;对照trend(trail ON)SL率14%/wr68 vs 打平58=+10pp组内唯一正缺口(注:trend兼有选币优势,非纯trailing归因);brk死因(trail帽截赢)同族 | n=96机制级 | **live@15:32:13Z**(内联全序落地;抢窗器v1教训=stop异步~10s沉降,PATCH须先验stopped再发——b32w1vc32曾1s后PATCH被拒空跑,已修流程;bl15同窗落地#48结案;评期08-16 15:30Z或n≥30) |
 
 
@@ -214,43 +216,43 @@
 
 | # | 类型 | 内容（含完整意图） | 登记轮 | 状态 |
 |---|---|---|---|---|
-| #50 | PATCH | main symbol_blacklist bl15→bl16(+VELVET/USDT)=blacklist_sync(VELVET晋升fade的镜像免疫);条件=main空仓窗∧非交互±40min窗;stop→轮询stopped→PATCH→start一气呵成 | 08-15 16:1x | open |
-| #51 | PATCH | fade config.symbols 种子写回4币(+VELVET/USDT)恢复fade重启免疫;条件=fade空仓窗(现空)∧非交互窗;stop→轮询stopped→PATCH→start | 08-15 16:1x | open |
+| #50 | PATCH | main symbol_blacklist bl15→bl16(+VELVET/USDT)=blacklist_sync(VELVET晋升fade的镜像免疫);**程序v2(18:27教训)**:自查positions真空仓(空sid行按main计)∧非交互窗→stop→**立即1-2s紧循环PATCH**(竞速沉降窗,勿等stopped观测)→start→验bl=16/_exp/running;18:27抢窗败录grab50.log(stop不粘,§3) | 08-15 16:1x(修订18:5x) | open |
 
-
-> 维护注 08-14 15:0xZ：#46 **落地结案删行**——HEI SL−1.99@15:02:39平仓开真空仓窗,后台抢窗器15:02:52-15:03:16全序完成(stop 10s落地→PATCH bl15→13[释COOKIE/DYM/BTR+锁CAP]→验证CAP入/长13/_exp完好→start running);重启重播种feed100(trend5币播回,信号层bl在防)→15:0x热rotate−5自愈feed95 overlap0;AKE/BTR/COOKIE/EDEN随释放回feed。竞态教训:前台哨兵与未死后台抢窗器同窗并行,多付1次start(15:05,无害)——**立规:一窗一执行器,启动前TaskList核对在跑任务**。待落队列清空。
-> 维护注 08-14 07:0xZ：#42+#45 **结案删行**——#42:brk评判停机使breakout出池阈值失去对象(lowvol已删),阈值设计并入#47复活包必含项;#45:brk部分被评判closure PATCH取代(_exp verdict含revival警示+种子勿直启注记),main/trend/fade三部分前轮已✓。
+> 维护注 08-15 18:5xZ：#51 **落地结案删行**——fade空仓窗18:26全序完成(stop→PATCH symbols=ARC/1000CAT/BEAT/VELVET→start),live=种子=4币,_exp完好,VELVET重启免疫恢复;同窗rotate已先行(main−13含VELVET,fade+VELVET)。
+> 维护注 08-14 15:0xZ：#46 落地结案（HEI窗bl15→13+CAP锁,竞态教训=一窗一执行器）;#42+#45 结案见08-14 07:0x注。全史git。
 
 ## 6. 假设库·观察计数（v2 迁移注记 @08-01 16:40Z：并入假设库，与 §4 合称；跨轮累计；9 秒日志窗单次未观测 ≠ 零，以本节跨轮增量为准）
 
 | 计数项 | 读数 | 更新轮 | 备注 |
 |---|---|---|---|
+| fade 0.60墙(空头分顶死门槛) | **BEAT空头分=0.600整×20/0.560×14/0.480×20(18:1x约3h logs窗);门=min0.55+short_prem0.05严格>0.60** | 08-15 18:5x | 判据:评期08-16 12:50Z若n<15,此墙为首要处置对象(EXP:prem→0预注册);S25加分项组合上限观察随行 |
 | 平仓撤单竞态error观测(-2011/补设) | **3条@08-14 18:02-18:04(US×2+CAP×1,单一波动窗18:01-07三连SL,全自愈)** | 08-14 18:1x | 判据:复现≥3个独立窗或单窗≥5条→查撤单路径系统性延迟;机制定案§3;零处置 |
 | S23逆bar影子观测(main _exp 08-08起) | **裁决=证据不足·结案@08-13 00:33Z**(A组n19<20门,AL1/3 vs WL0/3纯噪声不可裁,零事后改指标;S23纯观测零交易路径原样在场)〔压缩@08-14,全文见git 8897832〕 | 08-13 00:3x | 重开判窗=#37部署后重启观测段;逆bar族(#30/#34)冻结至可观测 |
 | main无端重启重播种观测 | **2@08-15(03:30-06:16窗)→已升§3平台事实(预登记判据「复现→升」履行)** | 08-15 06:2x | 升格转速记;后续feed数每轮复核照旧,新例§3计数;第1例全文git |
-| S19顺涨拒空veto累计 | **裁决KEEP@08-06 16:4x转速记**(15短达标:应拦型0/15;全型4/−7.76 vs 9/−16.7收窄53.5%过;残余全拉升型=S20域;数字与诚实注记存§2 S19行);后续新增"应拦型"(顺涨bar可见+快SL)即报警复核 | 08-06 16:4x | 裁决口径分型14:2x轮预登记非事后;劣化回滚未触发(apply回tpl534路径归档) |
-| S20拉升语境拒空累计(post-apply) | **裁决KEEP+候审清零结案@08-07 10:1x转速记**(应拦确认0/44终;HFT候审=vision期货口径未拦=正确;期现分离实锤CG现货vs期货Δ≈4.8pp=S20用期货K线口径正确)〔全文git 541a2bc〕 | 08-07 10:1x | 后续:误杀审计(被拒币2h后实跌>2×ATR%)≥3例→回滚tpl563;新增应拦型即报警复核 |
-| #20 hunger_tp0.08段观测(在飞_exp影子行) | **裁决KEEP@08-07 18:2x转速记**(n=44：主腿hunger域赢均2.552raw/2.696折 payoff2.42双超线；段负全源快SL簇17/−31.14=预登记隔离路径零事后改口；数字存§3新条+_exp.fix20_verdict；hunger_tp=0.08基线) | 08-07 18:2x | 后续hunger域健康度随S21段观测一体跟踪,不再单列 |
-| S21急再入veto(post-apply)观测 | **裁决KEEP@08-08 14:1x转速记**(段n=37五维全过,存§2 S21行+_exp.s21_closure);时差孔2例(ACE)+滑漏类8腿净+9.90仍正=无失血不翻案〔压缩@08-09 12:xx,全文见git d1400b2〕 | 08-09 12:xx | 后续:急再入类段净转负≤−5U重启复核;12:30统计行急再入veto(影子/emit)=0/0在读✓ |
+| S19顺涨拒空veto | 裁决KEEP@08-06终态(数字存§2 S19行) | 08-06 | 新增应拦型(顺涨bar+快SL)即报警复核 |
+| S20拉升语境拒空 | 裁决KEEP+候审清零@08-07终态〔git 541a2bc〕 | 08-07 | 误杀审计(被拒币2h实跌>2×ATR%)≥3例→回滚tpl563;新应拦型报警 |
+| #20 hunger_tp0.08段 | 裁决KEEP@08-07终态(数字存§3+_exp.fix20_verdict) | 08-07 | hunger域健康度随S21段一体跟踪 |
+| S21急再入veto | 裁决KEEP@08-08终态(存§2 S21行)〔git d1400b2〕 | 08-09 | 急再入类段净≤−5U重启复核 |
 | 重启清CB熔断计数成本 | 速记:累计3笔/−6.93(HFT),CYS第二币复现✓→**已候选化#35@08-08 20:1x**,计数与推进在§4#35;restart节流纪律维持〔压缩@08-10,全文见git 2873d28〕 | 08-08 20:1x | 判据与逐例链见git |
 | 追跌空反弹型快SL观测(三gate域外) | **已候选化#30@08-07 04:2x转速记**(7例/−17.30+RIVER亚型1达≥6门;新增BSB02:42+BTW03:24定标;新鲜度分离器实证见§4#30行;计数移#30) | 08-07 04:2x | 判据履行:≥6例→候选化✓;后续计数与设计推进在§4 #30行 |
 | 长侧快SL穿刺(momentum彩票成本)观测 | **预登记判据成立→候选化#34@08-08 16:1x**(6h L净−1.95∧首腿L快SL7/−12.00≥6,CYS×3;计数与设计推进移§4#34行,本行转速记;前史存git) | 08-08 16:1x | 升级判据已履行;后续读数在#34;镜像拒多维持不采 |
 | 统计汇总行未捕获连续轮数 | **08-13 00:1x轮罕见2拍成功**(00:18:01/00:26:03安静分钟捕获=当前段读数;评估爆发期100行窗仍仅覆~2s,跨段累计依旧不可得;**?q&limit第7验未部署**[limit300返100行,q过滤无效];08-14 18:2x第8验同(q=S23返未过滤100行));前史结构性不可捕结论维持〔压缩@08-13,全文见git 121e975〕 | 08-13 00:2x | 跨段求和纪律不变;#37七催(S23判窗重开的解锁条件) |
 | 热点∩池内∧盈利连续轮数 | **重启1@08-10 18:2x(TUT回trending榜∩trend池,24h+6.52组最佳币;CYS/BEAT榜上但一在押一孤儿不动)** | 08-10 18:2x | 判据同前;n<30轶事级;隔离币上trending≠rehab信号(需7天无交易+画像翻转) |
-| UTC 早晨段（~02-10Z）当日主盈段观测次数 | **5 维持＋反例2扩展（08-03 09:1xZ:02-09Z全段12笔−5.39,内穿刺7笔−16.16 vs 饥饿TP胜5笔+10.78=同段两机制对冲,时段本身非因子,穿刺归#19机制域）** | 08-03 09:1xZ | 单段n<30轶事级;晚间弱形态×2曾同型;判据=达4.6c亏损侧门槛才议时段premium〔压缩@08-03,全文见git bce1b1d〕 |
-| pick_lose/槽满拒绝累计(合并压缩@08-12) | 不可判终态(07-23起零可判事件;E4/S16评判域已随mcp200/池改制退役) | 07-23 20:10Z | 复活判据=新升档议题需该计数时重建;全史git |
-| 信号→成交转化失败累计 | **0（08-01 15:13Z:8s窗0触发=无可判事件;累计0）** | 07-30 06:03Z | 历轮全为门槛/硬过滤拦截(非转化事件),gate在线直证多次〔压缩@08-03,全文见git bce1b1d〕 |
-| WS 断连/重连观测轮数 | **✅fallback归零确认(08-05 10:1xZ klineHub 62cb2fd部署生效;至08-07 20:16窗累计13清洁样本连续0 fallback,最新=20:16窗0/100条96/96币live;逐样本链存git 3dd071b)** | 08-05 10:1xZ | 全史自愈零评分流受阻,未升级;回归监控,复现fallback即报警〔压缩@08-07 20:2x,全文见git 3dd071b〕 |
-| 单币失血观测·已归档集合(BTW/BULLA/TLM/BANK/SYN/BEAT/RIF/AKE/SOON/COTI/KOMA) | 全部 0 归档终态（各币逐轮链与幅度见 git 历史，压缩@08-08 02:1x，前快照 add4230） | 08-08 02:1x | 通用判据(BTW先例)=6h 新增(非滚存)亏损再现→该币重起算并核 4.6c 幅度;per-symbol=CB 域(S14)不拉黑;E2 long_thr0.70 看护多头再入;恢复升档旧计数已随 08-05 三解锁归档 |
-| 穿刺亚型c(冲顶回落)post-S18观测 | 速记:S18裁决keep@08-05(预登记路径c型→升v2分支,零事后改口);strict穿刺2/−4.95零新增维持;#22a已由owner re3直令终止@08-06;HOME−1.98(08-06 12:01)c族候观察n=1 | 08-06 12:2x | 后续:新增strict穿刺或c族≥3例再议;判据与全史〔压缩@08-10,全文见git 2873d28〕 |
-| long 方向双窗负共现轮数 | **E8跟踪T+42h读数后随FIX _exp主口径吸收（08-01 15:13Z:24h long −20.24/33 vs基线−37.07收窄45.4%;12h wr55.6%修复但payoff不对称）** | 07-29 02:16Z | E8 achieved已关账breadth0.50保留;long侧健康度随FIX评判与PREM释放观察一体跟踪,不再单列累计〔压缩@08-03,全文见git bce1b1d〕 |
-| 15-60m 桶双窗负观测轮数 | **4(08-01 15:13Z双窗负共现;hold仅覆盖部分对=伪影降权)** | 07-27 02:11Z | 判据=跨轮复现且组n≥30按4.6c评估,双窗回正清零;n<30嵌套同源维持观察;逐轮历史链〔压缩@08-07 16:1x,全文见git b1bd082〕 |
-| short 方向双窗负观测轮数 | **0维持·口径分裂注记(08-06 02:1xZ:fills 12h−2.59∧24h−2.59双负但逐笔配对24h short+0.31正[21笔wr48]=衡平不计共现;主失血已单列#23穿刺簇5例−9.78;回刹−11.8余量97%;幅度距4.6c −11.86远)** 前史:🔓解除@08-05 17:5xZ三解锁#11解冻;冻结期注记〔压缩@08-05,全文见git 6a93e93〕 | 08-06 02:1xZ | 判据:**新增**(非滚存)空头亏损事件再现且逼近4.6c门槛→评估;逐笔配对为主口径,fills口径负共现单独不起计 |
+| UTC早晨段主盈观测 | 5+反例2=时段非因子终态〔git bce1b1d〕 | 08-03 | 达4.6c亏损门才议时段premium |
+| pick_lose/槽满拒绝 | 不可判终态〔全史git〕 | 07-23 | 新议题需此计数时重建 |
+| 信号→成交转化失败累计 | 0终态〔git bce1b1d〕 | 07-30 | 历轮全为门槛拦截非转化事件 |
+| WS 断连/重连观测轮数 | ✅fallback归零终态(62cb2fd后13清洁样本)〔git 3dd071b〕 | 08-05 10:1xZ | 复现fallback即报警 |
+| 单币失血观测·已归档集合(11币) | 全0归档终态〔git add4230〕 | 08-08 02:1x | 判据(BTW先例)=6h新增亏损再现→重起算;per-symbol=CB域不拉黑 |
+| 穿刺亚型c(冲顶回落) | S18 keep@08-05;strict穿刺2/−4.95零新增;HOME c族n=1〔git 2873d28〕 | 08-06 | 新增strict穿刺或c族≥3例再议 |
+| long双窗负共现 | E8关账,随FIX/PREM一体跟踪〔git bce1b1d〕 | 08-01 | 不再单列 |
+| 15-60m桶双窗负 | 4(hold覆盖不全=降权)〔git b1bd082〕 | 08-01 | 复现且n≥30按4.6c评估;回正清零 |
+| short双窗负 | 0维持(逐笔配对为主口径)〔git 6a93e93〕 | 08-06 | 新增空头亏损事件逼近4.6c门→评估 |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
 
 | 时间(UTC) | 档位 | 五窗净额 1h/3h/6h/12h/24h | 世界 | 决策 | 备注 |
 |---|---|---|---|---|---|
+| 08-15 18:12-18:5xZ | 例行轮(max) | @18:35: 1h−0.91(1)/3h−5.17(5)/6h+1.34(14,wr43 be40)/12h−5.76(26,wr38 be47)/24h−12.22(42,wr38 be49) | FGI34/BTC+0.3%/mcap+0.32%无降压;trending∩池=COW/WAL(main) | ①0原子包(HOLD攒证据,明日三连评);ROUTE=heatclean-v4×2(main100→87,重播种#8无主+#9停复活)+VELVET回灌fade+**#51落地**✓ ②**#50抢窗失败=重大机制发现**:stop乐观回执+校验双洞(sid空仓隐形+auto池跳过)→main带XNY仓被停~40s后自动复活;硬边界5被绕自报,无损;§3新条+#52候修+程序v2 ③归因修正:VELVET17:04空/BEAT三笔=main→fade新池0样本+0.60墙发现(§6) ④trend链n33/+0.02毫厘正待明晨终裁;72h窗丢行实证→逐笔只信≤48h,跨轮累计走台账链 ⑤刹车全绿(6h组+1.34;main短6h+1.38;trend6h+0.14;fade0) | 钱包≈223.5(avail200.1+XNY仓23.5);死法24h:SL穿刺13/−24.52主刀,硬超时L9/−6.56,TP/trail9/+12.43,BE保本1/+0.08;费覆24h🔴−0.29 vs 0.13(trend✓+0.10≥0.084);幻影行1(ROBO,观察期);paired错向伪影XNY候审(§3) |
 | 08-15 16:06-16:3xZ | 例行轮(max,v3.1首点火) | 1h+8.16(4)/3h+7.16(10)/6h+5.14(16,wr50 be36)/12h−0.53(25,wr48 be49)/24h−12.20(49,wr43 be52) | FGI34/BTC+0.16%/mcap+0.06%无降压;trending∩池=main7(AKE/COW/WAL/ROBO/CHIP/HUMA/PLUME)+ACE(trend)+VELVET(fade) | ①**交互窗新规首执行**:台账commit15:57 vs 开轮16:06(9min)→本轮只读+rotate,0原子包,PATCH全排队 ②ROUTE:**VELVET晋升fade**(nS5/+7.03全空单,churn1,镜像移出main)+main **heatclean-v3**(−14: 重播种#7疑=owner部署做市模块→feed100→86 overlap0;bl15信号层免疫全程在防=零违规交易) ③**#49金丝雀PASS(实证)**:VELVET空15:36-39完整链BE→trailing×8→锁盈+0.65(§3新条);XNY空浮盈未触BE=entry ATR未达1.0×=正常 ④刹车全绿:6h组+5.14,main空侧6h+5.05,trend6h+1.33,fade0 | 钱包≈232(avail208.8+XNY仓23.1);死法24h:SL穿刺15/−29.33主刀(#49治),硬超时13/−0.66,TP/trail12/+14.91;费覆24h🔴avg−0.249 vs 3×费0.124/6h口径✓+0.321;#50/#51登§5;trend累计n32/+0.93终裁明06:35Z;fade池4币候样本评明12:50Z;#49评明15:30Z或n≥30 |
 | 08-15 15:12-15:4xZ | 例行轮(max) | close@15:12快照: 1h+0.21(4)/3h−0.88(8)/6h−3.53(14,wr50)/12h−8.70(21,wr48 be69)/24h−20.37(45,wr42 be61=−19pp);15:30三平改观:VELVET空+8.39/ENSO−0.19/BICO−0.68→24h≈−12.9,组6h≈+4.0转正 | FGI34/BTC+0.54%/mcap+0.12%无降压;trending∩池=ACE·COTI(trend双热点)+WAL/COW(main) | ①例行0原子包(#49由交互会话在本轮中段上线,main槽被占;#11设计定稿转下一槽[§4]) ②ROUTE:对账器v1.3→BICO镜像remove落地15:32;**竞态v2**=我方stop/rotate与交互会话start/热清同窗互踩(main暗~4-6min,15:36我方补start)→start再触发重播种第6例→热清v2 feed100→87 overlap0全绿;**规则升级:开窗执行前先fetch台账最新commit时间戳,±40min内有交互会话活动则cron只做只读+rotate,不碰stop/start/PATCH** ③trend累计n32/+0.93转正 ④19:05Z send_later(trig_014KQE)重定向=#49金丝雀(trailing乱触发/下单报错→4键回滚不等评期) | 钱包≈225;死法@24h:中段SL9/−18.51+快SL6/−10.83主刀=main空侧(#49赔率重构+#11 regime gate双管候);RECOVER 6h空−5.54(VELVET后转正)未触;费覆组🔴−0.453@15:12口径;fade n0(BEAT RSI66-70空头分0.35未及0.55);audit=15:30:33/15:32:14两patch皆交互会话#49包,我方no_change不留痕,零无主;全文git |
 | 08-15 15:2x-15:4xZ | 执行轮(owner直令'现在就修改') | — | — | **#49几何包live@15:32:13**(trailing act1.0/cb1.2%+BE1.0;FIX闭卷premium留0.35;bl15种子落地#48结案;主槽_exp=FIX-GEO评期明15:30Z);抢窗器v1停透竞态教训入#49行;post-restart热清feed100→85 | owner新令'高频多仓位稳定盈利'对质=费覆红线先行,提频阶梯候#49评过+费覆🟢,详对话与#49 |
