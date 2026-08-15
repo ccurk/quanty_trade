@@ -59,6 +59,14 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	if normalizedSide != "buy" && normalizedSide != "sell" {
 		return
 	}
+	// allowed_sides 最终复检(下单前最后一道)。handleRedisSignal 把过关,但入队的是原始
+	// 信号、processSignalBatch 又把空/auto/both 独立重解析并强制成 buy 且不再复检 → 白名单
+	// 可被绕过(default_open_side 被忽略、甚至 allowed_sides=["sell"] 也可能实开 long)。
+	// 在这唯一的下单口重新断言,任何路径都逃不过(CR P1)。
+	if !isAllowedSide(inst, normalizedSide) {
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓:方向不在 allowed_sides symbol=%s side=%s", symbol, normalizedSide))
+		return
+	}
 	amount = clampOrderAmount(inst, amount)
 	if amount <= 0 {
 		return

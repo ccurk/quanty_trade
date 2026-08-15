@@ -794,6 +794,7 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 					OwnerID:      ownerID,
 					Exchange:     pos.ExchangeName,
 					Symbol:       pos.Symbol,
+					Direction:    pos.Direction, // 缺 Direction → 收养的空头平仓被当加仓、DB量涨、PnL 记0(CR P1)
 					Amount:       pos.Amount,
 					AvgPrice:     pos.Price,
 					Status:       "open",

@@ -90,6 +90,9 @@ func CreateStrategy(c *gin.Context) {
 
 func StartStrategy(c *gin.Context) {
 	id := c.Param("id")
+	if !authorizeStrategy(c, id) { // CR P1: 原先无 owner 校验,任意用户可启动他人策略
+		return
+	}
 	if err := stratMgr.StartStrategy(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -319,6 +322,9 @@ func jsonEqual(a, b interface{}) bool {
 
 func GetStrategyLogs(c *gin.Context) {
 	id := c.Param("id")
+	if !authorizeStrategy(c, id) { // CR P1: IDOR — 原先任意用户可读他人策略日志
+		return
+	}
 	var logs []models.StrategyLog
 	database.DB.Where("strategy_id = ?", id).Order("created_at desc").Limit(100).Find(&logs)
 	c.JSON(http.StatusOK, logs)
@@ -326,6 +332,9 @@ func GetStrategyLogs(c *gin.Context) {
 
 func StopStrategy(c *gin.Context) {
 	id := c.Param("id")
+	if !authorizeStrategy(c, id) { // CR P1: 原先无 owner 校验,任意用户可停他人策略
+		return
+	}
 	force := c.Query("force") == "true"
 	if err := stratMgr.StopStrategy(id, force); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
