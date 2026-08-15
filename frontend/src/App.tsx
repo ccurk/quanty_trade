@@ -125,6 +125,19 @@ interface TriArbStatus {
   recent_opps: TriArbOpp[];
 }
 
+interface ModulePnL {
+  current: number;
+  month: number;
+  total: number;
+  status: string;
+}
+interface ModulesPnLResponse {
+  updated_at: string;
+  quant: ModulePnL;
+  triarb: ModulePnL;
+  marketmaking: ModulePnL;
+}
+
 interface DashboardResponse {
   updated_at: string;
   account: {
@@ -360,6 +373,7 @@ const App: React.FC = () => {
   const [isLoadingMarketSymbols, setIsLoadingMarketSymbols] = useState(false);
   const [strategySymbolSearch, setStrategySymbolSearch] = useState('');
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
+  const [modulesPnL, setModulesPnL] = useState<ModulesPnLResponse | null>(null);
   // setters 去掉了：stats tab 现在只剩盈亏日历，不再有 range/自定义日期选择 UI。
   // useState 留着是为了让 fetchDashboard 里读取这几个值的代码继续编译通过——
   // 它们永远是初始值，相当于"默认 range"。
@@ -799,6 +813,10 @@ const App: React.FC = () => {
       const qs = params.toString();
       const res = await axios.get(`/api/stats/dashboard${qs ? `?${qs}` : ''}`);
       setDashboard(res.data);
+      try {
+        const mres = await axios.get('/api/stats/modules-pnl');
+        setModulesPnL(mres.data);
+      } catch { /* modules-pnl 可选,失败不影响其余面板 */ }
     } catch (err) {
       console.error('Failed to fetch dashboard', err);
     }
@@ -1735,6 +1753,45 @@ const App: React.FC = () => {
               >
                 刷新
               </button>
+            </div>
+
+            {/* 三大交易手段实时盈利:量化 / 三角套利 / 做市(当前·当月·总,已实现 USDT) */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {([
+                { key: 'quant', label: '量化', m: modulesPnL?.quant },
+                { key: 'triarb', label: '三角套利', m: modulesPnL?.triarb },
+                { key: 'marketmaking', label: '做市', m: modulesPnL?.marketmaking },
+              ] as const).map(({ key, label, m }) => {
+                const statusText = m?.status === 'trading' ? '交易中'
+                  : m?.status === 'detector-only' ? '检测中·未下单'
+                  : m?.status === 'disabled' ? '未启用' : '--';
+                const statusColor = m?.status === 'trading' ? 'text-green-500' : 'text-gray-400';
+                const fmt = (v?: number) => (v === undefined || v === null) ? '--' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
+                const color = (v?: number) => (v ?? 0) > 0 ? 'text-green-500' : (v ?? 0) < 0 ? 'text-red-500' : (isDarkMode ? 'text-gray-300' : 'text-gray-700');
+                return (
+                  <div key={key} className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="font-bold text-lg">{label}</div>
+                      <div className={`text-xs font-semibold ${statusColor}`}>{statusText}</div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div>
+                        <div className="text-xs text-gray-500 mb-1">当前·今日</div>
+                        <div className={`text-base font-bold ${color(m?.current)}`}>{fmt(m?.current)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500 mb-1">当月</div>
+                        <div className={`text-base font-bold ${color(m?.month)}`}>{fmt(m?.month)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500 mb-1">总计</div>
+                        <div className={`text-base font-bold ${color(m?.total)}`}>{fmt(m?.total)}</div>
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-gray-500 mt-3 text-right">USDT · 已实现</div>
+                  </div>
+                );
+              })}
             </div>
 
             <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
