@@ -46,8 +46,10 @@ type OpenOrder struct {
 	Qty   float64
 }
 
-// SymbolFilter carries the exchange rounding rules for a symbol.
+// SymbolFilter carries the exchange rounding rules + asset names for a symbol.
 type SymbolFilter struct {
+	BaseAsset   string  // e.g. BTC (the inventory asset)
+	QuoteAsset  string  // e.g. USDT
 	TickSize    float64 // price increment
 	StepSize    float64 // quantity increment
 	MinNotional float64 // minimum price*qty
