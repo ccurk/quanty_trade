@@ -124,7 +124,17 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 	for uid, rows := range byOwner {
 		acct := bx.AccountKey(uid)
 		for _, r := range rows {
-			markAcctTracked(acct, strings.ToUpper(r.Symbol))
+			// 只用"确实能被某个 instance 守护"的行占坑。若该行的策略已停/被拉黑
+			// (guard 循环解析 inst 会得到 nil 而跳过它),就【不】标记 tracked,好让
+			// 同账户其他 owner 去收养它 —— 否则一个无法守护的陈旧行会把别人的收养也
+			// 抑制掉,导致这个净仓无人守护(CR P1)。解析方式与下方 guard 循环一致。
+			inst := ownerInstanceByID[uid][r.StrategyID]
+			if inst == nil {
+				inst = findGuardStrategyInstance(ownerInstances[uid], r.Symbol)
+			}
+			if inst != nil {
+				markAcctTracked(acct, strings.ToUpper(r.Symbol))
+			}
 		}
 	}
 	for uid, rows := range byOwner {

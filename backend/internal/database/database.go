@@ -187,22 +187,22 @@ func InitDB() {
 		// 直接 no-op),从源头根治"一仓多行、PnL 散落",与代码路径无关、新增路径也自动受约束。
 		// 幂等(按 information_schema 判定已加过就跳过)、best-effort(清洗/建索引失败只告警不
 		// 阻断启动,运行期仍有 ③a 收养去重兜底)。
+		// 存量去重(每组保留 id 最大者,其余置 closed);加生成列 / 建唯一索引前各跑一次。
+		dedupOpenPositions := `
+			UPDATE strategy_positions p
+			JOIN (
+				SELECT owner_id, strategy_id, UPPER(REPLACE(REPLACE(symbol,'/',''),'-','')) nsym, MAX(id) keep_id
+				FROM strategy_positions WHERE status = 'open'
+				GROUP BY owner_id, strategy_id, nsym
+			) k ON p.owner_id = k.owner_id AND p.strategy_id = k.strategy_id
+				AND UPPER(REPLACE(REPLACE(p.symbol,'/',''),'-','')) = k.nsym
+				AND p.status = 'open' AND p.id <> k.keep_id
+			SET p.status = 'closed', p.close_time = NOW(), p.updated_at = NOW()`
 		var openKeyCol int
 		_ = DB.Raw(`SELECT COUNT(*) FROM information_schema.columns
 			WHERE table_schema = DATABASE() AND table_name = 'strategy_positions' AND column_name = 'open_key'`).Scan(&openKeyCol).Error
 		if openKeyCol == 0 {
-			// 先清洗存量 open 重复(每组保留 id 最大者,其余置 closed),否则唯一索引建不起来。
-			if err := DB.Exec(`
-				UPDATE strategy_positions p
-				JOIN (
-					SELECT owner_id, strategy_id, UPPER(REPLACE(REPLACE(symbol,'/',''),'-','')) nsym, MAX(id) keep_id
-					FROM strategy_positions WHERE status = 'open'
-					GROUP BY owner_id, strategy_id, nsym
-				) k ON p.owner_id = k.owner_id AND p.strategy_id = k.strategy_id
-					AND UPPER(REPLACE(REPLACE(p.symbol,'/',''),'-','')) = k.nsym
-					AND p.status = 'open' AND p.id <> k.keep_id
-				SET p.status = 'closed', p.close_time = NOW(), p.updated_at = NOW()
-			`).Error; err != nil {
+			if err := DB.Exec(dedupOpenPositions).Error; err != nil {
 				logger.Warnf("open_key 迁移: 存量去重失败(继续): %v", err)
 			}
 			if err := DB.Exec("ALTER TABLE strategy_positions ADD COLUMN open_key VARCHAR(160) " +
@@ -210,7 +210,18 @@ func InitDB() {
 				"CONCAT(owner_id, ':', strategy_id, ':', UPPER(REPLACE(REPLACE(symbol,'/',''),'-',''))) " +
 				"ELSE NULL END) STORED").Error; err != nil {
 				logger.Warnf("open_key 迁移: 加生成列失败(继续,退回 ③a 兜底): %v", err)
-			} else if err := DB.Exec("CREATE UNIQUE INDEX uniq_open_position ON strategy_positions (open_key)").Error; err != nil {
+			}
+		}
+		// 唯一索引独立守卫:即使上次加了列但建索引失败(dedup 竞态/锁超时),下次仍重试——
+		// 不会因"列已存在"而永远跳过,否则"一开仓一行"的 DB 保证会静默丢失(agent CR P1)。
+		var openKeyIdx int
+		_ = DB.Raw(`SELECT COUNT(*) FROM information_schema.statistics
+			WHERE table_schema = DATABASE() AND table_name = 'strategy_positions' AND index_name = 'uniq_open_position'`).Scan(&openKeyIdx).Error
+		if openKeyIdx == 0 {
+			if err := DB.Exec(dedupOpenPositions).Error; err != nil {
+				logger.Warnf("open_key 迁移: 建索引前去重失败(继续): %v", err)
+			}
+			if err := DB.Exec("CREATE UNIQUE INDEX uniq_open_position ON strategy_positions (open_key)").Error; err != nil {
 				logger.Warnf("open_key 迁移: 建唯一索引失败(继续): %v", err)
 			} else {
 				logger.Infof("open_key 迁移: 一开仓一行唯一约束已就位")

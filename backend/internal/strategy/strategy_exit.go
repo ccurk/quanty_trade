@@ -3,6 +3,7 @@ package strategy
 import (
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"quanty_trade/internal/database"
@@ -121,6 +122,27 @@ func (m *Manager) applyStopMove(inst *StrategyInstance, uid uint, row models.Str
 	}
 	unlock := m.lockTPSL(uid, row.Symbol)
 	defer unlock()
+	// 棘轮护栏:止损只许收紧、不许放宽。调用方(保本→追踪→金字塔)在同一轮里对 row
+	// 的值拷贝依次移动,前一步写了 DB 却没写回 row,金字塔又按旧的宽止损重算 → 会把
+	// 刚收紧的止损又放宽(trailing 关时永久)。这里以【DB 当前止损】为准判定,放宽方向
+	// 的移动直接拒绝,与传入的 row 快照是否陈旧无关(CR P0)。
+	if newSL > 0 {
+		var cur models.StrategyPosition
+		if err := database.DB.Select("stop_loss", "direction").Where("id = ?", row.ID).First(&cur).Error; err == nil && cur.StopLoss > 0 {
+			dir := strings.ToLower(strings.TrimSpace(cur.Direction))
+			if dir == "" {
+				dir = strings.ToLower(strings.TrimSpace(row.Direction))
+			}
+			loosens := newSL < cur.StopLoss // long: 止损越高越紧
+			if dir == "sell" || dir == "short" {
+				loosens = newSL > cur.StopLoss // short: 止损越低越紧
+			}
+			if loosens {
+				emitStrategyLog(inst, "info", fmt.Sprintf("拒绝放宽止损(棘轮): symbol=%s dir=%s 当前SL=%.8f 拟移至=%.8f", row.Symbol, dir, cur.StopLoss, newSL))
+				return false
+			}
+		}
+	}
 	_ = bx.CancelUSDMAlgoOpenOrders(uid, row.Symbol)
 	baseClientOrderID := models.GenerateUUID()
 	created, err := bx.PlaceUSDMTPStopOrders(uid, baseClientOrderID, row.Symbol, tpVal, newSL)
