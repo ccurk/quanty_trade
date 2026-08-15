@@ -4,10 +4,12 @@
   "observe_only": true,
   "feed": "binance",
   "exec": [
-    { "name": "coinsph", "base_url": "https://api.pro.coins.ph", "api_key": "", "api_secret": "" }
+    { "name": "coinsph", "base_url": "https://api.pro.coins.ph", "api_key": "", "api_secret": "" },
+    { "name": "mexc", "base_url": "https://api.mexc.com", "api_key": "", "api_secret": "" }
   ],
   "pairs": [
     { "feed_symbol": "BTCUSDT", "exec": "coinsph", "exec_symbol": "BTCUSDT", "spread_bps": 20, "order_qty": 0.001, "max_position": 0.01, "refresh_ms": 1000 },
-    { "feed_symbol": "ETHUSDT", "exec": "coinsph", "exec_symbol": "ETHUSDT", "spread_bps": 20, "order_qty": 0.01, "max_position": 0.1, "refresh_ms": 1000 }
+    { "feed_symbol": "ETHUSDT", "exec": "coinsph", "exec_symbol": "ETHUSDT", "spread_bps": 20, "order_qty": 0.01, "max_position": 0.1, "refresh_ms": 1000 },
+    { "feed_symbol": "SOLUSDT", "exec": "mexc", "exec_symbol": "SOLUSDT", "spread_bps": 15, "order_qty": 0.1, "max_position": 1.0, "refresh_ms": 1000 }
   ]
 }

@@ -181,8 +181,10 @@ func (e *bnCompatExchange) SymbolFilter(symbol string) (SymbolFilter, error) {
 	}
 	var r struct {
 		Symbols []struct {
-			Symbol  string `json:"symbol"`
-			Filters []struct {
+			Symbol     string `json:"symbol"`
+			BaseAsset  string `json:"baseAsset"`
+			QuoteAsset string `json:"quoteAsset"`
+			Filters    []struct {
 				FilterType  string `json:"filterType"`
 				TickSize    string `json:"tickSize"`
 				StepSize    string `json:"stepSize"`
@@ -199,6 +201,8 @@ func (e *bnCompatExchange) SymbolFilter(symbol string) (SymbolFilter, error) {
 		if normSym(s.Symbol) != sym {
 			continue
 		}
+		f.BaseAsset = strings.ToUpper(s.BaseAsset)
+		f.QuoteAsset = strings.ToUpper(s.QuoteAsset)
 		for _, fl := range s.Filters {
 			switch fl.FilterType {
 			case "PRICE_FILTER":
