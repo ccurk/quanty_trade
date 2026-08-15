@@ -2405,28 +2405,10 @@ func (b *BinanceExchange) USDMMaxNotionalForLeverage(ownerID uint, symbol string
 }
 
 func (b *BinanceExchange) USDMPositionAmt(ownerID uint, symbol string) (float64, float64, float64, error) {
-	// Try cached positions first to avoid high-frequency polling. Keyed by
-	// account so it shares the bucket FetchPositions populated for this account.
-	acctKey := b.positionsAccountKey(ownerID)
-	now := time.Now()
-	b.positionsCacheMu.Lock()
-	if exp, ok := b.positionsCacheExp[acctKey]; ok && now.Before(exp) {
-		cached := b.positionsCache[acctKey]
-		target := strings.ToUpper(NormalizeSymbol(symbol))
-		for _, p := range cached {
-			if strings.ToUpper(NormalizeSymbol(p.Symbol)) == target {
-				amt := p.Amount
-				if strings.EqualFold(p.Direction, "short") {
-					amt = -amt
-				}
-				entry := p.Price
-				mark := p.CurrentPrice
-				b.positionsCacheMu.Unlock()
-				return amt, entry, mark, nil
-			}
-		}
-	}
-	b.positionsCacheMu.Unlock()
+	// 实时:直接查 /positionRisk,【不读】5s 缓存。本函数专供对新鲜度敏感的调用方
+	// (挂交易所止损前的立即触发预检、开仓回滚核仓、仓位归零撤单);用陈旧 mark 预检会
+	// 误拒止损、把旧止损撤了却不补 → 裸奔一轮(CR P1)。可容忍陈旧的调用方走
+	// USDMPositionAmtCached(共享缓存+single-flight)。
 	cred, err := b.getCred(ownerID)
 	if err != nil {
 		return 0, 0, 0, err

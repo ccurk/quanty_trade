@@ -11,6 +11,7 @@ import (
 	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 	"strings"
+	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
@@ -86,6 +87,14 @@ func InitDB() {
 
 	if err != nil {
 		fatalAlert("Failed to connect to database: %v", err)
+	}
+
+	// 连接池上限(CR P1):防突发请求(每请求异步 APILog 落库 + 2s/owner 对账循环)
+	// 无上限地开 MySQL 连接、打满 max_connections。
+	if sqlDB, e := DB.DB(); e == nil {
+		sqlDB.SetMaxOpenConns(40)
+		sqlDB.SetMaxIdleConns(10)
+		sqlDB.SetConnMaxLifetime(30 * time.Minute)
 	}
 
 	// Migrate user table first so we can bootstrap admin user safely.
