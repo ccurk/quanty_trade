@@ -405,12 +405,13 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 					var lastErr error
 					var pos models.StrategyPosition
 					errDB := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").First(&pos).Error
-					if errDB != nil || pos.Amount <= 0 {
-						now := time.Now()
-						direction := "long"
-						if positionAmt < 0 {
-							direction = "short"
-						}
+					now := time.Now()
+					direction := "long"
+					if positionAmt < 0 {
+						direction = "short"
+					}
+					if errDB != nil {
+						// 无现存开仓行 → 建一行
 						newPos := models.StrategyPosition{
 							StrategyID:   inst.ID,
 							StrategyName: inst.Name,
@@ -427,6 +428,17 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 							UpdatedAt:    now,
 						}
 						_ = database.DB.Create(&newPos).Error
+					} else if pos.Amount <= 0 {
+						// 已有开仓行但 amount 为空(占位 / 与成交回填竞态)→ 就地补全,
+						// 【不再另建一行】。旧代码在此 Create 第二行,是"同 owner 内一仓多行、
+						// PnL 散落"的根因(如 COOKIE 1829→1828 相隔 517ms 的重复行)。
+						_ = database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
+							Updates(map[string]interface{}{
+								"amount":     math.Abs(positionAmt),
+								"avg_price":  entryPx,
+								"direction":  direction,
+								"updated_at": now,
+							}).Error
 					}
 					side := "buy"
 					if positionAmt < 0 {
