@@ -85,6 +85,7 @@ type BinanceExchange struct {
 	marketCacheExp map[string]time.Time
 
 	// rate limit tracking
+	rateLimitMu       sync.Mutex // guards the four rate-limit/ban scalars below (CR P1)
 	rateLimitWeight1m int
 	lastRateLimitLoad time.Time
 	usedWeight1m      int
@@ -167,6 +168,8 @@ func (b *BinanceExchange) Market() string { return b.market }
 // 供后台低优先级任务(如盈亏日历回填)判断是否该给实时交易请求让路。
 // 读的是与 signedRequest/publicRequest 同一批无锁字段,属既有的良性竞态,仅用于协作式退让。
 func (b *BinanceExchange) WeightUsedPct() int {
+	b.rateLimitMu.Lock()
+	defer b.rateLimitMu.Unlock()
 	if b.rateLimitWeight1m <= 0 {
 		return 0
 	}
@@ -175,7 +178,49 @@ func (b *BinanceExchange) WeightUsedPct() int {
 
 // RateLimited 报告当前是否处于 429/ban 冷却窗口(此期间所有签名/公共请求都会被本地直接拒绝)。
 func (b *BinanceExchange) RateLimited() bool {
+	b.rateLimitMu.Lock()
+	defer b.rateLimitMu.Unlock()
 	return !b.requestBanUntil.IsZero() && time.Now().Before(b.requestBanUntil)
+}
+
+// setUsedWeight/setBan/weightHigh/setRateLimitWeight/rateLimitFresh/stampRateLimitLoad
+// 都在 rateLimitMu 下读写那四个限流/封禁标量,消除 signedRequest/publicRequest/后台任务
+// 并发无锁读写 requestBanUntil(time.Time)导致的撕裂读——撕裂成远期时间会冻结全部下单/
+// 平仓、成过去时间则失效熔断招致真封禁(CR P1)。
+func (b *BinanceExchange) setUsedWeight(v int) {
+	b.rateLimitMu.Lock()
+	b.usedWeight1m = v
+	b.rateLimitMu.Unlock()
+}
+
+func (b *BinanceExchange) setBan(until time.Time) {
+	b.rateLimitMu.Lock()
+	b.requestBanUntil = until
+	b.rateLimitMu.Unlock()
+}
+
+func (b *BinanceExchange) weightHigh() bool {
+	b.rateLimitMu.Lock()
+	defer b.rateLimitMu.Unlock()
+	return b.rateLimitWeight1m > 0 && b.usedWeight1m*100/b.rateLimitWeight1m >= 80
+}
+
+func (b *BinanceExchange) setRateLimitWeight(v int) {
+	b.rateLimitMu.Lock()
+	b.rateLimitWeight1m = v
+	b.rateLimitMu.Unlock()
+}
+
+func (b *BinanceExchange) rateLimitFresh() bool {
+	b.rateLimitMu.Lock()
+	defer b.rateLimitMu.Unlock()
+	return !b.lastRateLimitLoad.IsZero() && time.Since(b.lastRateLimitLoad) < time.Hour && b.rateLimitWeight1m > 0
+}
+
+func (b *BinanceExchange) stampRateLimitLoad() {
+	b.rateLimitMu.Lock()
+	b.lastRateLimitLoad = time.Now()
+	b.rateLimitMu.Unlock()
 }
 
 func (b *BinanceExchange) LastPrice(symbol string) (float64, error) {
@@ -690,7 +735,7 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 	}
 
 	// Honor ban window if set
-	if !b.requestBanUntil.IsZero() && time.Now().Before(b.requestBanUntil) {
+	if b.RateLimited() {
 		return nil, 0, fmt.Errorf("binance api error: {\"code\":429,\"msg\":\"Rate limited\"}")
 	}
 	_ = b.loadRateLimitIfNeeded()
@@ -721,11 +766,11 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 	// Track used weight
 	if w := strings.TrimSpace(resp.Header.Get("X-MBX-USED-WEIGHT-1m")); w != "" {
 		if v, err := strconv.Atoi(w); err == nil {
-			b.usedWeight1m = v
+			b.setUsedWeight(v)
 		}
 	}
 	// If approaching limit, small cooperative delay
-	if b.rateLimitWeight1m > 0 && b.usedWeight1m*100/b.rateLimitWeight1m >= 80 {
+	if b.weightHigh() {
 		time.Sleep(200 * time.Millisecond)
 	}
 	body, _ := io.ReadAll(resp.Body)
@@ -752,9 +797,9 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 					}
 				}
 				if retryAfter > 0 {
-					b.requestBanUntil = time.UnixMilli(retryAfter)
+					b.setBan(time.UnixMilli(retryAfter))
 				} else {
-					b.requestBanUntil = time.Now().Add(2 * time.Minute)
+					b.setBan(time.Now().Add(2 * time.Minute))
 				}
 			}
 			return body, resp.StatusCode, formatBinanceAPIError(code, msg)
@@ -765,7 +810,7 @@ func (b *BinanceExchange) signedRequest(ctx context.Context, cred binanceCred, m
 }
 
 func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params url.Values) ([]byte, int, error) {
-	if !b.requestBanUntil.IsZero() && time.Now().Before(b.requestBanUntil) {
+	if b.RateLimited() {
 		return nil, 0, fmt.Errorf("binance api error: {\"code\":429,\"msg\":\"Rate limited\"}")
 	}
 	_ = b.loadRateLimitIfNeeded()
@@ -784,10 +829,10 @@ func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params
 	defer resp.Body.Close()
 	if w := strings.TrimSpace(resp.Header.Get("X-MBX-USED-WEIGHT-1m")); w != "" {
 		if v, err := strconv.Atoi(w); err == nil {
-			b.usedWeight1m = v
+			b.setUsedWeight(v)
 		}
 	}
-	if b.rateLimitWeight1m > 0 && b.usedWeight1m*100/b.rateLimitWeight1m >= 80 {
+	if b.weightHigh() {
 		time.Sleep(200 * time.Millisecond)
 	}
 	body, _ := io.ReadAll(resp.Body)
@@ -812,9 +857,9 @@ func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params
 					}
 				}
 				if retryAfter > 0 {
-					b.requestBanUntil = time.UnixMilli(retryAfter)
+					b.setBan(time.UnixMilli(retryAfter))
 				} else {
-					b.requestBanUntil = time.Now().Add(2 * time.Minute)
+					b.setBan(time.Now().Add(2 * time.Minute))
 				}
 			}
 			return body, resp.StatusCode, formatBinanceAPIError(code, msg)
@@ -826,9 +871,12 @@ func (b *BinanceExchange) publicRequest(ctx context.Context, path string, params
 
 func (b *BinanceExchange) loadRateLimitIfNeeded() error {
 	// Load once per hour
-	if !b.lastRateLimitLoad.IsZero() && time.Since(b.lastRateLimitLoad) < time.Hour && b.rateLimitWeight1m > 0 {
+	if b.rateLimitFresh() {
 		return nil
 	}
+	// 无论成功或失败都盖时间戳:失败也退避一小时,避免节流/故障期每个请求都重发
+	// exchangeInfo 反而加重 weight(CR P2)。失败时沿用默认 rateLimitWeight1m=1200。
+	defer b.stampRateLimitLoad()
 	endpoint := "/api/v3/exchangeInfo"
 	if b.market == "usdm" {
 		endpoint = "/fapi/v1/exchangeInfo"
@@ -857,12 +905,11 @@ func (b *BinanceExchange) loadRateLimitIfNeeded() error {
 	if json.Unmarshal(body, &parsed) == nil {
 		for _, rl := range parsed.RateLimits {
 			if strings.EqualFold(rl.RateLimitType, "REQUEST_WEIGHT") && strings.EqualFold(rl.Interval, "MINUTE") {
-				b.rateLimitWeight1m = rl.Limit
+				b.setRateLimitWeight(rl.Limit)
 				break
 			}
 		}
 	}
-	b.lastRateLimitLoad = time.Now()
 	return nil
 }
 
