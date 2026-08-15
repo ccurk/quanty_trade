@@ -64,6 +64,16 @@ func (m *Manager) tpslGuardTick() {
 				activeBySymbol[strings.ToUpper(p.Symbol)] = p
 			}
 		}
+		// 该 owner 的实例集,供 strategy_id 解析不到时按 symbol 兜底(与 scanROILimits 一致):
+		// 策略被停/删后其在持仓的交易所止损仍需维护,否则无人再补挂(CR P2)。
+		var ownerInsts []*StrategyInstance
+		m.mu.RLock()
+		for _, in := range m.instances {
+			if in != nil && in.OwnerID == uid {
+				ownerInsts = append(ownerInsts, in)
+			}
+		}
+		m.mu.RUnlock()
 		for _, row := range rows {
 			active, ok := activeBySymbol[strings.ToUpper(row.Symbol)]
 			if !ok {
@@ -72,6 +82,9 @@ func (m *Manager) tpslGuardTick() {
 			m.mu.RLock()
 			inst := m.instances[row.StrategyID]
 			m.mu.RUnlock()
+			if inst == nil {
+				inst = findGuardStrategyInstance(ownerInsts, row.Symbol)
+			}
 			if inst == nil {
 				continue
 			}

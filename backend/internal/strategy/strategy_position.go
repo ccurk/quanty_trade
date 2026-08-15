@@ -103,7 +103,14 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		}
 		amount = resolvedAmount
 	}
-	if amount < 10 {
+	// 仅对非 USDM(现货)保留"基础币数量 < 10"的粗地板。USDM 的最小名义额已由
+	// resolveUSDMOrderAmount 保证(≥min-notional),这里再按数量卡会把高价币(如 BTC/ETH,
+	// 20U 名义 → 数量 ≪10)静默丢单(CR P1,动态换高价币时才暴露)。
+	isUSDMMkt := false
+	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
+		isUSDMMkt = true
+	}
+	if !isUSDMMkt && amount < 10 {
 		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：下单数量低于10 symbol=%s side=%s amount=%v", symbol, normalizedSide, amount))
 		return
 	}

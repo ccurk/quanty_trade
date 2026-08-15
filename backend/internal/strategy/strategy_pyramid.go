@@ -93,17 +93,26 @@ func (m *Manager) maybePyramid(inst *StrategyInstance, uid uint, row models.Stra
 		return
 	}
 	cid := fmt.Sprintf("pyr%s", models.GenerateUUID()[:18])
-	if _, err := m.exchange.PlaceOrder(uid, cid, row.Symbol, side, qty, 0); err != nil {
+	ord, err := m.exchange.PlaceOrder(uid, cid, row.Symbol, side, qty, 0)
+	if err != nil {
 		m.rollbackPyramidCount(key)
 		emitStrategyLog(inst, "error", fmt.Sprintf("金字塔加仓下单失败 symbol=%s qty=%0.6f err=%v", row.Symbol, qty, err))
 		return
 	}
 
-	// 新均价（以当前标记价近似成交价）；SL 平移重锚（对多头上移、空头下移，
-	// 均为收紧方向，applyStopMove 的棘轮校验天然接受），TP 保持原绝对价。
+	// 用【真实成交量/价】回写,而非请求量+标记价——PlaceOrder 可能把市价单向上取整到
+	// min-notional,用请求量会低估真实仓位、污染 SL 重锚与后续 frac 加仓基数(CR P1)。
+	fillQty := qty
+	if ord.Amount > 0 {
+		fillQty = ord.Amount
+	}
+	fillPx := currentPrice
+	if ord.Price > 0 {
+		fillPx = ord.Price
+	}
 	oldAmt, oldAvg := row.Amount, row.AvgPrice
-	newAmt := oldAmt + qty
-	newAvg := (oldAvg*oldAmt + currentPrice*qty) / newAmt
+	newAmt := oldAmt + fillQty
+	newAvg := (oldAvg*oldAmt + fillPx*fillQty) / newAmt
 	newSL := row.StopLoss
 	if newSL > 0 && oldAvg > 0 {
 		newSL = row.StopLoss + (newAvg - oldAvg)

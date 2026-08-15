@@ -43,6 +43,9 @@ func (b *BinanceExchange) StartMarkPriceStream(ctx context.Context, cb func([]Ma
 var markStreamOn atomic.Bool
 
 func (b *BinanceExchange) runMarkPriceStream(ctx context.Context, cb func([]MarkTick)) {
+	// 退出时复位启动闩,让进程内重启(ctx 换新)后 StartMarkPriceStream 能再次拉起,
+	// 否则 WS 仓位守护会永久退化为 5s 轮询(CR P2)。
+	defer markStreamOn.Store(false)
 	// 币安 USDM 2026-04-23 行情 WS 迁移:普通行情流移到 /market 分支,老
 	// wss://fstream.binance.com/ws/... 连得上但零数据(详见 binance_kline_hub.go)。
 	// markprice@arr 同属 market 数据,必须走 /market/ws/,否则每 90s 读超时空转、

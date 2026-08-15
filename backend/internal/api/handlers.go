@@ -866,11 +866,26 @@ func ReferenceTemplate(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("user_id")
+	uid, _ := userID.(uint)
+	userRole, _ := c.Get("role")
+
+	// 先取模板并鉴权:只能引用公开模板或自己的模板,否则可实例化并运行他人私有模板
+	// 代码(CR P1 IDOR)。且原代码在 Create 之后才 First 且忽略错误,会拿空 Path 建实例。
+	var template models.StrategyTemplate
+	if err := database.DB.First(&template, req.TemplateID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+		return
+	}
+	if !template.IsPublic && template.AuthorID != uid && userRole != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Permission denied"})
+		return
+	}
+
 	instance := models.StrategyInstance{
 		ID:         models.GenerateUUID(), // We'll need to add this
 		Name:       req.Name,
 		TemplateID: req.TemplateID,
-		OwnerID:    userID.(uint),
+		OwnerID:    uid,
 		Config:     req.Config,
 		Status:     "stopped",
 	}
@@ -884,11 +899,7 @@ func ReferenceTemplate(c *gin.Context) {
 	var config map[string]interface{}
 	json.Unmarshal([]byte(instance.Config), &config)
 
-	// Fetch template to get the path
-	var template models.StrategyTemplate
-	database.DB.First(&template, instance.TemplateID)
-
-	stratMgr.AddStrategy(instance.ID, instance.Name, template.Path, userID.(uint), template.ID, instance.StrategyVersionID, config)
+	stratMgr.AddStrategy(instance.ID, instance.Name, template.Path, uid, template.ID, instance.StrategyVersionID, config)
 
 	c.JSON(http.StatusOK, instance)
 }
