@@ -1,0 +1,13 @@
+{
+  "_readme": "跨所做市配置示例。用法:复制为真实文件(如 conf/marketmaker.json,勿入库),填好密钥,启动时设 MARKETMAKER_CONFIG=/app/conf/marketmaker.json。enabled=false 时整模块 no-op;observe_only=true 只测价差不下单(先用它验证机会)。",
+  "enabled": false,
+  "observe_only": true,
+  "feed": "binance",
+  "exec": [
+    { "name": "coinsph", "base_url": "https://api.pro.coins.ph", "api_key": "", "api_secret": "" }
+  ],
+  "pairs": [
+    { "feed_symbol": "BTCUSDT", "exec": "coinsph", "exec_symbol": "BTCUSDT", "spread_bps": 20, "order_qty": 0.001, "max_position": 0.01, "refresh_ms": 1000 },
+    { "feed_symbol": "ETHUSDT", "exec": "coinsph", "exec_symbol": "ETHUSDT", "spread_bps": 20, "order_qty": 0.01, "max_position": 0.1, "refresh_ms": 1000 }
+  ]
+}

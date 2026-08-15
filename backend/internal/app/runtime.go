@@ -11,6 +11,7 @@ import (
 	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/lark"
 	"quanty_trade/internal/logger"
+	"quanty_trade/internal/marketmaker"
 	"quanty_trade/internal/strategy"
 	"quanty_trade/internal/telegram"
 	"quanty_trade/internal/ws"
@@ -48,6 +49,13 @@ func BuildStrategyManager(ctx context.Context, hub *ws.Hub) *strategy.Manager {
 
 func StartBackgroundJobs(ctx context.Context, mgr *strategy.Manager) {
 	api.SetManager(mgr)
+	// 跨所做市模块(独立于策略引擎)。默认禁用:仅当 $MARKETMAKER_CONFIG 指向配置文件
+	// 且其中 enabled=true 才启动;observe_only 模式只测价差不下单。
+	if mm, err := marketmaker.Start(marketmaker.LoadConfigFromEnv()); err != nil {
+		logger.Errorf("[mm] start failed: %v", err)
+	} else if mm != nil {
+		go func() { <-ctx.Done(); mm.Stop() }()
+	}
 	// Lark 群机器人 ERROR 告警：注册 logger error sink，ERROR 日志实时推送。
 	if ln := lark.Start(lark.Config{
 		Enabled:            conf.C().Lark.Enabled,
