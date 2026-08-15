@@ -69,6 +69,12 @@ type BinanceExchange struct {
 	acctKeyMu      sync.RWMutex
 	acctKeyByOwner map[uint]string
 
+	// positionsRefreshLock: 每账户一把刷新锁,给 FetchPositions 做 single-flight——
+	// 缓存过期时只允许一个在途 /positionRisk,并发 miss 的其余调用等它刷完再读缓存,
+	// 收掉"同账户并发双查"(429 本地熔断的直接来源)。
+	positionsRefreshMu   sync.Mutex
+	positionsRefreshLock map[string]*sync.Mutex
+
 	usdmAvailMu    sync.Mutex
 	usdmAvailExp   map[uint]time.Time
 	usdmAvailCache map[uint]float64
@@ -143,6 +149,7 @@ func NewBinanceExchange() *BinanceExchange {
 	ex.positionsCacheExp = make(map[string]time.Time)
 	ex.positionsCache = make(map[string][]Position)
 	ex.acctKeyByOwner = make(map[uint]string)
+	ex.positionsRefreshLock = make(map[string]*sync.Mutex)
 	ex.usdmAvailExp = make(map[uint]time.Time)
 	ex.usdmAvailCache = make(map[uint]float64)
 	ex.marketCache = make(map[string]float64)
@@ -1529,6 +1536,19 @@ func (b *BinanceExchange) AccountKey(ownerID uint) string {
 	return b.positionsAccountKey(ownerID)
 }
 
+// acctRefreshLock returns the per-account refresh mutex (created lazily), used to
+// single-flight /positionRisk refreshes so concurrent cache-misses collapse to one call.
+func (b *BinanceExchange) acctRefreshLock(acctKey string) *sync.Mutex {
+	b.positionsRefreshMu.Lock()
+	mu := b.positionsRefreshLock[acctKey]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		b.positionsRefreshLock[acctKey] = mu
+	}
+	b.positionsRefreshMu.Unlock()
+	return mu
+}
+
 func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Position, error) {
 	if status != "active" {
 		return []Position{}, nil
@@ -1538,6 +1558,19 @@ func (b *BinanceExchange) FetchPositions(ownerID uint, status string) ([]Positio
 	now := time.Now()
 	b.positionsCacheMu.Lock()
 	if exp, ok := b.positionsCacheExp[acctKey]; ok && now.Before(exp) {
+		out := stampPositionsOwner(b.positionsCache[acctKey], ownerID)
+		b.positionsCacheMu.Unlock()
+		return out, nil
+	}
+	b.positionsCacheMu.Unlock()
+
+	// single-flight:同账户只放一个在途刷新;并发 miss 的其余调用在此排队,
+	// 拿到锁后先二次检查缓存(前一个刚刷好就直接命中),避免并发双查触发 429。
+	rl := b.acctRefreshLock(acctKey)
+	rl.Lock()
+	defer rl.Unlock()
+	b.positionsCacheMu.Lock()
+	if exp, ok := b.positionsCacheExp[acctKey]; ok && time.Now().Before(exp) {
 		out := stampPositionsOwner(b.positionsCache[acctKey], ownerID)
 		b.positionsCacheMu.Unlock()
 		return out, nil
@@ -2385,6 +2418,44 @@ func (b *BinanceExchange) USDMPositionAmt(ownerID uint, symbol string) (float64,
 		}
 	}
 	return positionAmt, entryPrice, markPrice, nil
+}
+
+// USDMPositionAmtCached 是 USDMPositionAmt 的"可容忍 5s 陈旧"版本:命中共享持仓
+// 缓存即返回;缓存新鲜但无此 symbol = 无仓,直接返回 0——【不再穿透打 REST】(未持仓
+// symbol 每次都查 positionRisk 是隐藏限流源);缓存过期则走 FetchPositions(单飞+回填)。
+// 仅供不需要亚 5s 新鲜度的调用方(已平仓轮询、加仓容量估算、前端展示);开仓后确认/
+// 回滚/挂交易所止损等对新鲜度敏感的路径必须继续用 USDMPositionAmt(实时)。
+func (b *BinanceExchange) USDMPositionAmtCached(ownerID uint, symbol string) (float64, float64, float64, error) {
+	acctKey := b.positionsAccountKey(ownerID)
+	target := strings.ToUpper(NormalizeSymbol(symbol))
+	find := func(ps []Position) (float64, float64, float64, bool) {
+		for _, p := range ps {
+			if strings.ToUpper(NormalizeSymbol(p.Symbol)) == target {
+				amt := p.Amount
+				if strings.EqualFold(p.Direction, "short") {
+					amt = -amt
+				}
+				return amt, p.Price, p.CurrentPrice, true
+			}
+		}
+		return 0, 0, 0, false
+	}
+	b.positionsCacheMu.Lock()
+	if exp, ok := b.positionsCacheExp[acctKey]; ok && time.Now().Before(exp) {
+		cached := append([]Position(nil), b.positionsCache[acctKey]...)
+		b.positionsCacheMu.Unlock()
+		if amt, entry, mark, ok := find(cached); ok {
+			return amt, entry, mark, nil
+		}
+		return 0, 0, 0, nil // 缓存新鲜且无此 symbol → 无仓,不打 REST
+	}
+	b.positionsCacheMu.Unlock()
+	ps, err := b.FetchPositions(ownerID, "active")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	amt, entry, mark, _ := find(ps)
+	return amt, entry, mark, nil
 }
 
 type USDMAlgoOrder struct {
