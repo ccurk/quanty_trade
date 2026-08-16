@@ -5,14 +5,18 @@ package api
 // 之前：closed positions 直接查 DB 的 StrategyPosition 表，依赖 strategy 进程能
 //        100% 监听到 TP/SL 成交并写库。重启/网络抖动/部分平仓时可能漏记。
 // 现在：在 ListPositions 的 closed 分支，优先从币安 userTrades 重建 closed positions
-//        （与 paired_trades 同源），再用 (symbol + close_time) match DB
-//        StrategyPosition 拿到 strategy_id/name attribution。
+//        （与 paired_trades 同源），归因两级：
+//        ①入场腿 order_id 精确反查 strategy_orders（exec report 已回写
+//          exchange_order_id）——谁下的开仓单就归谁，不受 DB 镜像行/时间戳漂移影响；
+//        ②查不到再用 (symbol + close_time ±5min) match DB StrategyPosition 兜底
+//          （手工单/极老单没有 strategy_orders 行）。
 //
 // 如果币安拉失败 → fallback 回 DB。
 
 import (
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,12 +56,13 @@ func closedPositionsFromBinance(uid uint, hours int) ([]exchange.Position, strin
 
 	// 2. 每个 symbol 拉 userTrades 并按时间排序
 	type fill struct {
-		Time  int64
-		Side  string // BUY / SELL
-		Qty   float64
-		Price float64
-		PnL   float64
-		Fee   float64
+		Time    int64
+		OrderID int64
+		Side    string // BUY / SELL
+		Qty     float64
+		Price   float64
+		PnL     float64
+		Fee     float64
 	}
 	allFills := map[string][]fill{}
 	for sym := range symbolSet {
@@ -67,7 +72,7 @@ func closedPositionsFromBinance(uid uint, hours int) ([]exchange.Position, strin
 		}
 		for _, t := range trades {
 			allFills[sym] = append(allFills[sym], fill{
-				Time: t.Time, Side: t.Side, Qty: t.Qty, Price: t.Price,
+				Time: t.Time, OrderID: t.OrderID, Side: t.Side, Qty: t.Qty, Price: t.Price,
 				PnL: t.RealizedPnL, Fee: -math.Abs(t.Commission),
 			})
 		}
@@ -88,11 +93,13 @@ func closedPositionsFromBinance(uid uint, hours int) ([]exchange.Position, strin
 		ClosePrice   float64
 		RealizedPnL  float64
 		TotalCommFee float64
+		EntryOrderID int64 // 首笔开仓 fill 的交易所 order_id，归因主键
 	}
 	type rtState struct {
 		active        bool
 		openTime      int64
 		openSide      string
+		entryOrderID  int64
 		posQty        float64 // signed：+ 多 / - 空
 		entryQtyAbs   float64
 		entryNotional float64
@@ -121,6 +128,7 @@ func closedPositionsFromBinance(uid uint, hours int) ([]exchange.Position, strin
 				Symbol: sym, OpenTime: st.openTime, CloseTime: st.lastClose,
 				OpenSide: st.openSide, OpenPrice: avgEntry, Qty: st.closeQtyAbs,
 				ClosePrice: avgClose, RealizedPnL: st.realized, TotalCommFee: st.commission,
+				EntryOrderID: st.entryOrderID,
 			})
 		}
 		for i := range fills {
@@ -131,7 +139,7 @@ func closedPositionsFromBinance(uid uint, hours int) ([]exchange.Position, strin
 			}
 			if !st.active {
 				st = rtState{
-					active: true, openTime: f.Time, openSide: f.Side,
+					active: true, openTime: f.Time, openSide: f.Side, entryOrderID: f.OrderID,
 					posQty: signed, entryQtyAbs: f.Qty, entryNotional: f.Qty * f.Price,
 					commission: f.Fee, realized: f.PnL,
 				}
@@ -161,7 +169,7 @@ func closedPositionsFromBinance(uid uint, hours int) ([]exchange.Position, strin
 				emit()
 				rem := math.Abs(newPos)
 				st = rtState{
-					active: true, openTime: f.Time, openSide: f.Side,
+					active: true, openTime: f.Time, openSide: f.Side, entryOrderID: f.OrderID,
 					posQty: newPos, entryQtyAbs: rem, entryNotional: rem * f.Price,
 				}
 			} else {
@@ -172,6 +180,7 @@ func closedPositionsFromBinance(uid uint, hours int) ([]exchange.Position, strin
 
 	// 4. 转换成 exchange.Position
 	out := make([]exchange.Position, 0, len(chains))
+	entryOrderIDs := make([]int64, 0, len(chains))
 	for _, c := range chains {
 		direction := "long"
 		if strings.EqualFold(c.OpenSide, "SELL") {
@@ -198,15 +207,73 @@ func closedPositionsFromBinance(uid uint, hours int) ([]exchange.Position, strin
 			CloseTime:          time.UnixMilli(c.CloseTime),
 		}
 		out = append(out, pos)
+		entryOrderIDs = append(entryOrderIDs, c.EntryOrderID)
 	}
 
-	// 5. 用 (symbol + close_time ±5min) match DB StrategyPosition 补 strategy_id/name
+	// 5a. 归因主路径：入场腿 order_id 精确反查 strategy_orders。
+	//     镜像行双记账下同一净仓在 StrategyPosition 表可有多行（main 实开却挂着
+	//     专家 sid 的镜像行曾让 ±5min 启发式选错归属，BICO 08-16 实证），
+	//     开仓订单归属不受此污染。
+	attributeByEntryOrder(uid, out, entryOrderIDs)
+
+	// 5b. 兜底：仍未归因的（手工单/无 strategy_orders 行）用 (symbol + close_time
+	//     ±5min) match DB StrategyPosition 补 strategy_id/name
 	enrichStrategyAttribution(uid, out, hours)
 
 	// 6. 按 close_time desc 排序（前端期望最新在上）
 	sort.Slice(out, func(i, j int) bool { return out[i].CloseTime.After(out[j].CloseTime) })
 
 	return out, ""
+}
+
+// attributeByEntryOrder 用币安 userTrades 的开仓腿 order_id 反查 strategy_orders
+// （handleExecutionReport 已把 exchange_order_id 回写），把 strategy_id/name 填进
+// 重建仓位。positions 与 entryOrderIDs 按下标对齐；order_id≤0 或查不到的行留空，
+// 交给 enrichStrategyAttribution 兜底。
+func attributeByEntryOrder(uid uint, positions []exchange.Position, entryOrderIDs []int64) {
+	if database.DB == nil || len(positions) == 0 || len(positions) != len(entryOrderIDs) {
+		return
+	}
+	idSet := map[string]struct{}{}
+	for _, id := range entryOrderIDs {
+		if id > 0 {
+			idSet[strconv.FormatInt(id, 10)] = struct{}{}
+		}
+	}
+	if len(idSet) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	var orders []models.StrategyOrder
+	if err := database.DB.
+		Where("owner_id = ? AND exchange_order_id IN ?", uid, ids).
+		Find(&orders).Error; err != nil {
+		return
+	}
+	type ref struct {
+		id   string
+		name string
+	}
+	byExchangeOrderID := map[string]ref{}
+	for _, o := range orders {
+		sid := strings.TrimSpace(o.StrategyID)
+		if sid == "" {
+			continue
+		}
+		byExchangeOrderID[strings.TrimSpace(o.ExchangeOrderID)] = ref{id: sid, name: o.StrategyName}
+	}
+	for i := range positions {
+		if entryOrderIDs[i] <= 0 {
+			continue
+		}
+		if r, ok := byExchangeOrderID[strconv.FormatInt(entryOrderIDs[i], 10)]; ok {
+			positions[i].StrategyID = r.id
+			positions[i].StrategyName = r.name
+		}
+	}
 }
 
 // enrichStrategyAttribution 把 binance 重建的 closed positions 用 (symbol+close_time)
@@ -240,6 +307,9 @@ func enrichStrategyAttribution(uid uint, positions []exchange.Position, hours in
 	tolerance := 5 * time.Minute
 	for i := range positions {
 		p := &positions[i]
+		if strings.TrimSpace(p.StrategyID) != "" {
+			continue // 已由 attributeByEntryOrder 精确归因
+		}
 		ns := exchange.NormalizeSymbol(p.Symbol)
 		refs := bySym[ns]
 		if len(refs) == 0 {

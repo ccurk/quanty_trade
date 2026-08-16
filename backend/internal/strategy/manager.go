@@ -1506,10 +1506,15 @@ func (m *Manager) RemoveStrategy(id string) error {
 
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
-	if inst.Status == StatusRunning {
-		inst.killedByUs = true
-		inst.cmd.Process.Kill()
+	// 删除必须斩草除根：只在 Status==Running 时 Kill 会让 starting/stopping/
+	// restarting 等瞬态窗口下的删除留下无主进程继续交易（已删载具 23:11Z 仍开仓
+	// 的幽灵实证）。注册表行已删，任何存活进程都无人能再管——无条件杀。
+	inst.killedByUs = true
+	inst.stopping = true // 压制 requestRestart/健康检查复活路径
+	if inst.cmd != nil && inst.cmd.Process != nil {
+		_ = inst.cmd.Process.Kill()
 	}
+	inst.Status = StatusStopped
 	return nil
 }
 
