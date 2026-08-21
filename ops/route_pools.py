@@ -39,7 +39,8 @@ TOKEN = os.environ.get("QT_TOKEN") or (open(sys.argv[2]).read().strip() if len(s
 ROSTER = {  # id → (原型, live判定由/api/strategies现拉; 此表只定义原型归属)
     "8eb182b6-ee74-4125-a602-f0a91f376432": "main",
     "827ffe8c-64a9-428a-b876-9d28b711d224": "trend",
-    "21519f1b-af98-4156-b1f6-9721f3f8f6c4": "fade",
+    "21519f1b-af98-4156-b1f6-9721f3f8f6c4": "fade",   # v1旧壳(stopped归档)
+    "7583727a-1817-4c35-bd9d-74c5534b78c4": "fade",   # v2壳 FLEET@08-21(a451d32部署后)
     "2111f5f9-d1fa-48c7-a018-2249483615c4": "breakout",
     "ad37d337-17c7-4f9c-803f-59ede2f18db8": "lowvol",
 }
