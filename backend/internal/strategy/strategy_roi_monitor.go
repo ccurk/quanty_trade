@@ -3,6 +3,7 @@ package strategy
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -103,6 +104,25 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 	// watchedAll: 本轮所有 owner 的在持 symbol 全集，喂给 WS 守护加速器与
 	// 金字塔计数清理（strategy_ws_guard.go / strategy_pyramid.go）。
 	watchedAll := map[string]struct{}{}
+	// #57 收养幂等闸的账户视图: 共用一个交易所账户的 owner 集合。单向持仓下
+	// 一个 symbol 在账户上只有一个净仓,DB 里也只允许一行 open 行,查重必须跨
+	// owner 查整个账户,否则 A owner 的入场行挡不住 B owner 的收养(BEAT 08-17
+	// 双行互搏实证:入场行 main + 收养行 fade 各自 cancel/replace 对方 TP/SL 单)。
+	acctUIDs := map[string][]uint{}
+	for uid := range byOwner {
+		k := bx.AccountKey(uid)
+		acctUIDs[k] = append(acctUIDs[k], uid)
+	}
+	// owner 迭代排序: map 随机序会让"哪行先认领守护权"每 tick 抖动;固定升序后,
+	// 同净仓多行(历史遗留)恒由同一行驱动,另一行静默等 close-sync 清理。
+	ownerIDs := make([]uint, 0, len(byOwner))
+	for uid := range byOwner {
+		ownerIDs = append(ownerIDs, uid)
+	}
+	sort.Slice(ownerIDs, func(i, j int) bool { return ownerIDs[i] < ownerIDs[j] })
+	// guardianClaimed: (账户,symbol) → 本 tick 已有一行在驱动 TP/SL。第二行跳过,
+	// 防双守护用各自 config 互撤重挂交易所条件单(重复单检测风暴+瞬时无单空窗)。
+	guardianClaimed := map[string]struct{}{}
 	// 账户级收养去重:共用一个交易所账户(同 API key)的多个 owner,在单向持仓
 	// 下每个 symbol 只有一个净仓,只应有一行 DB 持仓行来守护它。按 (account,symbol)
 	// 记账,防止各 owner 的扫描把同一个净仓各收养一行(一仓多行、PnL 散落的根)。
@@ -137,7 +157,8 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 			}
 		}
 	}
-	for uid, rows := range byOwner {
+	for _, uid := range ownerIDs {
+		rows := byOwner[uid]
 		acct := bx.AccountKey(uid)
 		ps, err := bx.FetchPositions(uid, "active")
 		if err != nil {
@@ -165,6 +186,17 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 			}
 			inst := findGuardStrategyInstance(ownerInstances[uid], p.Symbol)
 			if inst == nil {
+				continue
+			}
+			// #57 收养幂等闸(账户级): 该净仓只要在共享账户的任何 owner 名下已有
+			// open 行(入场行或先前收养行),就绝不再造第二行。本 tick 的 openRows
+			// 快照可能落后于刚落库的入场行(开仓后 ~3s 内的收养竞态窗),所以这里
+			// 必须现查 DB 而不是只信快照;已有行由其 owner 的守护循环接管。
+			var dupCount int64
+			if err := database.DB.Model(&models.StrategyPosition{}).
+				Where("owner_id IN ? AND symbol = ? AND status = ?", acctUIDs[acct], p.Symbol, "open").
+				Count(&dupCount).Error; err == nil && dupCount > 0 {
+				markAcctTracked(acct, symKey)
 				continue
 			}
 			side := "buy"
@@ -208,6 +240,14 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 			if !ok {
 				continue
 			}
+			// #57 守护唯一化: 每 (账户,symbol) 净仓每 tick 只由一行驱动出场管理。
+			// owner 升序+行序(DB 主键升序,入场行先于后造的收养行)保证恒定同一行
+			// 当选;重复行不烧认领、不动单,等 close-sync 收敛。
+			claimKey := acct + "\x00" + strings.ToUpper(r.Symbol)
+			if _, dup := guardianClaimed[claimKey]; dup {
+				continue
+			}
+			guardianClaimed[claimKey] = struct{}{}
 			roi := pos.ReturnRate
 			unpnl := pos.UnrealizedPnL
 			currentPrice := pos.CurrentPrice
