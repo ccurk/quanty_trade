@@ -57,6 +57,9 @@ func LoadConfigFromEnv() Config {
 		if cfg.Exec[i].APISecret == "" {
 			cfg.Exec[i].APISecret = os.Getenv("MM_" + up + "_API_SECRET")
 		}
+		if cfg.Exec[i].Passphrase == "" {
+			cfg.Exec[i].Passphrase = os.Getenv("MM_" + up + "_API_PASSPHRASE")
+		}
 	}
 	return cfg
 }

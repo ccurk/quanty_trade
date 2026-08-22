@@ -16,10 +16,12 @@ type Config struct {
 // ExecConfig holds one execution exchange's endpoint + credentials (OWNER fills).
 // BaseURL may be left empty to use the adapter's built-in default.
 type ExecConfig struct {
-	Name      string `yaml:"name" json:"name"` // "coinsph" | "mexc" | ...
+	Name      string `yaml:"name" json:"name"` // "coinsph" | "gate" | "kucoin" | ...
 	BaseURL   string `yaml:"base_url" json:"base_url"`
 	APIKey    string `yaml:"api_key" json:"api_key"`
 	APISecret string `yaml:"api_secret" json:"api_secret"`
+	// Passphrase is a 3rd credential some exchanges require (e.g. KuCoin). Empty otherwise.
+	Passphrase string `yaml:"passphrase" json:"passphrase"`
 }
 
 // PairConfig defines one market-making pair: which feed symbol to reference, and

@@ -41,7 +41,7 @@ func TestBookTickerMath(t *testing.T) {
 }
 
 func TestExecRegistry(t *testing.T) {
-	for _, name := range []string{"coinsph", "mexc"} {
+	for _, name := range []string{"coinsph", "mexc", "gate", "kucoin"} {
 		ex, err := NewExec(ExecConfig{Name: name})
 		if err != nil || ex == nil || ex.Name() != name {
 			t.Fatalf("exec %q not registered correctly: ex=%v err=%v", name, ex, err)
