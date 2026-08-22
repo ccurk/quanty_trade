@@ -101,6 +101,7 @@ docker run -d \
   -e TELEGRAM_ENABLED="${TELEGRAM_ENABLED}" \
   -e TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
   -e TELEGRAM_POLL_TIMEOUT_SECONDS="${TELEGRAM_POLL_TIMEOUT_SECONDS}" \
+  -e MARKETMAKER_CONFIG=/app/conf/marketmaker.json \
   "${BACKEND_IMAGE}:${BACKEND_VERSION}" >/dev/null
 
 echo "后端部署完成"
