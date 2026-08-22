@@ -29,6 +29,8 @@
 #   排除=晋升整体封死,COTI 案实证:maxmv5.45%达 breakout 入池条被静默拦下)。配套:
 #   plan.main.remove 改用 post-plan 专家池期望集→晋升币同轮移出 main(封 v1.1 单轮
 #   重叠窗);执行序=先 main remove 后专家 add,失败方向=孤儿态(安全)。头注阈值零改动。
+#   roster 语义 v1.4 (2026-08-22): 同角色多壳(如 fade v1停机壳+v2 running壳)时
+#   running 壳优先,stopped 壳不得遮蔽(修 v1.3 以来 fade 差分静默跳过 bug;头注阈值零改动)。
 #   CLI: route_pools.py <closed48.json> <token_file> [trending.json] [registry_quarantine.json]
 #        arg4=台账§1.5隔离区数组(持久注册表,防窗口滚动放虎归山)
 import json, sys, os, datetime, subprocess
@@ -77,7 +79,12 @@ def main():
     for st in strategies:
         role = ROSTER.get(st["id"]);  status = st.get("status")
         if not role: continue
-        running[role] = (status == "running", st["id"])
+        # v1.4 (2026-08-22): 同角色多壳时 running 壳不得被 stopped 壳遮蔽——
+        # fade 案实证: ROSTER 中 21519f1b(v1停机壳)排在 7583727a(v2 running壳)之后,
+        # 覆盖 running["fade"]→(False,v1id)→fade 差分整轮静默跳过(MELANIA 晋升条
+        # 达标无 plan)。修复=首个 running 壳锁定该角色;无 running 壳才记 stopped。
+        if role not in running or not running[role][0]:
+            running[role] = (status == "running", st["id"])
         if status == "running":
             try: live[role] = {norm(x) for x in api(f"/api/strategies/{st['id']}/symbols")["symbols"]}
             except Exception: live[role] = None  # 拉不到=本轮跳过该载具
