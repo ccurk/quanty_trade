@@ -109,9 +109,14 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 		logger.Infof("[mm-observe] %s@%s ref=%s refMid=%.8f execMid=%.8f midDiff=%.1fbps execSpread=%.1fbps buyEdge=%.1fbps sellEdge=%.1fbps",
 			p.ExecSymbol, ex.Name(), e.feed.Name(), refMid, eb.Mid(),
 			(eb.Mid()-refMid)/refMid*10000, eb.SpreadBps(), buyEdge, sellEdge)
-		recordObserve(ObserveRow{
+		feeBps, feeLive := MakerFeeBps(ex.Name(), p.ExecSymbol)
+			bestGross := buyEdge
+			if sellEdge > bestGross {
+				bestGross = sellEdge
+			}
+			recordObserve(ObserveRow{
 			Exchange: ex.Name(), Symbol: p.ExecSymbol, RefMid: refMid, ExecMid: eb.Mid(),
-			ExecSpreadBps: eb.SpreadBps(), BuyEdgeBps: buyEdge, SellEdgeBps: sellEdge, Ts: time.Now(),
+			ExecSpreadBps: eb.SpreadBps(), BuyEdgeBps: buyEdge, SellEdgeBps: sellEdge, FeeBps: feeBps, FeeLive: feeLive, NetBestEdgeBps: bestGross - 2*feeBps, Ts: time.Now(),
 		})
 
 		if !e.cfg.ObserveOnly {

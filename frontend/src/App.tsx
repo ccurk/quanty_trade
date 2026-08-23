@@ -132,7 +132,7 @@ interface MMObserveResponse {
   status: string;
   pairs: number;
   realized_pnl?: number;
-  best?: { exchange: string; symbol: string; edge_bps: number; exec_spread_bps: number };
+  best?: { exchange: string; symbol: string; edge_bps: number; net_edge_bps: number; fee_bps: number; fee_live: boolean; exec_spread_bps: number };
 }
 
 interface ModulePnL {
@@ -1822,13 +1822,13 @@ const App: React.FC = () => {
                 <div className="grid grid-cols-3 gap-2 text-center">
                   <div><div className="text-xs text-gray-500 mb-1">观测对数</div><div className="text-base font-bold text-blue-400">{mmObserve ? mmObserve.pairs : '--'}</div></div>
                   <div><div className="text-xs text-gray-500 mb-1">最优机会</div><div className="text-sm font-bold text-gray-300 truncate">{mmObserve?.best ? `${mmObserve.best.symbol}@${mmObserve.best.exchange}` : '--'}</div></div>
-                  <div><div className="text-xs text-gray-500 mb-1">最大毛边</div><div className={`text-base font-bold ${(mmObserve?.best?.edge_bps ?? 0) > 0 ? 'text-green-500' : (isDarkMode ? 'text-gray-300' : 'text-gray-700')}`}>{mmObserve?.best ? `${mmObserve.best.edge_bps.toFixed(1)}bps` : '--'}</div></div>
+                  <div><div className="text-xs text-gray-500 mb-1">最大净边</div><div className={`text-base font-bold ${(mmObserve?.best?.net_edge_bps ?? 0) > 0 ? 'text-green-500' : 'text-red-500'}`}>{mmObserve?.best ? `${mmObserve.best.net_edge_bps.toFixed(1)}bps` : '--'}</div></div>
                 </div>
                 <div className={`mt-3 pt-3 border-t flex items-center justify-between ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
                   <span className="text-xs text-gray-500">收益·已实现</span>
                   <span className={`text-sm font-bold ${(mmObserve?.realized_pnl ?? 0) > 0 ? 'text-green-500' : (mmObserve?.realized_pnl ?? 0) < 0 ? 'text-red-500' : (isDarkMode ? 'text-gray-300' : 'text-gray-700')}`}>{mmObserve ? `${(mmObserve.realized_pnl ?? 0) >= 0 ? '+' : ''}${(mmObserve.realized_pnl ?? 0).toFixed(2)} USDT` : '--'}</span>
                 </div>
-                <div className="text-[10px] text-gray-500 mt-2 text-right">跨所价差观测 · observe 未成交</div>
+                <div className="text-[10px] text-gray-500 mt-2 text-right">净边=毛边−2×maker费{mmObserve?.best ? ` · 费${mmObserve.best.fee_bps.toFixed(1)}bps${mmObserve.best.fee_live ? '实时' : '假设'}` : ''} · observe 未成交</div>
               </div>
             </div>
 
