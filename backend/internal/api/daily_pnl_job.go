@@ -77,10 +77,11 @@ func runDailyPnLLoop(ctx context.Context) {
 	if !sleepCtx(ctx, startupBackfillDelay) {
 		return
 	}
-	// 全量刷新:按币安重建缓存表 400 天历史(income 分页后成本很低,且覆盖旧版本遗留的
-	// 本地口径数据)。若遭遇限频,隔几分钟重试,最多 3 次。
+	// 全量刷新:按币安重建缓存表 60 天历史。原来 400 天 × 逐 symbol userTrades 分页在
+	// 共享账户上权重爆表、必触 429 → 整轮丢弃 → 表永远填不上。60 天足够覆盖面板/月度视图,
+	// 权重降一个量级。若仍遇限频,隔几分钟重试,最多 3 次(且每次已写入部分进度)。
 	for attempt := 0; attempt < 3; attempt++ {
-		if !rebuildDailyPnL(400) {
+		if !rebuildDailyPnL(60) {
 			break // 完成(或非限频原因结束)
 		}
 		logger.Errorf("daily pnl: startup backfill hit rate limit, retry in 3m (attempt %d)", attempt+1)
@@ -272,12 +273,13 @@ func computeBinanceDailyBuckets(uid uint, start, end time.Time, throttle time.Du
 		scursor := start
 		for page := 0; page < binanceMaxPages; page++ {
 			if !waitBinanceHeadroom(bx, throttle) {
-				return nil, fmt.Errorf("binance api error: {\"code\":429,\"msg\":\"weight busy, yield\"}")
+				// income(真实 PnL)此时已拉全,只是名义额/单数没拉完 → 返回部分而非全丢。
+				return buckets, fmt.Errorf("binance api error: {\"code\":429,\"msg\":\"weight busy, yield\"}")
 			}
 			fills, err := bx.USDMUserTrades(uid, sym, scursor, end, binancePageLimit)
 			if err != nil {
 				if isBinanceRateLimited(err) {
-					return nil, err // 限频:立刻停手,让出权重
+					return buckets, err // 限频:income 已完成,返回部分(名义额未全)让出权重
 				}
 				break // 其它错误:单 symbol 失败不阻塞其它 symbol
 			}
@@ -337,25 +339,34 @@ func rebuildDailyPnL(days int) (rateLimited bool) {
 	loc := now.Location()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	start := today.AddDate(0, 0, -days)
+	writeDays := func(uid uint, buckets map[string]*binanceDayAgg) {
+		for i := 1; i <= days; i++ {
+			dayStart := today.AddDate(0, 0, -i)
+			dayEnd := dayStart.Add(24*time.Hour - time.Nanosecond)
+			day := dayStart.Format("2006-01-02")
+			if err := upsertDailyPnLRow(uid, day, dayStart, dayEnd, buckets[day]); err != nil {
+				logger.Errorf("daily pnl: upsert failed uid=%d day=%s err=%v", uid, day, err)
+			}
+		}
+	}
 	for _, u := range users {
 		buckets, err := computeBinanceDailyBuckets(u.ID, start, now, binanceBulkThrottle)
 		if err != nil {
 			if isBinanceRateLimited(err) {
-				// 限频:立刻整体中止,把权重让给持仓同步,避免持续踩 429 触发全局 ban。
-				logger.Errorf("daily pnl: binance rate limited, abort rebuild uid=%d err=%v", u.ID, err)
+				// income(真实 PnL)已拉全时 buckets 非空 → 先把已算出的日 PnL 写入(名义额下轮补),
+				// 再让出权重。避免"整轮丢弃 → 表永远填不上"。
+				if len(buckets) > 0 {
+					writeDays(u.ID, buckets)
+					logger.Errorf("daily pnl: rate limited, wrote partial uid=%d err=%v", u.ID, err)
+				} else {
+					logger.Errorf("daily pnl: rate limited before income complete uid=%d err=%v", u.ID, err)
+				}
 				return true
 			}
 			logger.Errorf("daily pnl: binance fetch failed uid=%d err=%v", u.ID, err)
 			continue // 其它错误:保留旧缓存,不写脏
 		}
-		for i := 1; i <= days; i++ {
-			dayStart := today.AddDate(0, 0, -i)
-			dayEnd := dayStart.Add(24*time.Hour - time.Nanosecond)
-			day := dayStart.Format("2006-01-02")
-			if err := upsertDailyPnLRow(u.ID, day, dayStart, dayEnd, buckets[day]); err != nil {
-				logger.Errorf("daily pnl: upsert failed uid=%d day=%s err=%v", u.ID, day, err)
-			}
-		}
+		writeDays(u.ID, buckets)
 	}
 	return false
 }
@@ -510,12 +521,14 @@ func buildTodayPnLEntry(uid uint, start time.Time, end time.Time) DailyPnLEntry 
 	}
 
 	buckets, err := computeBinanceDailyBuckets(uid, start, end, binanceLiveThrottle)
-	if err != nil {
+	if err != nil && len(buckets) == 0 {
+		// income 都没拉全:沿用旧值,别因瞬时限频把今天清零。
 		if ok && cached.entry.Day == day {
-			return cached.entry // 沿用旧值,别因瞬时限频清零
+			return cached.entry
 		}
 		return DailyPnLEntry{Day: day}
 	}
+	// err!=nil 但 buckets 非空 = 限频发生在 userTrades 阶段,income(今天真实 PnL)已完整,继续用。
 
 	entry := DailyPnLEntry{Day: day}
 	if agg := buckets[day]; agg != nil {
