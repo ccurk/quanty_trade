@@ -80,6 +80,6 @@ func StartBackgroundJobs(ctx context.Context, mgr *strategy.Manager) {
 	api.StartLogRetentionJob(ctx)
 	api.StartTriArbDetectorJob(ctx)
 	api.StartRebalanceMonitor(ctx)
-	// 做市全市场扫描:只扫用户能实际交易的所(kucoin/mexc 因 +86 无法注册已剔除)。
-	marketmaker.StartUniverseScanner([]string{"gate", "coinsph"}, 10)
+	// 做市全市场扫描:代码保留,暂停运行(用户要求)。要重新启用,取消下一行注释即可。
+	// marketmaker.StartUniverseScanner([]string{"gate", "coinsph"}, 10)
 }
