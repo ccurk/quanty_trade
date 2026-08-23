@@ -8,32 +8,32 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// GetMMObserve powers the dashboard 做市 card: how many pairs are being observed,
-// and where the widest capturable (gross) edge currently is. GET /stats/mm-observe
+// GetMMObserve powers the dashboard 做市 card. It now reflects the FULL-MARKET
+// universe scan (每轮全市场批量扫描并按净边排序), not a hardcoded pair list:
+// pairs = total pairs matched against binance; rows = top N by net edge. GET /stats/mm-observe
 func GetMMObserve(c *gin.Context) {
-	rows, running := marketmaker.ObserveSnapshot()
+	rows, matched, running := marketmaker.UniverseSnapshot()
 	status := "disabled"
 	if running {
 		status = "observing"
 	}
 	resp := gin.H{
 		"status": status,
-		"pairs":  len(rows),
-		"rows":   rows, // 已按净边(扣费后)降序
-		"stats":  marketmaker.StatsSnapshot(),
+		"pairs":  matched,    // 全市场匹配到的对数(跨所,动态)
+		"shown":  len(rows),  // 展示的 top-N
+		"rows":   rows,       // 已按净边(扣费后)降序,跨所混排
 		// observe 阶段不下单、无成交,已实现收益恒为 0。切实盘后由成交撮合 PnL 回填。
 		"realized_pnl": 0.0,
 	}
 	if len(rows) > 0 {
 		best := rows[0] // 净边最高的
 		resp["best"] = gin.H{
-			"exchange":        best.Exchange,
-			"symbol":          best.Symbol,
-			"edge_bps":        best.BestEdgeBps(),      // 毛边
-			"net_edge_bps":    best.NetBestEdgeBps,     // 扣双腿手续费后的净边
-			"fee_bps":         best.FeeBps,             // 单腿 maker 费
-			"fee_live":        best.FeeLive,            // true=实时费率, false=默认假设
-			"exec_spread_bps": best.ExecSpreadBps,
+			"exchange":     best.Exchange,
+			"symbol":       best.Symbol,
+			"edge_bps":     best.BestEdgeBps(),  // 毛边
+			"net_edge_bps": best.NetBestEdgeBps, // 扣双腿手续费后的净边
+			"fee_bps":      best.FeeBps,         // 单腿 maker 费
+			"fee_live":     best.FeeLive,        // true=实时费率, false=默认假设
 		}
 	}
 	c.JSON(http.StatusOK, resp)
