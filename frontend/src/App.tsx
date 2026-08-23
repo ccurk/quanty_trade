@@ -124,6 +124,11 @@ interface TriArbStatus {
   cycles: TriArbCycle[];
   recent_opps: TriArbOpp[];
 }
+interface MMObserveResponse {
+  status: string;
+  pairs: number;
+  best?: { exchange: string; symbol: string; edge_bps: number; exec_spread_bps: number };
+}
 
 interface ModulePnL {
   current: number;
@@ -374,6 +379,7 @@ const App: React.FC = () => {
   const [strategySymbolSearch, setStrategySymbolSearch] = useState('');
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [modulesPnL, setModulesPnL] = useState<ModulesPnLResponse | null>(null);
+  const [mmObserve, setMmObserve] = useState<MMObserveResponse | null>(null);
   // setters 去掉了：stats tab 现在只剩盈亏日历，不再有 range/自定义日期选择 UI。
   // useState 留着是为了让 fetchDashboard 里读取这几个值的代码继续编译通过——
   // 它们永远是初始值，相当于"默认 range"。
@@ -817,6 +823,10 @@ const App: React.FC = () => {
         const mres = await axios.get('/api/stats/modules-pnl');
         setModulesPnL(mres.data);
       } catch { /* modules-pnl 可选,失败不影响其余面板 */ }
+      try {
+        const ores = await axios.get('/api/stats/mm-observe');
+        setMmObserve(ores.data);
+      } catch { /* mm-observe 可选 */ }
     } catch (err) {
       console.error('Failed to fetch dashboard', err);
     }
@@ -1755,43 +1765,56 @@ const App: React.FC = () => {
               </button>
             </div>
 
-            {/* 三大交易手段实时盈利:量化 / 三角套利 / 做市(当前·当月·总,已实现 USDT) */}
+            {/* 三大交易手段:各按自身阶段展示关键指标(量化=已实现盈亏 / 三角套利=检测 / 做市=价差观测) */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {([
-                { key: 'quant', label: '量化', m: modulesPnL?.quant },
-                { key: 'triarb', label: '三角套利', m: modulesPnL?.triarb },
-                { key: 'marketmaking', label: '做市', m: modulesPnL?.marketmaking },
-              ] as const).map(({ key, label, m }) => {
-                const statusText = m?.status === 'trading' ? '交易中'
-                  : m?.status === 'detector-only' ? '检测中·未下单'
-                  : m?.status === 'disabled' ? '未启用' : '--';
-                const statusColor = m?.status === 'trading' ? 'text-green-500' : 'text-gray-400';
+              {/* 量化:已实现盈亏(在交易) */}
+              {(() => {
+                const q = modulesPnL?.quant;
                 const fmt = (v?: number) => (v === undefined || v === null) ? '--' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
                 const color = (v?: number) => (v ?? 0) > 0 ? 'text-green-500' : (v ?? 0) < 0 ? 'text-red-500' : (isDarkMode ? 'text-gray-300' : 'text-gray-700');
                 return (
-                  <div key={key} className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                  <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
                     <div className="flex items-center justify-between mb-4">
-                      <div className="font-bold text-lg">{label}</div>
-                      <div className={`text-xs font-semibold ${statusColor}`}>{statusText}</div>
+                      <div className="font-bold text-lg">量化</div>
+                      <div className="text-xs font-semibold text-green-500">交易中</div>
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-center">
-                      <div>
-                        <div className="text-xs text-gray-500 mb-1">当前·今日</div>
-                        <div className={`text-base font-bold ${color(m?.current)}`}>{fmt(m?.current)}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-500 mb-1">当月</div>
-                        <div className={`text-base font-bold ${color(m?.month)}`}>{fmt(m?.month)}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-500 mb-1">总计</div>
-                        <div className={`text-base font-bold ${color(m?.total)}`}>{fmt(m?.total)}</div>
-                      </div>
+                      <div><div className="text-xs text-gray-500 mb-1">当前·今日</div><div className={`text-base font-bold ${color(q?.current)}`}>{fmt(q?.current)}</div></div>
+                      <div><div className="text-xs text-gray-500 mb-1">当月</div><div className={`text-base font-bold ${color(q?.month)}`}>{fmt(q?.month)}</div></div>
+                      <div><div className="text-xs text-gray-500 mb-1">总计</div><div className={`text-base font-bold ${color(q?.total)}`}>{fmt(q?.total)}</div></div>
                     </div>
-                    <div className="text-[10px] text-gray-500 mt-3 text-right">USDT · 已实现</div>
+                    <div className="text-[10px] text-gray-500 mt-3 text-right">已实现盈亏 · USDT</div>
                   </div>
                 );
-              })}
+              })()}
+
+              {/* 三角套利:只读检测器指标(不下单,无盈亏) */}
+              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="font-bold text-lg">三角套利</div>
+                  <div className={`text-xs font-semibold ${triArb?.connected ? 'text-green-500' : 'text-gray-400'}`}>{triArb ? (triArb.connected ? '检测中' : '未连接') : '--'}</div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div><div className="text-xs text-gray-500 mb-1">连接</div><div className={`text-base font-bold ${triArb?.connected ? 'text-green-500' : 'text-gray-400'}`}>{triArb ? (triArb.connected ? '已连接' : '断开') : '--'}</div></div>
+                  <div><div className="text-xs text-gray-500 mb-1">累计正机会</div><div className="text-base font-bold text-blue-400">{triArb ? triArb.opp_count : '--'}</div></div>
+                  <div><div className="text-xs text-gray-500 mb-1">最优环净利</div><div className={`text-base font-bold ${(triArb?.best_net_pct ?? 0) > 0 ? 'text-green-500' : 'text-red-500'}`}>{triArb ? `${triArb.best_net_pct >= 0 ? '+' : ''}${triArb.best_net_pct.toFixed(4)}%` : '--'}</div></div>
+                </div>
+                <div className="text-[10px] text-gray-500 mt-3 text-right">只读检测·不下单{triArb ? ` · 扣费${triArb.fee_per_leg_pct}%/腿` : ''}</div>
+              </div>
+
+              {/* 做市:跨所价差观测(observe,尚未成交) */}
+              <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="font-bold text-lg">做市</div>
+                  <div className={`text-xs font-semibold ${mmObserve?.status === 'observing' ? 'text-green-500' : 'text-gray-400'}`}>{mmObserve ? (mmObserve.status === 'observing' ? '观测中' : '未启用') : '--'}</div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div><div className="text-xs text-gray-500 mb-1">观测对数</div><div className="text-base font-bold text-blue-400">{mmObserve ? mmObserve.pairs : '--'}</div></div>
+                  <div><div className="text-xs text-gray-500 mb-1">最优机会</div><div className="text-sm font-bold text-gray-300 truncate">{mmObserve?.best ? `${mmObserve.best.symbol}@${mmObserve.best.exchange}` : '--'}</div></div>
+                  <div><div className="text-xs text-gray-500 mb-1">最大毛边</div><div className={`text-base font-bold ${(mmObserve?.best?.edge_bps ?? 0) > 0 ? 'text-green-500' : (isDarkMode ? 'text-gray-300' : 'text-gray-700')}`}>{mmObserve?.best ? `${mmObserve.best.edge_bps.toFixed(1)}bps` : '--'}</div></div>
+                </div>
+                <div className="text-[10px] text-gray-500 mt-3 text-right">跨所价差观测 · 毛边未扣费</div>
+              </div>
             </div>
 
             <div className={`p-5 rounded-2xl border shadow-xl ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>

@@ -193,6 +193,7 @@ func main() {
 		protected.GET("/stats/pnl", api.GetPnLSummary)
 		protected.GET("/stats/dashboard", api.GetDashboard)
 		protected.GET("/stats/modules-pnl", api.GetModulesPnL)
+		protected.GET("/stats/mm-observe", api.GetMMObserve)
 
 		// Strategy Square
 		protected.GET("/templates", api.ListTemplates)

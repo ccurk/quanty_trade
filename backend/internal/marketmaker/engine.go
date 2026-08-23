@@ -46,6 +46,7 @@ func Start(cfg Config) (*Engine, error) {
 		mode = "OBSERVE-ONLY"
 	}
 	logger.Infof("[mm] start feed=%s execs=%d pairs=%d mode=%s", cfg.Feed, len(execs), len(cfg.Pairs), mode)
+	setRunning(true)
 	for _, p := range cfg.Pairs {
 		ex, ok := execs[p.Exec]
 		if !ok {
@@ -58,6 +59,7 @@ func Start(cfg Config) (*Engine, error) {
 }
 
 func (e *Engine) Stop() {
+	setRunning(false)
 	if e != nil && e.stop != nil {
 		e.stop()
 	}
@@ -107,6 +109,10 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 		logger.Infof("[mm-observe] %s@%s ref=%s refMid=%.8f execMid=%.8f midDiff=%.1fbps execSpread=%.1fbps buyEdge=%.1fbps sellEdge=%.1fbps",
 			p.ExecSymbol, ex.Name(), e.feed.Name(), refMid, eb.Mid(),
 			(eb.Mid()-refMid)/refMid*10000, eb.SpreadBps(), buyEdge, sellEdge)
+		recordObserve(ObserveRow{
+			Exchange: ex.Name(), Symbol: p.ExecSymbol, RefMid: refMid, ExecMid: eb.Mid(),
+			ExecSpreadBps: eb.SpreadBps(), BuyEdgeBps: buyEdge, SellEdgeBps: sellEdge, Ts: time.Now(),
+		})
 
 		if !e.cfg.ObserveOnly {
 			// 参考盘口过期就撤掉两边报价,绝不按陈旧参考挂单(防参考断流时裸报价)。
