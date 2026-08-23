@@ -20,6 +20,8 @@ func GetMMObserve(c *gin.Context) {
 		"status": status,
 		"pairs":  len(rows),
 		"rows":   rows, // 已按可捕获毛边降序
+		// observe 阶段不下单、无成交,已实现收益恒为 0。切实盘后由成交撮合 PnL 回填。
+		"realized_pnl": 0.0,
 	}
 	if len(rows) > 0 {
 		best := rows[0]

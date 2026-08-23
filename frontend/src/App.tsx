@@ -121,12 +121,15 @@ interface TriArbStatus {
   fee_per_leg_pct: number;
   best_net_pct: number;
   opp_count: number;
+  theoretical_net_usdt: number;
+  notional_usdt: number;
   cycles: TriArbCycle[];
   recent_opps: TriArbOpp[];
 }
 interface MMObserveResponse {
   status: string;
   pairs: number;
+  realized_pnl?: number;
   best?: { exchange: string; symbol: string; edge_bps: number; exec_spread_bps: number };
 }
 
@@ -1799,7 +1802,11 @@ const App: React.FC = () => {
                   <div><div className="text-xs text-gray-500 mb-1">累计正机会</div><div className="text-base font-bold text-blue-400">{triArb ? triArb.opp_count : '--'}</div></div>
                   <div><div className="text-xs text-gray-500 mb-1">最优环净利</div><div className={`text-base font-bold ${(triArb?.best_net_pct ?? 0) > 0 ? 'text-green-500' : 'text-red-500'}`}>{triArb ? `${triArb.best_net_pct >= 0 ? '+' : ''}${triArb.best_net_pct.toFixed(4)}%` : '--'}</div></div>
                 </div>
-                <div className="text-[10px] text-gray-500 mt-3 text-right">只读检测·不下单{triArb ? ` · 扣费${triArb.fee_per_leg_pct}%/腿` : ''}</div>
+                <div className={`mt-3 pt-3 border-t flex items-center justify-between ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
+                  <span className="text-xs text-gray-500">累计理论净利</span>
+                  <span className={`text-sm font-bold ${(triArb?.theoretical_net_usdt ?? 0) > 0 ? 'text-green-500' : (isDarkMode ? 'text-gray-300' : 'text-gray-700')}`}>{triArb ? `${triArb.theoretical_net_usdt >= 0 ? '+' : ''}${triArb.theoretical_net_usdt.toFixed(2)} USDT` : '--'}</span>
+                </div>
+                <div className="text-[10px] text-gray-500 mt-2 text-right">理论·假设每次{triArb ? triArb.notional_usdt : 1000}U·未执行{triArb ? ` · 扣费${triArb.fee_per_leg_pct}%/腿` : ''}</div>
               </div>
 
               {/* 做市:跨所价差观测(observe,尚未成交) */}
@@ -1813,7 +1820,11 @@ const App: React.FC = () => {
                   <div><div className="text-xs text-gray-500 mb-1">最优机会</div><div className="text-sm font-bold text-gray-300 truncate">{mmObserve?.best ? `${mmObserve.best.symbol}@${mmObserve.best.exchange}` : '--'}</div></div>
                   <div><div className="text-xs text-gray-500 mb-1">最大毛边</div><div className={`text-base font-bold ${(mmObserve?.best?.edge_bps ?? 0) > 0 ? 'text-green-500' : (isDarkMode ? 'text-gray-300' : 'text-gray-700')}`}>{mmObserve?.best ? `${mmObserve.best.edge_bps.toFixed(1)}bps` : '--'}</div></div>
                 </div>
-                <div className="text-[10px] text-gray-500 mt-3 text-right">跨所价差观测 · 毛边未扣费</div>
+                <div className={`mt-3 pt-3 border-t flex items-center justify-between ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
+                  <span className="text-xs text-gray-500">收益·已实现</span>
+                  <span className={`text-sm font-bold ${(mmObserve?.realized_pnl ?? 0) > 0 ? 'text-green-500' : (mmObserve?.realized_pnl ?? 0) < 0 ? 'text-red-500' : (isDarkMode ? 'text-gray-300' : 'text-gray-700')}`}>{mmObserve ? `${(mmObserve.realized_pnl ?? 0) >= 0 ? '+' : ''}${(mmObserve.realized_pnl ?? 0).toFixed(2)} USDT` : '--'}</span>
+                </div>
+                <div className="text-[10px] text-gray-500 mt-2 text-right">跨所价差观测 · observe 未成交</div>
               </div>
             </div>
 

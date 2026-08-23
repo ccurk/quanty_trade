@@ -31,6 +31,11 @@ import (
 // 检测器同时会打印毛差,方便你两种费率下自己判断。
 const triFeePerLeg = 0.00075
 
+// triNotionalUSDT 是"累计理论净利"的假设单次名义额:检测器不成交,realized 恒为 0,
+// 只能给一个"若每次正机会都按 1000U 吃到、理论能净赚多少"的潜力值(net 已扣手续费,
+// 但未计滑点/延迟/成交概率)。纯参考,不是真实收益。
+const triNotionalUSDT = 1000.0
+
 type triLeg struct {
 	sym string // 现货 symbol,如 BTCUSDT / ETHBTC
 	buy bool   // true=用 quote 买 base(吃 ask);false=卖 base 换 quote(吃 bid)
@@ -118,8 +123,12 @@ type TriArbStatus struct {
 	FeePerLegPct float64            `json:"fee_per_leg_pct"`
 	BestNetPct   float64            `json:"best_net_pct"`
 	OppCount     int64              `json:"opp_count"` // 启动以来累计 net>0 机会数
-	Cycles       []triArbCycleState `json:"cycles"`    // 按净利降序
-	RecentOpps   []triArbOppState   `json:"recent_opps"`
+	// TheoreticalNetUSDT:累计理论净利(每次正机会按 NotionalUSDT 吃到、net 已扣费求和)。
+	// 检测器不成交,这不是真实收益,仅"若执行"的潜力参考;未计滑点/延迟/成交率。
+	TheoreticalNetUSDT float64            `json:"theoretical_net_usdt"`
+	NotionalUSDT       float64            `json:"notional_usdt"`
+	Cycles             []triArbCycleState `json:"cycles"` // 按净利降序
+	RecentOpps         []triArbOppState   `json:"recent_opps"`
 }
 
 var (
@@ -136,6 +145,7 @@ func triArbSetConnected(v bool) {
 func triArbAddOpp(name string, net float64) {
 	triArbMu.Lock()
 	triArbSnap.OppCount++
+	triArbSnap.TheoreticalNetUSDT += net / 100 * triNotionalUSDT // net 是百分数,先还原成比例再乘名义额
 	triArbSnap.RecentOpps = append([]triArbOppState{{Name: name, NetPct: net, At: time.Now()}}, triArbSnap.RecentOpps...)
 	if len(triArbSnap.RecentOpps) > 20 {
 		triArbSnap.RecentOpps = triArbSnap.RecentOpps[:20]
@@ -165,6 +175,7 @@ func triArbUpdateCycles(book *triBook) {
 		triArbSnap.BestNetPct = best
 	}
 	triArbSnap.FeePerLegPct = triFeePerLeg * 100
+	triArbSnap.NotionalUSDT = triNotionalUSDT
 	triArbSnap.UpdatedAt = time.Now()
 	triArbMu.Unlock()
 }
