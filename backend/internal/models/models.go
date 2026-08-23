@@ -465,3 +465,25 @@ type TelegramBotState struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
+
+// RebalanceWhitelist is one approved cross-exchange withdrawal destination, edited
+// in the UI. It is the app-side (SECOND) guard: the rebalancer only moves funds to
+// an address that has an Enabled row here. The FIRST, hard guard is the exchange's
+// own "withdraw to whitelisted addresses only" setting — this table does NOT
+// replace it. Address is the destination exchange's deposit address for
+// (Asset, Network); a wrong chain permanently loses funds, so Network is required.
+type RebalanceWhitelist struct {
+	ID       uint   `gorm:"primaryKey" json:"id"`
+	Exchange string `gorm:"size:32;not null;index:uniq_rebalance_wl,unique" json:"exchange"`  // 目标所: gate/binance
+	Asset    string `gorm:"size:32;not null;index:uniq_rebalance_wl,unique" json:"asset"`     // 币种: USDT...
+	Network  string `gorm:"size:32;not null;index:uniq_rebalance_wl,unique" json:"network"`   // 链: TRC20...
+	Address  string `gorm:"size:128;not null;index:uniq_rebalance_wl,unique" json:"address"`  // 目标所的充值地址
+	Memo     string `gorm:"size:128" json:"memo"`  // tag/memo, 需要的链才填
+	Label    string `gorm:"size:128" json:"label"` // 人工备注
+	Enabled  bool   `gorm:"default:true" json:"enabled"`
+	// CreatedBy records which user added the row — a fund-movement audit trail.
+	CreatedBy uint           `json:"created_by"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+}

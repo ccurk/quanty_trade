@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Play, Square, RefreshCw, Activity, Terminal, List, LayoutDashboard, ShoppingBag, Users, LogOut, ShieldCheck, Share2, PlusCircle, Trash2, Menu, X, Sun, Moon, Settings, Code, Search, Info, CheckCircle, AlertCircle } from 'lucide-react';
+import { Play, Square, RefreshCw, Activity, Terminal, List, LayoutDashboard, ShoppingBag, Users, LogOut, ShieldCheck, Share2, PlusCircle, Trash2, Menu, X, Sun, Moon, Settings, Code, Search, Info, CheckCircle, AlertCircle, Wallet } from 'lucide-react';
+import RebalanceWhitelist from './RebalanceWhitelist';
 import Editor from '@monaco-editor/react';
 import Login from './Login';
 import Register from './Register';
@@ -346,7 +347,7 @@ const App: React.FC = () => {
   const [showCandleLogs, setShowCandleLogs] = useState(false);
   const [showWsErrorToasts, setShowWsErrorToasts] = useState(() => localStorage.getItem('show_ws_error_toasts') === 'true');
   const [users, setUsers] = useState<User[]>([]);
-  const [activeTab, setActiveTab] = useState<'strategies' | 'templates' | 'positions' | 'stats' | 'logs' | 'square' | 'admin' | 'develop' | 'triarb'>('stats');
+  const [activeTab, setActiveTab] = useState<'strategies' | 'templates' | 'positions' | 'stats' | 'logs' | 'square' | 'admin' | 'develop' | 'triarb' | 'rebalance'>('stats');
   const [triArb, setTriArb] = useState<TriArbStatus | null>(null);
   const showCandleLogsRef = useRef(showCandleLogs);
   const showWsErrorToastsRef = useRef(showWsErrorToasts);
@@ -1146,6 +1147,7 @@ const App: React.FC = () => {
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'square'} onClick={() => { setActiveTab('square'); setIsSidebarOpen(false); }} icon={<ShoppingBag size={20} />} label="策略广场" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'positions'} onClick={() => { setActiveTab('positions'); setIsSidebarOpen(false); }} icon={<List size={20} />} label="仓位管理" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'triarb'} onClick={() => { setActiveTab('triarb'); setIsSidebarOpen(false); }} icon={<Share2 size={20} />} label="套利检测" />
+          <NavItem isDarkMode={isDarkMode} active={activeTab === 'rebalance'} onClick={() => { setActiveTab('rebalance'); setIsSidebarOpen(false); }} icon={<Wallet size={20} />} label="再平衡" />
           <NavItem isDarkMode={isDarkMode} active={activeTab === 'logs'} onClick={() => { setActiveTab('logs'); setIsSidebarOpen(false); }} icon={<Terminal size={20} />} label="系统日志" />
           {user.role === 'admin' && (
             <NavItem isDarkMode={isDarkMode} active={activeTab === 'admin'} onClick={() => { setActiveTab('admin'); setIsSidebarOpen(false); }} icon={<ShieldCheck size={20} />} label="系统管理" />
@@ -1217,6 +1219,7 @@ const App: React.FC = () => {
               {activeTab === 'positions' && '实时持仓'}
               {activeTab === 'stats' && '数据面板'}
               {activeTab === 'triarb' && '三角套利检测'}
+              {activeTab === 'rebalance' && '再平衡 · 提现白名单'}
               {activeTab === 'logs' && '实时日志'}
               {activeTab === 'admin' && '用户管理'}
             </h2>
@@ -1966,6 +1969,8 @@ const App: React.FC = () => {
 
           </div>
         )}
+
+        {activeTab === 'rebalance' && <RebalanceWhitelist isDarkMode={isDarkMode} />}
 
         {activeTab === 'triarb' && (
           <div className="space-y-4">

@@ -195,6 +195,12 @@ func main() {
 		protected.GET("/stats/modules-pnl", api.GetModulesPnL)
 		protected.GET("/stats/mm-observe", api.GetMMObserve)
 
+		// 跨所再平衡提现白名单(读=登录即可;写=管理员,动钱配置需最高权限)
+		protected.GET("/rebalance/whitelist", api.ListRebalanceWhitelist)
+		protected.POST("/rebalance/whitelist", api.AdminOnly(), api.CreateRebalanceWhitelist)
+		protected.PATCH("/rebalance/whitelist/:id", api.AdminOnly(), api.ToggleRebalanceWhitelist)
+		protected.DELETE("/rebalance/whitelist/:id", api.AdminOnly(), api.DeleteRebalanceWhitelist)
+
 		// Strategy Square
 		protected.GET("/templates", api.ListTemplates)
 		protected.POST("/templates", api.SaveTemplate)
