@@ -128,7 +128,7 @@ interface TriArbStatus {
   cycles: TriArbCycle[];
   recent_opps: TriArbOpp[];
 }
-interface MMObserveRow { exchange: string; symbol: string; net_best_edge_bps: number; buy_edge_bps: number; sell_edge_bps: number; fee_bps: number; fee_live: boolean; suspect?: string; tradeable?: boolean; }
+interface MMObserveRow { exchange: string; symbol: string; net_best_edge_bps: number; buy_edge_bps: number; sell_edge_bps: number; fee_bps: number; fee_live: boolean; suspect?: string; tradeable?: boolean; samples?: number; pos_rate?: number; signal?: boolean; }
 interface MMObserveResponse {
   status: string;
   pairs: number;
@@ -1863,7 +1863,7 @@ const App: React.FC = () => {
                     return (
                       <div key={i} className="flex items-center justify-between text-xs py-0.5">
                         <span className="truncate">{r.symbol}<span className="text-gray-500">@{r.exchange}</span>{r.suspect && <span className="text-amber-400 ml-1">⚠{r.suspect}</span>}</span>
-                        <span className="font-mono"><span className={`font-semibold ${r.net_best_edge_bps > 0 ? 'text-green-500' : 'text-red-500'}`}>{r.net_best_edge_bps >= 0 ? '+' : '-'}${Math.abs(r.net_best_edge_bps * 0.1).toFixed(2)}</span><span className="text-gray-500"> · 净{r.net_best_edge_bps.toFixed(1)}bps</span>{r.tradeable && <span className="text-green-500"> ✓</span>}</span>
+                        <span className="font-mono"><span className={`font-semibold ${r.net_best_edge_bps > 0 ? 'text-green-500' : 'text-red-500'}`}>{r.net_best_edge_bps >= 0 ? '+' : '-'}${Math.abs(r.net_best_edge_bps * 0.1).toFixed(2)}</span><span className="text-gray-500"> · 净{r.net_best_edge_bps.toFixed(1)}bps</span>{r.tradeable && <span className="text-green-500"> ✓</span>}{(r.samples ?? 0) >= 30 ? <span className={`ml-1 ${(r.pos_rate ?? 0) >= 0.8 ? 'text-green-400' : (r.pos_rate ?? 0) >= 0.5 ? 'text-amber-400' : 'text-red-400'}`}>稳{Math.round((r.pos_rate ?? 0) * 100)}%</span> : <span className="text-gray-500 ml-1">样本{r.samples ?? 0}</span>}</span>
                       </div>
                     );
                   })}
