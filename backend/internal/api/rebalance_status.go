@@ -12,7 +12,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var rebalanceMonitor *rebalance.Monitor
+var (
+	rebalanceMonitor  *rebalance.Monitor
+	rebalanceCfg      *rebalance.Config
+	rebalanceExecutor *rebalance.Executor
+)
 
 // StartRebalanceMonitor starts READ-ONLY balance monitoring + recommendations when
 // conf/rebalance.yaml exists with enable:true. It polls both exchanges' spot
@@ -44,12 +48,17 @@ func StartRebalanceMonitor(ctx context.Context) {
 		logger.Infof("[rebalance] binance 余额自检 OK, %d 个非零资产", len(b))
 	}
 
+	rebalanceCfg = cfg
+	rebalanceExecutor = rebalance.NewExecutor(cfg, rebalance.Withdraw, rebalancePriceUSD)
 	rebalanceMonitor = rebalance.NewMonitor(cfg, LoadRebalanceWhitelist, 15*time.Second)
 	stop := make(chan struct{})
 	go func() { <-ctx.Done(); close(stop) }()
 	rebalanceMonitor.Start(stop)
 	logger.Infof("[rebalance] 监控启动 exec=%s reservoir=%s mode=%s dryRun=%v assets=%d",
 		cfg.ExecExchange, cfg.ReservoirExchange, cfg.Mode, cfg.DryRun, len(cfg.Assets))
+	if cfg.Mode == rebalance.ModeAuto {
+		go runAutoRebalance(ctx)
+	}
 }
 
 // GetRebalanceStatus GET /rebalance/status —— 实时余额 + 失衡搬运建议(只读)。

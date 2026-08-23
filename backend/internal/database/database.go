@@ -171,6 +171,7 @@ func InitDB() {
 		&models.TelegramSubscriber{},
 		&models.TelegramBotState{},
 		&models.RebalanceWhitelist{},
+		&models.RebalanceTransfer{},
 	)
 	if err != nil {
 		fatalAlert("Failed to migrate database: %v", err)

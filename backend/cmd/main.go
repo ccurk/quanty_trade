@@ -197,6 +197,8 @@ func main() {
 
 		// 跨所再平衡提现白名单(读=登录即可;写=管理员,动钱配置需最高权限)
 		protected.GET("/rebalance/status", api.GetRebalanceStatus)
+		protected.GET("/rebalance/transfers", api.ListRebalanceTransfers)
+		protected.POST("/rebalance/execute", api.AdminOnly(), api.ExecuteRebalancePlan)
 		protected.GET("/rebalance/whitelist", api.ListRebalanceWhitelist)
 		protected.POST("/rebalance/whitelist", api.AdminOnly(), api.CreateRebalanceWhitelist)
 		protected.PATCH("/rebalance/whitelist/:id", api.AdminOnly(), api.ToggleRebalanceWhitelist)

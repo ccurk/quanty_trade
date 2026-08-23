@@ -487,3 +487,24 @@ type RebalanceWhitelist struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
+
+// RebalanceTransfer is the audit log of every rebalance transfer OUTCOME — real
+// submissions, dry-runs, skips, and failures alike. Only Status=="submitted" rows
+// count toward the daily USD cap and the per-asset cooldown, so the caps survive
+// restarts (they are derived from this table, not in-memory).
+type RebalanceTransfer struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	Asset        string    `gorm:"size:32;index" json:"asset"`
+	FromExchange string    `gorm:"size:32" json:"from_exchange"`
+	ToExchange   string    `gorm:"size:32" json:"to_exchange"`
+	Network      string    `gorm:"size:32" json:"network"`
+	Amount       float64   `json:"amount"`
+	AmountUSD    float64   `json:"amount_usd"`
+	ToAddress    string    `gorm:"size:128" json:"to_address"`
+	Status       string    `gorm:"size:24;index" json:"status"` // submitted|dryrun|skipped|failed
+	TxID         string    `gorm:"size:191" json:"tx_id"`
+	Detail       string    `gorm:"size:255" json:"detail"` // skip reason or error
+	Mode         string    `gorm:"size:16" json:"mode"`
+	CreatedBy    uint      `json:"created_by"`
+	CreatedAt    time.Time `gorm:"index" json:"created_at"`
+}

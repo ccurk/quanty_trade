@@ -108,6 +108,16 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// minTransfer returns the dust threshold for an asset (0 if not configured).
+func (c *Config) minTransfer(asset string) float64 {
+	for _, a := range c.Assets {
+		if strings.EqualFold(a.Asset, asset) {
+			return a.MinTransfer
+		}
+	}
+	return 0
+}
+
 // BuildPlanner turns the config + a UI/DB-sourced whitelist into a Planner.
 func (c *Config) BuildPlanner(wl *Whitelist) *Planner {
 	bands := make([]AssetBand, 0, len(c.Assets))
