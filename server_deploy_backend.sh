@@ -71,7 +71,13 @@ docker create --name "${SEED_CONTAINER}" "${BACKEND_IMAGE}:${BACKEND_VERSION}" >
 docker cp "${SEED_CONTAINER}:/app/strategies/." "${STRATEGIES_DIR}/"
 docker rm -f "${SEED_CONTAINER}" >/dev/null 2>&1 || true
 
+# 做市/交易所密钥从服务器本地 .env 注入(文件存在才挂;缺省不影响 observe)。.env 已被 .gitignore 忽略,勿提交、勿外发。
+MM_ENV_FILE="/root/work/quanty_trade/.env"
+MM_ENV_ARG=""
+[ -f "$MM_ENV_FILE" ] && MM_ENV_ARG="--env-file $MM_ENV_FILE"
+
 docker run -d \
+  ${MM_ENV_ARG} \
   --name "${CONTAINER_NAME}" \
   --restart always \
   -p "${HOST_PORT}:8080" \

@@ -1,2 +1,7 @@
 logs/
 .deploy_*
+# 密钥文件:交易所 API key 等,只放服务器本地,严禁入库
+.env
+.env.*
+!.env.example
+conf/marketmaker.json
