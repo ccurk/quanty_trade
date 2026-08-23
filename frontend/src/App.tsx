@@ -1906,7 +1906,9 @@ const App: React.FC = () => {
                 const positiveDays = cal.filter(d => (d.realized_pnl || 0) > 0).length;
                 const negativeDays = cal.filter(d => (d.realized_pnl || 0) < 0).length;
                 const monthReturn = monthNotional > 0 ? (monthPnl / monthNotional) * 100 : 0;
-                const rows = [...cal].sort((a, b) => b.day.localeCompare(a.day));
+                // 每日明细只列到今天为止,倒序 —— 否则整月未来日期(全 0)会堆在最上面把真实数据压下去。
+                const todayStr = new Date().toISOString().slice(0, 10);
+                const rows = [...cal].filter(d => d.day <= todayStr).sort((a, b) => b.day.localeCompare(a.day));
                 const maxAbs = cal.reduce((m, d) => Math.max(m, Math.abs(d.realized_pnl || 0)), 0) || 1;
                 const getHeat = (v: number) => {
                   const r = Math.abs(v) / maxAbs;
