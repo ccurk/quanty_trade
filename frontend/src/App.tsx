@@ -128,10 +128,12 @@ interface TriArbStatus {
   cycles: TriArbCycle[];
   recent_opps: TriArbOpp[];
 }
+interface MMObserveRow { exchange: string; symbol: string; net_best_edge_bps: number; buy_edge_bps: number; sell_edge_bps: number; fee_bps: number; fee_live: boolean; }
 interface MMObserveResponse {
   status: string;
   pairs: number;
   realized_pnl?: number;
+  rows?: MMObserveRow[];
   best?: { exchange: string; symbol: string; edge_bps: number; net_edge_bps: number; fee_bps: number; fee_live: boolean; exec_spread_bps: number };
 }
 
@@ -385,6 +387,7 @@ const App: React.FC = () => {
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [modulesPnL, setModulesPnL] = useState<ModulesPnLResponse | null>(null);
   const [mmObserve, setMmObserve] = useState<MMObserveResponse | null>(null);
+  const [topPositions, setTopPositions] = useState<Position[]>([]);
   // setters 去掉了：stats tab 现在只剩盈亏日历，不再有 range/自定义日期选择 UI。
   // useState 留着是为了让 fetchDashboard 里读取这几个值的代码继续编译通过——
   // 它们永远是初始值，相当于"默认 range"。
@@ -832,6 +835,11 @@ const App: React.FC = () => {
         const ores = await axios.get('/api/stats/mm-observe');
         setMmObserve(ores.data);
       } catch { /* mm-observe 可选 */ }
+      try {
+        const pres = await axios.get('/api/positions?status=active&page=1&page_size=50');
+        const items = Array.isArray(pres.data?.items) ? pres.data.items : (Array.isArray(pres.data) ? pres.data : []);
+        setTopPositions(items);
+      } catch { /* 量化持仓 Top3 可选 */ }
     } catch (err) {
       console.error('Failed to fetch dashboard', err);
     }
@@ -1791,6 +1799,16 @@ const App: React.FC = () => {
                       <div><div className="text-xs text-gray-500 mb-1">总计</div><div className={`text-base font-bold ${color(q?.total)}`}>{fmt(q?.total)}</div></div>
                     </div>
                     <div className="text-[10px] text-gray-500 mt-3 text-right">已实现盈亏 · USDT</div>
+                    <div className={`mt-3 pt-3 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
+                      <div className="text-[10px] text-gray-500 mb-1">持仓 Top 3 · 按未实现盈亏</div>
+                      {[...topPositions].sort((a, b) => (b.unrealized_pnl ?? 0) - (a.unrealized_pnl ?? 0)).slice(0, 3).map((p, i) => (
+                        <div key={i} className="flex items-center justify-between text-xs py-0.5">
+                          <span className="truncate">{p.symbol}<span className="text-gray-500 ml-1">{p.direction || ''}</span></span>
+                          <span className={`font-mono font-semibold ${(p.unrealized_pnl ?? 0) > 0 ? 'text-green-500' : (p.unrealized_pnl ?? 0) < 0 ? 'text-red-500' : 'text-gray-400'}`}>{(p.unrealized_pnl ?? 0) >= 0 ? '+' : ''}{(p.unrealized_pnl ?? 0).toFixed(2)}</span>
+                        </div>
+                      ))}
+                      {topPositions.length === 0 && <div className="text-xs text-gray-500">暂无持仓</div>}
+                    </div>
                   </div>
                 );
               })()}
@@ -1811,6 +1829,16 @@ const App: React.FC = () => {
                   <span className={`text-sm font-bold ${(triArb?.theoretical_net_usdt ?? 0) > 0 ? 'text-green-500' : (isDarkMode ? 'text-gray-300' : 'text-gray-700')}`}>{triArb ? `${triArb.theoretical_net_usdt >= 0 ? '+' : ''}${triArb.theoretical_net_usdt.toFixed(2)} USDT` : '--'}</span>
                 </div>
                 <div className="text-[10px] text-gray-500 mt-2 text-right">理论·假设每次{triArb ? triArb.notional_usdt : 1000}U·未执行{triArb ? ` · 扣费${triArb.fee_per_leg_pct}%/腿` : ''}</div>
+                <div className={`mt-3 pt-3 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
+                  <div className="text-[10px] text-gray-500 mb-1">环 Top 3 · 按净利%</div>
+                  {(triArb?.cycles || []).slice(0, 3).map((c, i) => (
+                    <div key={i} className="flex items-center justify-between text-xs py-0.5">
+                      <span className="truncate">{c.name}</span>
+                      <span className={`font-mono font-semibold ${c.net_pct > 0 ? 'text-green-500' : 'text-red-500'}`}>{c.net_pct >= 0 ? '+' : ''}{c.net_pct.toFixed(4)}%</span>
+                    </div>
+                  ))}
+                  {(!triArb?.cycles || triArb.cycles.length === 0) && <div className="text-xs text-gray-500">暂无</div>}
+                </div>
               </div>
 
               {/* 做市:跨所价差观测(observe,尚未成交) */}
@@ -1829,6 +1857,16 @@ const App: React.FC = () => {
                   <span className={`text-sm font-bold ${(mmObserve?.realized_pnl ?? 0) > 0 ? 'text-green-500' : (mmObserve?.realized_pnl ?? 0) < 0 ? 'text-red-500' : (isDarkMode ? 'text-gray-300' : 'text-gray-700')}`}>{mmObserve ? `${(mmObserve.realized_pnl ?? 0) >= 0 ? '+' : ''}${(mmObserve.realized_pnl ?? 0).toFixed(2)} USDT` : '--'}</span>
                 </div>
                 <div className="text-[10px] text-gray-500 mt-2 text-right">净边=毛边−2×maker费{mmObserve?.best ? ` · 费${mmObserve.best.fee_bps.toFixed(1)}bps${mmObserve.best.fee_live ? '实时' : '假设'}` : ''} · observe 未成交</div>
+                <div className={`mt-3 pt-3 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
+                  <div className="text-[10px] text-gray-500 mb-1">观测对 Top 3 · 按净边(跨所混排)</div>
+                  {(mmObserve?.rows || []).slice(0, 3).map((r, i) => (
+                    <div key={i} className="flex items-center justify-between text-xs py-0.5">
+                      <span className="truncate">{r.symbol}<span className="text-gray-500">@{r.exchange}</span></span>
+                      <span className={`font-mono font-semibold ${r.net_best_edge_bps > 0 ? 'text-green-500' : 'text-red-500'}`}>{r.net_best_edge_bps.toFixed(1)}bps</span>
+                    </div>
+                  ))}
+                  {(!mmObserve?.rows || mmObserve.rows.length === 0) && <div className="text-xs text-gray-500">暂无</div>}
+                </div>
               </div>
             </div>
 
