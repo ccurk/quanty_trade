@@ -51,7 +51,17 @@ type UniverseRow struct {
 	NetBestEdgeBps float64 `json:"net_best_edge_bps"`
 	QuoteVol       float64 `json:"quote_vol"` // 执行所 24h 成交额(USDT,若接口提供)
 	Suspect        string  `json:"suspect"`   // 空=干净候选;否则为疑点(薄/偏离/宽价差),不删只标
+	// 持续性统计(跨多轮扫描累计,用于把"某一秒的快照"升级成"稳定信号"):
+	Samples int64   `json:"samples"`     // 累计采样数
+	PosRate float64 `json:"pos_rate"`    // 净边>0 的占比
+	AvgNet  float64 `json:"avg_net_bps"` // 平均净边
+	Signal  bool    `json:"signal"`      // 稳定信号:干净 + 采样够 + 大比例为正 + 平均为正
 }
+
+const (
+	signalMinSamples = 30  // 至少 30 次采样(~5 分钟 @10s)才有统计意义
+	signalMinPosRate = 0.8 // 净边>0 占比 ≥ 80%
+)
 
 func (r UniverseRow) BestEdgeBps() float64 {
 	if r.BuyEdgeBps > r.SellEdgeBps {
@@ -67,6 +77,19 @@ var (
 	universeAt      time.Time
 	universeErr     string
 	universeRunning bool
+)
+
+// pairStat accumulates a pair's net-edge history across scans, so a persistent
+// positive net edge (a real signal) is told apart from a one-scan flicker (noise).
+type pairStat struct {
+	samples, posCount int64
+	sumNet, maxNet    float64
+	since             time.Time
+}
+
+var (
+	statMu    sync.RWMutex
+	pairStats = map[string]*pairStat{}
 )
 
 // execTicker is a normalized exec quote keyed to its binance reference symbol.
@@ -163,6 +186,30 @@ func scanUniverseOnce(exchanges []string) {
 	}
 	// 干净候选(无疑点)排前,再按净边降序 —— 卡片"最优机会"永远是最好的真候选,
 	// 可疑的仍保留在后面(机会不漏),但不会被当成头号机会。
+	// 累计持续性统计(只统计干净候选,含未进 top-100 的),用于信号判定。
+	now := time.Now()
+	statMu.Lock()
+	for i := range rows {
+		if rows[i].Suspect != "" {
+			continue
+		}
+		k := rows[i].Exchange + "|" + rows[i].Symbol
+		s := pairStats[k]
+		if s == nil {
+			s = &pairStat{since: now}
+			pairStats[k] = s
+		}
+		s.samples++
+		s.sumNet += rows[i].NetBestEdgeBps
+		if s.samples == 1 || rows[i].NetBestEdgeBps > s.maxNet {
+			s.maxNet = rows[i].NetBestEdgeBps
+		}
+		if rows[i].NetBestEdgeBps > 0 {
+			s.posCount++
+		}
+	}
+	statMu.Unlock()
+
 	sort.Slice(rows, func(i, j int) bool {
 		ci, cj := rows[i].Suspect == "", rows[j].Suspect == ""
 		if ci != cj {
@@ -173,6 +220,17 @@ func scanUniverseOnce(exchanges []string) {
 	if len(rows) > universeTopN {
 		rows = rows[:universeTopN]
 	}
+	// 把统计 + 信号标记附到展示行上。信号 = 干净 + 采样够 + 大比例为正 + 平均为正。
+	statMu.RLock()
+	for i := range rows {
+		if s := pairStats[rows[i].Exchange+"|"+rows[i].Symbol]; s != nil && s.samples > 0 {
+			rows[i].Samples = s.samples
+			rows[i].PosRate = float64(s.posCount) / float64(s.samples)
+			rows[i].AvgNet = s.sumNet / float64(s.samples)
+			rows[i].Signal = rows[i].Suspect == "" && s.samples >= signalMinSamples && rows[i].PosRate >= signalMinPosRate && rows[i].AvgNet > 0
+		}
+	}
+	statMu.RUnlock()
 	universeMu.Lock()
 	universeRows = rows
 	universeMatched = matched

@@ -80,6 +80,6 @@ func StartBackgroundJobs(ctx context.Context, mgr *strategy.Manager) {
 	api.StartLogRetentionJob(ctx)
 	api.StartTriArbDetectorJob(ctx)
 	api.StartRebalanceMonitor(ctx)
-	// 做市全市场扫描:每 10s 批量拉全市场行情,按净边排序取 Top-100(动态,公共行情)。
-	marketmaker.StartUniverseScanner([]string{"gate", "kucoin", "coinsph"}, 10)
+	// 做市全市场扫描:只扫用户能实际交易的所(kucoin/mexc 因 +86 无法注册已剔除)。
+	marketmaker.StartUniverseScanner([]string{"gate", "coinsph"}, 10)
 }
