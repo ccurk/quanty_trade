@@ -54,8 +54,9 @@ type UniverseRow struct {
 	// 持续性统计(跨多轮扫描累计,用于把"某一秒的快照"升级成"稳定信号"):
 	Samples int64   `json:"samples"`     // 累计采样数
 	PosRate float64 `json:"pos_rate"`    // 净边>0 的占比
-	AvgNet  float64 `json:"avg_net_bps"` // 平均净边
-	Signal  bool    `json:"signal"`      // 稳定信号:干净 + 采样够 + 大比例为正 + 平均为正
+	AvgNet    float64 `json:"avg_net_bps"` // 平均净边
+	Signal    bool    `json:"signal"`      // 稳定信号:干净 + 采样够 + 大比例为正 + 平均为正
+	Tradeable bool    `json:"tradeable"`   // 能下单:干净 + 扣真实 per-pair 费后净边 > 0
 }
 
 const (
@@ -147,7 +148,13 @@ func scanUniverseOnce(exchanges []string) {
 		if e != nil {
 			continue
 		}
-		feeBps, feeLive := execAccountFeeBps(ex)
+		if strings.EqualFold(ex, "gate") {
+			gsyms := make([]string, 0, len(tickers))
+			for _, gt := range tickers {
+				gsyms = append(gsyms, gt.native)
+			}
+			PrefetchGateMakerFees(gsyms) // 批量拉真实 per-pair maker 费(零费对=0),填缓存
+		}
 		for _, tk := range tickers {
 			refMid, ok := ref[tk.refSymbol]
 			if !ok || refMid <= 0 || tk.bid <= 0 || tk.ask <= 0 {
@@ -169,6 +176,7 @@ func scanUniverseOnce(exchanges []string) {
 			} else if tk.quoteVol > 0 && tk.quoteVol < suspectMinQuoteVol {
 				suspect = "量薄"
 			}
+			feeBps, feeLive := CachedMakerFeeBps(ex, tk.native) // 真实 per-pair maker 费(零费=0)
 			buyEdge := (refMid - tk.bid) / refMid * 10000
 			sellEdge := (tk.ask - refMid) / refMid * 10000
 			best := buyEdge
@@ -181,6 +189,7 @@ func scanUniverseOnce(exchanges []string) {
 				BuyEdgeBps: buyEdge, SellEdgeBps: sellEdge,
 				FeeBps: feeBps, FeeLive: feeLive, NetBestEdgeBps: best - 2*feeBps,
 				QuoteVol: tk.quoteVol, Suspect: suspect,
+				Tradeable: suspect == "" && best-2*feeBps > 0,
 			})
 		}
 	}

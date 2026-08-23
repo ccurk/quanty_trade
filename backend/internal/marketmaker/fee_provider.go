@@ -117,3 +117,88 @@ func fetchGateMakerBps(symbol string) (float64, error) {
 	}
 	return f * 10000, nil
 }
+
+var gateFeePrefetchAt time.Time
+
+// PrefetchGateMakerFees batch-loads gate's REAL per-pair maker fee into the cache
+// via GET /api/v4/spot/batch_fee (≤50 pairs/call). This is what makes a zero-fee /
+// promo pair surface its true 0 fee per pair (so its net edge = gross). Throttled to
+// feeTTL so the whole-market scan doesn't refetch every cycle.
+func PrefetchGateMakerFees(symbols []string) {
+	feeMu.RLock()
+	fresh := !gateFeePrefetchAt.IsZero() && time.Since(gateFeePrefetchAt) < feeTTL
+	feeMu.RUnlock()
+	if fresh || len(symbols) == 0 {
+		return
+	}
+	key, secret := os.Getenv("MM_GATE_API_KEY"), os.Getenv("MM_GATE_API_SECRET")
+	if key == "" || secret == "" {
+		return
+	}
+	for i := 0; i < len(symbols); i += 50 {
+		end := i + 50
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		fetchGateBatchFees(symbols[i:end], key, secret)
+	}
+	feeMu.Lock()
+	gateFeePrefetchAt = time.Now()
+	feeMu.Unlock()
+}
+
+func fetchGateBatchFees(pairs []string, key, secret string) {
+	const host = "https://api.gateio.ws"
+	const path = "/api/v4/spot/batch_fee"
+	query := "currency_pairs=" + strings.Join(pairs, ",")
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	bh := sha512.Sum512([]byte(""))
+	payload := "GET\n" + path + "\n" + query + "\n" + hex.EncodeToString(bh[:]) + "\n" + ts
+	mac := hmac.New(sha512.New, []byte(secret))
+	mac.Write([]byte(payload))
+	sign := hex.EncodeToString(mac.Sum(nil))
+	req, _ := http.NewRequest(http.MethodGet, host+path+"?"+query, nil)
+	req.Header.Set("KEY", key)
+	req.Header.Set("Timestamp", ts)
+	req.Header.Set("SIGN", sign)
+	req.Header.Set("Accept", "application/json")
+	resp, err := feeHTTP.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	var m map[string]struct {
+		MakerFee string `json:"maker_fee"`
+	}
+	if json.Unmarshal(rb, &m) != nil {
+		return
+	}
+	now := time.Now()
+	feeMu.Lock()
+	for pair, v := range m {
+		f, err := strconv.ParseFloat(v.MakerFee, 64)
+		if err != nil {
+			continue
+		}
+		feeCache["gate|"+pair] = feeEntry{bps: f * 10000, live: true, at: now}
+	}
+	feeMu.Unlock()
+}
+
+// CachedMakerFeeBps returns the cached maker fee (no HTTP). Fresh cache → (fee, live);
+// otherwise the labeled default → (default, false). The universe scan uses this after
+// PrefetchGateMakerFees has populated the cache.
+func CachedMakerFeeBps(exchange, symbol string) (float64, bool) {
+	k := strings.ToLower(exchange) + "|" + symbol
+	feeMu.RLock()
+	e, ok := feeCache[k]
+	feeMu.RUnlock()
+	if ok && time.Since(e.at) < feeTTL {
+		return e.bps, e.live
+	}
+	return defaultFeeBps(exchange), false
+}

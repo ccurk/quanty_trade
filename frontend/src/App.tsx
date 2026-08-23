@@ -128,7 +128,7 @@ interface TriArbStatus {
   cycles: TriArbCycle[];
   recent_opps: TriArbOpp[];
 }
-interface MMObserveRow { exchange: string; symbol: string; net_best_edge_bps: number; buy_edge_bps: number; sell_edge_bps: number; fee_bps: number; fee_live: boolean; suspect?: string; }
+interface MMObserveRow { exchange: string; symbol: string; net_best_edge_bps: number; buy_edge_bps: number; sell_edge_bps: number; fee_bps: number; fee_live: boolean; suspect?: string; tradeable?: boolean; }
 interface MMObserveResponse {
   status: string;
   pairs: number;
@@ -1850,7 +1850,7 @@ const App: React.FC = () => {
                 <div className="grid grid-cols-3 gap-2 text-center">
                   <div><div className="text-xs text-gray-500 mb-1">观测对数</div><div className="text-base font-bold text-blue-400">{mmObserve ? mmObserve.pairs : '--'}</div></div>
                   <div><div className="text-xs text-gray-500 mb-1">最优机会</div><div className="text-sm font-bold text-gray-300 truncate">{mmObserve?.best ? `${mmObserve.best.symbol}@${mmObserve.best.exchange}` : '--'}</div></div>
-                  <div><div className="text-xs text-gray-500 mb-1">最大净边</div><div className={`text-base font-bold ${(mmObserve?.best?.net_edge_bps ?? 0) > 0 ? 'text-green-500' : 'text-red-500'}`}>{mmObserve?.best ? `${mmObserve.best.net_edge_bps.toFixed(1)}bps` : '--'}</div></div>
+                  <div><div className="text-xs text-gray-500 mb-1">最优盈亏/单</div><div className={`text-base font-bold ${(mmObserve?.best?.net_edge_bps ?? 0) > 0 ? 'text-green-500' : 'text-red-500'}`}>{mmObserve?.best ? `${mmObserve.best.net_edge_bps >= 0 ? '+' : '-'}$${Math.abs(mmObserve.best.net_edge_bps * 0.1).toFixed(2)}` : '--'}</div></div>
                 </div>
                 <div className={`mt-3 pt-3 border-t flex items-center justify-between ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
                   <span className="text-xs text-gray-500">收益·已实现</span>
@@ -1858,13 +1858,12 @@ const App: React.FC = () => {
                 </div>
                 <div className="text-[10px] text-gray-500 mt-2 text-right">净边=毛边−2×maker费{mmObserve?.best ? ` · 费${mmObserve.best.fee_bps.toFixed(1)}bps${mmObserve.best.fee_live ? '实时' : '假设'}` : ''} · observe 未成交</div>
                 <div className={`mt-3 pt-3 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
-                  <div className="text-[10px] text-gray-500 mb-1">观测对 Top 3 · 按净边(跨所混排)· 毛边参考</div>
+                  <div className="text-[10px] text-gray-500 mb-1">观测对 Top 3 · 按理论盈亏排(假设 $1000/单)· ✓=能下单</div>
                   {(mmObserve?.rows || []).slice(0, 3).map((r, i) => {
-                    const gross = Math.max(r.buy_edge_bps, r.sell_edge_bps);
                     return (
                       <div key={i} className="flex items-center justify-between text-xs py-0.5">
                         <span className="truncate">{r.symbol}<span className="text-gray-500">@{r.exchange}</span>{r.suspect && <span className="text-amber-400 ml-1">⚠{r.suspect}</span>}</span>
-                        <span className="font-mono"><span className="text-gray-500">毛{gross.toFixed(1)} </span><span className={`font-semibold ${r.net_best_edge_bps > 0 ? 'text-green-500' : 'text-red-500'}`}>净{r.net_best_edge_bps.toFixed(1)}</span><span className="text-gray-500">bps</span></span>
+                        <span className="font-mono"><span className={`font-semibold ${r.net_best_edge_bps > 0 ? 'text-green-500' : 'text-red-500'}`}>{r.net_best_edge_bps >= 0 ? '+' : '-'}${Math.abs(r.net_best_edge_bps * 0.1).toFixed(2)}</span><span className="text-gray-500"> · 净{r.net_best_edge_bps.toFixed(1)}bps</span>{r.tradeable && <span className="text-green-500"> ✓</span>}</span>
                       </div>
                     );
                   })}
