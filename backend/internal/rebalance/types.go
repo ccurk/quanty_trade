@@ -14,10 +14,10 @@ import "strings"
 
 // Balance is a spot balance snapshot for one asset on one exchange.
 type Balance struct {
-	Exchange string
-	Asset    string
-	Free     float64
-	Locked   float64
+	Exchange string  `json:"exchange"`
+	Asset    string  `json:"asset"`
+	Free     float64 `json:"free"`
+	Locked   float64 `json:"locked"`
 }
 
 // Total is free + locked (locked = resting in open orders).
@@ -50,14 +50,14 @@ type AssetBand struct {
 // resolved from the whitelist; an empty ToAddress means no whitelisted destination
 // was found and the transfer CANNOT be executed — the Reason says why.
 type Plan struct {
-	Asset        string
-	FromExchange string
-	ToExchange   string
-	Amount       float64
-	Network      string
-	ToAddress    string // "" ⇒ blocked (no whitelisted destination)
-	Memo         string
-	Reason       string
+	Asset        string  `json:"asset"`
+	FromExchange string  `json:"from_exchange"`
+	ToExchange   string  `json:"to_exchange"`
+	Amount       float64 `json:"amount"`
+	Network      string  `json:"network"`
+	ToAddress    string  `json:"to_address"` // "" ⇒ blocked (no whitelisted destination)
+	Memo         string  `json:"memo"`
+	Reason       string  `json:"reason"`
 }
 
 // Executable is true only when a whitelisted destination address was resolved.

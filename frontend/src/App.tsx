@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Play, Square, RefreshCw, Activity, Terminal, List, LayoutDashboard, ShoppingBag, Users, LogOut, ShieldCheck, Share2, PlusCircle, Trash2, Menu, X, Sun, Moon, Settings, Code, Search, Info, CheckCircle, AlertCircle, Wallet } from 'lucide-react';
 import RebalanceWhitelist from './RebalanceWhitelist';
+import RebalanceStatus from './RebalanceStatus';
 import Editor from '@monaco-editor/react';
 import Login from './Login';
 import Register from './Register';
@@ -1970,7 +1971,12 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {activeTab === 'rebalance' && <RebalanceWhitelist isDarkMode={isDarkMode} />}
+        {activeTab === 'rebalance' && (
+          <div className="space-y-4">
+            <RebalanceStatus isDarkMode={isDarkMode} />
+            <RebalanceWhitelist isDarkMode={isDarkMode} />
+          </div>
+        )}
 
         {activeTab === 'triarb' && (
           <div className="space-y-4">
