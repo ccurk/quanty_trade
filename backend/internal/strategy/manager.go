@@ -618,6 +618,33 @@ func (m *Manager) StopPositionTPStopMonitor(strategyID string, symbol string) {
 	m.stopPositionTPStopMonitor(inst, symbol)
 }
 
+// staleGracePeriod 是"新仓宽限期":USDM 无实时成交流,平仓全靠 2s 轮询;刚开的仓可能
+// 只是交易所持仓查询还没反映,宽限内不判 stale,避免 open→stale→收养 每 2s churn。
+const staleGracePeriod = 30 * time.Second
+
+// fetchStaleRealizedPnL 汇总该仓生命周期内币安 USDM 的真实 REALIZED_PNL —— 交易所侧
+// (TP/SL/强平/手工)平仓的真实盈亏,否则会被按开仓价记成持平(0)。取不到返回 (0,false),
+// 调用方保留旧的持平回退。注:共享账户下同 symbol 并发交易可能串账,属已知取舍。
+func (m *Manager) fetchStaleRealizedPnL(ex exchange.Exchange, ownerID uint, symKey string, openTime, now time.Time) (float64, bool) {
+	bex, ok := ex.(*exchange.BinanceExchange)
+	if !ok || openTime.IsZero() {
+		return 0, false
+	}
+	events, err := bex.USDMIncomeHistory(ownerID, openTime.Add(-time.Minute), now, 1000)
+	if err != nil {
+		return 0, false
+	}
+	var sum float64
+	var found bool
+	for _, ev := range events {
+		if ev.IncomeType == "REALIZED_PNL" && exchange.NormalizeSymbol(ev.Symbol) == symKey {
+			sum += ev.Income
+			found = true
+		}
+	}
+	return sum, found
+}
+
 func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 	if m == nil {
 		return
@@ -701,6 +728,29 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 					continue
 				}
 				if _, ok := activePositions[symKey]; !ok {
+					// 新仓宽限:刚开的仓可能只是交易所持仓查询还没反映,别误判平仓。
+					if !row.OpenTime.IsZero() && now.Sub(row.OpenTime) < staleGracePeriod {
+						if strings.TrimSpace(row.StrategyID) != "" {
+							countByStrategy[row.StrategyID]++
+							countedSymbols[symKey] = struct{}{}
+						}
+						continue
+					}
+					// 交易所侧平仓无实时成交价,过去拿开仓价当平仓价 → 记 0(持平)。这里拉真实
+					// REALIZED_PNL 回填,让持仓行 + 量化卡的 realized PnL 反映真盈亏。
+					realizedPnL, closeKnown := m.fetchStaleRealizedPnL(ex, ownerID, symKey, row.OpenTime, now)
+					qtyClosed := math.Abs(row.Amount)
+					impliedClose := row.AvgClosePrice
+					if impliedClose <= 0 {
+						impliedClose = row.AvgPrice
+					}
+					if closeKnown && qtyClosed > 0 && row.AvgPrice > 0 {
+						if strings.EqualFold(row.Direction, "short") {
+							impliedClose = row.AvgPrice - realizedPnL/qtyClosed
+						} else {
+							impliedClose = row.AvgPrice + realizedPnL/qtyClosed
+						}
+					}
 					closeTime := row.CloseTime
 					if closeTime.IsZero() {
 						closeTime = now
@@ -712,6 +762,11 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 					}
 					if row.CloseTime.IsZero() {
 						updates["close_time"] = now
+					}
+					if closeKnown {
+						updates["realized_pn_l"] = realizedPnL
+						updates["avg_close_price"] = impliedClose
+						updates["closed_qty"] = qtyClosed
 					}
 					_ = database.DB.Model(&models.StrategyPosition{}).Where("id = ?", row.ID).Updates(updates).Error
 					if strings.TrimSpace(row.StrategyID) != "" {
@@ -735,7 +790,7 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 					if strings.EqualFold(row.Direction, "short") {
 						side = "buy"
 					}
-					exitPrice := row.AvgClosePrice
+					exitPrice := impliedClose
 					if exitPrice <= 0 {
 						exitPrice = row.AvgPrice
 					}
@@ -744,6 +799,11 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 					closeRow.Status = "closed"
 					closeRow.CloseTime = closeTime
 					closeRow.UpdatedAt = now
+					if closeKnown {
+						closeRow.RealizedPnL = realizedPnL
+						closeRow.AvgClosePrice = impliedClose
+						closeRow.ClosedQty = qtyClosed
+					}
 					if inst != nil && inst.hub != nil {
 						inst.hub.BroadcastJSON(map[string]interface{}{
 							"type":   "position",
