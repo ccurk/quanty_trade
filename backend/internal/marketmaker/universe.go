@@ -27,11 +27,12 @@ var universeHTTP = &http.Client{Timeout: 15 * time.Second}
 
 const (
 	universeTopN = 100
-	// maxExecSpreadBps: 执行所自身买卖价差超过此值视为不流动,剔除 —— 宽价差的"边"挂不进/被逆向吃,是幻觉。
-	maxExecSpreadBps = 50
-	// maxDivergenceBps: 执行所中价与币安中价偏离超过此值,几乎必是"同名不同币 / 陈价 / 跨所套利(非做市)",
-	// 剔除。真做市里两所对同一个币的价格是高度一致的,偏离只有个位数 bps。
-	maxDivergenceBps = 200
+	// 硬删:偏离过大几乎必是"同名不同币 / 完全陈价",毫无做市价值,直接丢弃。
+	hardDropDivergenceBps = 300
+	// 疑点阈值(不删,只打标"suspect"):机会不漏、陷阱看得见,由人工识别。
+	suspectDivergenceBps = 50    // 与币安中价偏离 > 此 = 可疑(可能异币/陈价/套利)
+	suspectSpreadBps     = 30    // 执行所自身价差 > 此 = 可疑(偏薄/宽价差幻觉)
+	suspectMinQuoteVol   = 50000 // 24h 成交额 < $50k = 可疑(薄),仅在接口给出成交额时判定
 )
 
 // UniverseRow is one exec pair measured against its binance reference.
@@ -48,6 +49,8 @@ type UniverseRow struct {
 	FeeBps         float64 `json:"fee_bps"`
 	FeeLive        bool    `json:"fee_live"`
 	NetBestEdgeBps float64 `json:"net_best_edge_bps"`
+	QuoteVol       float64 `json:"quote_vol"` // 执行所 24h 成交额(USDT,若接口提供)
+	Suspect        string  `json:"suspect"`   // 空=干净候选;否则为疑点(薄/偏离/宽价差),不删只标
 }
 
 func (r UniverseRow) BestEdgeBps() float64 {
@@ -71,6 +74,7 @@ type execTicker struct {
 	refSymbol string
 	native    string
 	bid, ask  float64
+	quoteVol  float64 // 24h 成交额(USDT),接口不提供则 0
 }
 
 // StartUniverseScanner runs the full-market scan every refreshSec (public data only).
@@ -128,14 +132,20 @@ func scanUniverseOnce(exchanges []string) {
 			}
 			execMid := (tk.bid + tk.ask) / 2
 			execSpreadBps := (tk.ask - tk.bid) / execMid * 10000
-			if execSpreadBps > maxExecSpreadBps {
-				continue // 不流动:宽价差是"没人挂的价"幻觉,挂不进/被逆向吃
-			}
 			midDiffBps := math.Abs(execMid-refMid) / refMid * 10000
-			if midDiffBps > maxDivergenceBps {
-				continue // 偏离过大:同名异币 / 陈价 / 跨所套利(搬不动),不是做市
+			if midDiffBps > hardDropDivergenceBps {
+				continue // 硬删:偏离过大,同名异币/完全陈价,无做市价值
 			}
 			matched++
+			// 疑点判定:不删,只打标 —— 机会不漏、陷阱看得见,人工识别。
+			suspect := ""
+			if execSpreadBps > suspectSpreadBps {
+				suspect = "宽价差"
+			} else if midDiffBps > suspectDivergenceBps {
+				suspect = "偏离大"
+			} else if tk.quoteVol > 0 && tk.quoteVol < suspectMinQuoteVol {
+				suspect = "量薄"
+			}
 			buyEdge := (refMid - tk.bid) / refMid * 10000
 			sellEdge := (tk.ask - refMid) / refMid * 10000
 			best := buyEdge
@@ -147,10 +157,19 @@ func scanUniverseOnce(exchanges []string) {
 				RefMid: refMid, ExecMid: execMid, ExecSpreadBps: execSpreadBps, MidDiffBps: midDiffBps,
 				BuyEdgeBps: buyEdge, SellEdgeBps: sellEdge,
 				FeeBps: feeBps, FeeLive: feeLive, NetBestEdgeBps: best - 2*feeBps,
+				QuoteVol: tk.quoteVol, Suspect: suspect,
 			})
 		}
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].NetBestEdgeBps > rows[j].NetBestEdgeBps })
+	// 干净候选(无疑点)排前,再按净边降序 —— 卡片"最优机会"永远是最好的真候选,
+	// 可疑的仍保留在后面(机会不漏),但不会被当成头号机会。
+	sort.Slice(rows, func(i, j int) bool {
+		ci, cj := rows[i].Suspect == "", rows[j].Suspect == ""
+		if ci != cj {
+			return ci
+		}
+		return rows[i].NetBestEdgeBps > rows[j].NetBestEdgeBps
+	})
 	if len(rows) > universeTopN {
 		rows = rows[:universeTopN]
 	}
@@ -223,6 +242,7 @@ func fetchGateTickers() ([]execTicker, error) {
 		CurrencyPair string `json:"currency_pair"`
 		HighestBid   string `json:"highest_bid"`
 		LowestAsk    string `json:"lowest_ask"`
+		QuoteVolume  string `json:"quote_volume"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, err
@@ -236,6 +256,7 @@ func fetchGateTickers() ([]execTicker, error) {
 			refSymbol: strings.ReplaceAll(r.CurrencyPair, "_", ""),
 			native:    r.CurrencyPair,
 			bid:       atofU(r.HighestBid), ask: atofU(r.LowestAsk),
+			quoteVol: atofU(r.QuoteVolume),
 		})
 	}
 	return out, nil
@@ -249,9 +270,10 @@ func fetchKucoinTickers() ([]execTicker, error) {
 	var raw struct {
 		Data struct {
 			Ticker []struct {
-				Symbol string `json:"symbol"`
-				Buy    string `json:"buy"`
-				Sell   string `json:"sell"`
+				Symbol   string `json:"symbol"`
+				Buy      string `json:"buy"`
+				Sell     string `json:"sell"`
+				VolValue string `json:"volValue"`
 			} `json:"ticker"`
 		} `json:"data"`
 	}
@@ -267,6 +289,7 @@ func fetchKucoinTickers() ([]execTicker, error) {
 			refSymbol: strings.ReplaceAll(r.Symbol, "-", ""),
 			native:    r.Symbol,
 			bid:       atofU(r.Buy), ask: atofU(r.Sell),
+			quoteVol: atofU(r.VolValue),
 		})
 	}
 	return out, nil

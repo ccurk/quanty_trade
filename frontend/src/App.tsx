@@ -128,7 +128,7 @@ interface TriArbStatus {
   cycles: TriArbCycle[];
   recent_opps: TriArbOpp[];
 }
-interface MMObserveRow { exchange: string; symbol: string; net_best_edge_bps: number; buy_edge_bps: number; sell_edge_bps: number; fee_bps: number; fee_live: boolean; }
+interface MMObserveRow { exchange: string; symbol: string; net_best_edge_bps: number; buy_edge_bps: number; sell_edge_bps: number; fee_bps: number; fee_live: boolean; suspect?: string; }
 interface MMObserveResponse {
   status: string;
   pairs: number;
@@ -1863,7 +1863,7 @@ const App: React.FC = () => {
                     const gross = Math.max(r.buy_edge_bps, r.sell_edge_bps);
                     return (
                       <div key={i} className="flex items-center justify-between text-xs py-0.5">
-                        <span className="truncate">{r.symbol}<span className="text-gray-500">@{r.exchange}</span></span>
+                        <span className="truncate">{r.symbol}<span className="text-gray-500">@{r.exchange}</span>{r.suspect && <span className="text-amber-400 ml-1">⚠{r.suspect}</span>}</span>
                         <span className="font-mono"><span className="text-gray-500">毛{gross.toFixed(1)} </span><span className={`font-semibold ${r.net_best_edge_bps > 0 ? 'text-green-500' : 'text-red-500'}`}>净{r.net_best_edge_bps.toFixed(1)}</span><span className="text-gray-500">bps</span></span>
                       </div>
                     );
