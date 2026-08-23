@@ -17,9 +17,10 @@ import (
 
 // fee_provider.go supplies the maker fee (bps) used to turn the observed GROSS edge
 // into a NET edge. For gate it fetches the account's REAL per-pair maker fee live
-// (GET /api/v4/wallet/fee) so a zero-fee / promo pair shows up as 0 automatically;
-// results are cached for feeTTL. Exchanges we hold no key for fall back to a clearly
-// labeled default (live=false), so the UI can show it's an assumption not a real rate.
+// (GET /api/v4/spot/fee — uses the SPOT permission the key already has; /wallet/fee
+// needs a separate wallet permission) so a zero-fee / promo pair shows up as 0
+// automatically; results are cached for feeTTL. Exchanges we hold no key for fall
+// back to a clearly labeled default (live=false) so the UI shows it's an assumption.
 
 var feeHTTP = &http.Client{Timeout: 10 * time.Second}
 
@@ -27,7 +28,7 @@ const feeTTL = 5 * time.Minute
 
 // defaultMakerBps is the fallback maker fee (bps) when a live rate can't be fetched.
 // These are conservative placeholders, NOT authoritative — shown as "assumed".
-var defaultMakerBps = map[string]float64{"gate": 20, "kucoin": 10, "coinsph": 25}
+var defaultMakerBps = map[string]float64{"gate": 10, "kucoin": 10, "coinsph": 25}
 
 func defaultFeeBps(ex string) float64 {
 	if v, ok := defaultMakerBps[strings.ToLower(ex)]; ok {
@@ -72,14 +73,14 @@ func MakerFeeBps(exchange, symbol string) (float64, bool) {
 	return d, false
 }
 
-// fetchGateMakerBps calls GET /api/v4/wallet/fee?currency_pair=<sym> (HMAC-SHA512).
+// fetchGateMakerBps calls GET /api/v4/spot/fee?currency_pair=<sym> (HMAC-SHA512).
 func fetchGateMakerBps(symbol string) (float64, error) {
 	key, secret := os.Getenv("MM_GATE_API_KEY"), os.Getenv("MM_GATE_API_SECRET")
 	if key == "" || secret == "" {
 		return 0, fmt.Errorf("gate key 未配置")
 	}
 	const host = "https://api.gateio.ws"
-	const path = "/api/v4/wallet/fee"
+	const path = "/api/v4/spot/fee"
 	query := "currency_pair=" + symbol
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	bh := sha512.Sum512([]byte(""))

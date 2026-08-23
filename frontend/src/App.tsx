@@ -1858,13 +1858,16 @@ const App: React.FC = () => {
                 </div>
                 <div className="text-[10px] text-gray-500 mt-2 text-right">净边=毛边−2×maker费{mmObserve?.best ? ` · 费${mmObserve.best.fee_bps.toFixed(1)}bps${mmObserve.best.fee_live ? '实时' : '假设'}` : ''} · observe 未成交</div>
                 <div className={`mt-3 pt-3 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-100'}`}>
-                  <div className="text-[10px] text-gray-500 mb-1">观测对 Top 3 · 按净边(跨所混排)</div>
-                  {(mmObserve?.rows || []).slice(0, 3).map((r, i) => (
-                    <div key={i} className="flex items-center justify-between text-xs py-0.5">
-                      <span className="truncate">{r.symbol}<span className="text-gray-500">@{r.exchange}</span></span>
-                      <span className={`font-mono font-semibold ${r.net_best_edge_bps > 0 ? 'text-green-500' : 'text-red-500'}`}>{r.net_best_edge_bps.toFixed(1)}bps</span>
-                    </div>
-                  ))}
+                  <div className="text-[10px] text-gray-500 mb-1">观测对 Top 3 · 按净边(跨所混排)· 毛边参考</div>
+                  {(mmObserve?.rows || []).slice(0, 3).map((r, i) => {
+                    const gross = Math.max(r.buy_edge_bps, r.sell_edge_bps);
+                    return (
+                      <div key={i} className="flex items-center justify-between text-xs py-0.5">
+                        <span className="truncate">{r.symbol}<span className="text-gray-500">@{r.exchange}</span></span>
+                        <span className="font-mono"><span className="text-gray-500">毛{gross.toFixed(1)} </span><span className={`font-semibold ${r.net_best_edge_bps > 0 ? 'text-green-500' : 'text-red-500'}`}>净{r.net_best_edge_bps.toFixed(1)}</span><span className="text-gray-500">bps</span></span>
+                      </div>
+                    );
+                  })}
                   {(!mmObserve?.rows || mmObserve.rows.length === 0) && <div className="text-xs text-gray-500">暂无</div>}
                 </div>
               </div>
