@@ -3,6 +3,7 @@ package marketmaker
 import (
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -24,7 +25,14 @@ import (
 
 var universeHTTP = &http.Client{Timeout: 15 * time.Second}
 
-const universeTopN = 100
+const (
+	universeTopN = 100
+	// maxExecSpreadBps: 执行所自身买卖价差超过此值视为不流动,剔除 —— 宽价差的"边"挂不进/被逆向吃,是幻觉。
+	maxExecSpreadBps = 50
+	// maxDivergenceBps: 执行所中价与币安中价偏离超过此值,几乎必是"同名不同币 / 陈价 / 跨所套利(非做市)",
+	// 剔除。真做市里两所对同一个币的价格是高度一致的,偏离只有个位数 bps。
+	maxDivergenceBps = 200
+)
 
 // UniverseRow is one exec pair measured against its binance reference.
 type UniverseRow struct {
@@ -33,6 +41,8 @@ type UniverseRow struct {
 	RefSymbol      string  `json:"ref_symbol"` // binance symbol, e.g. BTCUSDT
 	RefMid         float64 `json:"ref_mid"`
 	ExecMid        float64 `json:"exec_mid"`
+	ExecSpreadBps  float64 `json:"exec_spread_bps"` // 执行所自身买卖价差
+	MidDiffBps     float64 `json:"mid_diff_bps"`    // 与币安中价的偏离
 	BuyEdgeBps     float64 `json:"buy_edge_bps"`
 	SellEdgeBps    float64 `json:"sell_edge_bps"`
 	FeeBps         float64 `json:"fee_bps"`
@@ -116,6 +126,15 @@ func scanUniverseOnce(exchanges []string) {
 			if !ok || refMid <= 0 || tk.bid <= 0 || tk.ask <= 0 {
 				continue
 			}
+			execMid := (tk.bid + tk.ask) / 2
+			execSpreadBps := (tk.ask - tk.bid) / execMid * 10000
+			if execSpreadBps > maxExecSpreadBps {
+				continue // 不流动:宽价差是"没人挂的价"幻觉,挂不进/被逆向吃
+			}
+			midDiffBps := math.Abs(execMid-refMid) / refMid * 10000
+			if midDiffBps > maxDivergenceBps {
+				continue // 偏离过大:同名异币 / 陈价 / 跨所套利(搬不动),不是做市
+			}
 			matched++
 			buyEdge := (refMid - tk.bid) / refMid * 10000
 			sellEdge := (tk.ask - refMid) / refMid * 10000
@@ -125,7 +144,7 @@ func scanUniverseOnce(exchanges []string) {
 			}
 			rows = append(rows, UniverseRow{
 				Exchange: ex, Symbol: tk.native, RefSymbol: tk.refSymbol,
-				RefMid: refMid, ExecMid: (tk.bid + tk.ask) / 2,
+				RefMid: refMid, ExecMid: execMid, ExecSpreadBps: execSpreadBps, MidDiffBps: midDiffBps,
 				BuyEdgeBps: buyEdge, SellEdgeBps: sellEdge,
 				FeeBps: feeBps, FeeLive: feeLive, NetBestEdgeBps: best - 2*feeBps,
 			})
@@ -141,7 +160,13 @@ func scanUniverseOnce(exchanges []string) {
 	universeAt = time.Now()
 	universeErr = ""
 	universeMu.Unlock()
-	logger.Infof("[mm-universe] scanned matched=%d topN=%d", matched, len(rows))
+	topNet := 0.0
+	topDesc := "-"
+	if len(rows) > 0 {
+		topNet = rows[0].NetBestEdgeBps
+		topDesc = rows[0].Symbol + "@" + rows[0].Exchange
+	}
+	logger.Infof("[mm-universe] scanned matched=%d topN=%d top=%s net=%.1fbps", matched, len(rows), topDesc, topNet)
 }
 
 // UniverseSnapshot returns the top-N rows (net-edge desc), total matched, and running.
