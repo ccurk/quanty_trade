@@ -18,8 +18,8 @@ type ObserveRow struct {
 	ExecSpreadBps  float64   `json:"exec_spread_bps"`
 	BuyEdgeBps     float64   `json:"buy_edge_bps"`
 	SellEdgeBps    float64   `json:"sell_edge_bps"`
-	FeeBps         float64   `json:"fee_bps"`  // one-leg maker fee (bps)
-	FeeLive        bool      `json:"fee_live"` // true=交易所实时费率, false=默认假设
+	FeeBps         float64   `json:"fee_bps"`           // one-leg maker fee (bps)
+	FeeLive        bool      `json:"fee_live"`          // true=交易所实时费率, false=默认假设
 	NetBestEdgeBps float64   `json:"net_best_edge_bps"` // BestEdge - 2*fee(买卖两腿)
 	Ts             time.Time `json:"ts"`
 }

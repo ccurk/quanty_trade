@@ -142,11 +142,11 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 			p.ExecSymbol, ex.Name(), e.feed.Name(), refMid, eb.Mid(),
 			(eb.Mid()-refMid)/refMid*10000, eb.SpreadBps(), buyEdge, sellEdge)
 		feeBps, feeLive := MakerFeeBps(ex.Name(), p.ExecSymbol)
-			bestGross := buyEdge
-			if sellEdge > bestGross {
-				bestGross = sellEdge
-			}
-			recordObserve(ObserveRow{
+		bestGross := buyEdge
+		if sellEdge > bestGross {
+			bestGross = sellEdge
+		}
+		recordObserve(ObserveRow{
 			Exchange: ex.Name(), Symbol: p.ExecSymbol, RefMid: refMid, ExecMid: eb.Mid(),
 			ExecSpreadBps: eb.SpreadBps(), BuyEdgeBps: buyEdge, SellEdgeBps: sellEdge, FeeBps: feeBps, FeeLive: feeLive, NetBestEdgeBps: bestGross - 2*feeBps, Ts: time.Now(),
 		})
@@ -190,7 +190,7 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 					}
 				}
 			}
-			e.quote(p, ex, ref)
+			e.quote(p, ex, ref, eb)
 		}
 	}
 }
@@ -200,6 +200,14 @@ const (
 	maxLiveDivergenceBps = 100
 	// maxDeviationDuration: 持续偏离超此时长即撤单暂停,避免按错价/陈价裸挂被逆向吃穿。
 	maxDeviationDuration = 30 * time.Second
+	// requoteToleranceFrac: 目标价与现有挂单价的偏移小于"半价差×此比例"时不撤挂重下。
+	// 否则参考中价每秒微抖(几 bps)就撤挂追价,纯烧下单/撤单限流且无收益。
+	// 0.25 = 目标移动超过 1/4 半价差才重挂;价差 10bps 时带宽≈2.5bps。
+	requoteToleranceFrac = 0.25
+	// inventorySkewFrac: 库存偏移强度。报价中枢下压量 = 半价差 × 此值 × (持仓/上限)。
+	// 持仓越满,卖价越贴中价(易成交、卸货)、买价越远(少接货),把仓位往中性拽回,
+	// 对冲趋势里单向堆货。1.0=满仓时卖价≈中价、买价≈2 个价差之下;0=关闭偏移。
+	inventorySkewFrac = 1.0
 )
 
 func staleAfter(p PairConfig) time.Duration {
@@ -210,11 +218,13 @@ func staleAfter(p PairConfig) time.Duration {
 	return d
 }
 
-// quote maintains one post-only bid + one post-only ask around the reference mid,
-// inventory-capped and fail-safe: any read error (filters/balances/open-orders)
-// aborts this cycle rather than quoting blind. Cancel-replace only when the target
-// moved more than a tick, to avoid thrashing.
-func (e *Engine) quote(p PairConfig, ex ExecExchange, ref BookTicker) {
+// quote maintains one post-only bid + one post-only ask around an inventory-skewed
+// reservation center (the more base held, the lower the center → lean to sell down),
+// clamped to never cross the exec book (post-only would reject), inventory-capped and
+// fail-safe: any read error (filters/balances/open-orders) aborts this cycle rather
+// than quoting blind. Cancel-replace only when the target moved more than the requote
+// band (a fraction of the half-spread), to avoid thrashing.
+func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker) {
 	filt, err := ex.SymbolFilter(p.ExecSymbol)
 	if err != nil {
 		logger.Warnf("[mm] %s@%s filter 读取失败,本轮不报价: %v", p.ExecSymbol, ex.Name(), err)
@@ -222,11 +232,6 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref BookTicker) {
 	}
 	refMid := ref.Mid()
 	half := p.SpreadBps / 10000.0
-	bidPx := roundToTick(refMid*(1-half), filt.TickSize, false) // 买价向下取整到 tick
-	askPx := roundToTick(refMid*(1+half), filt.TickSize, true)  // 卖价向上取整到 tick
-	if bidPx <= 0 || askPx <= 0 || askPx <= bidPx {
-		return
-	}
 
 	// 先读挂单:卖单里锁着的 SOL 仍是你的持仓,必须先拿到它。否则"挂卖→可用余额变少→
 	// 下轮卖量算小→判定量不符→撤挂重下"会每秒死循环(thrash)。
@@ -259,6 +264,21 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref BookTicker) {
 		baseHeld += curAsk.Qty
 	}
 
+	// 库存偏移:持仓越满,报价中枢越往下压 → 卖价更贴中价(易成交、卸货)、买价更远(少接货),
+	// 把仓位往中性(现货目标持仓=0)拽回,对冲趋势里单向堆货。空仓时退化成对称报价。
+	invRatio := 0.0
+	if p.MaxPosition > 0 {
+		invRatio = baseHeld / p.MaxPosition
+	}
+	bidPx, askPx := skewedQuote(refMid, half, invRatio, inventorySkewFrac, filt.TickSize)
+	// 钳制到执行所盘口内:卖不低于其买一+tick,买不高于其卖一−tick。否则 post-only 会被
+	// POC_FILL_IMMEDIATELY 拒掉并每秒重试(白烧 API)。执行所比参考贵时,卖单顺势挂到其
+	// 买一上方 = 比目标价更高,严格更优;反向同理。
+	bidPx, askPx = clampToBook(bidPx, askPx, eb.BidPx, eb.AskPx, filt.TickSize)
+	if bidPx <= 0 || askPx <= 0 || askPx <= bidPx {
+		return
+	}
+
 	bidQty := roundToStep(p.OrderQty, filt.StepSize)
 	askQty := roundToStep(minf(p.OrderQty, baseHeld), filt.StepSize) // 现货只能卖出已持有的量
 
@@ -266,7 +286,12 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref BookTicker) {
 	wantBid := baseHeld < p.MaxPosition && bidQty > 0 && bidPx*bidQty >= filt.MinNotional
 	wantAsk := askQty > 0 && askPx*askQty >= filt.MinNotional
 
+	// 只有目标价相对现有挂单移动超过"半价差×requoteToleranceFrac"才撤挂重下;
+	// 至少 1 个 tick。避免参考中价每秒微抖就撤挂追价(白烧限流、无收益)。
 	tol := filt.TickSize
+	if band := refMid * half * requoteToleranceFrac; band > tol {
+		tol = band
+	}
 	e.reconcileSide(ex, p.ExecSymbol, "BUY", bidPx, bidQty, wantBid, curBid, tol, filt.StepSize)
 	e.reconcileSide(ex, p.ExecSymbol, "SELL", askPx, askQty, wantAsk, curAsk, tol, filt.StepSize)
 }
@@ -303,6 +328,37 @@ func (e *Engine) cancelAll(ex ExecExchange, symbol string) {
 	for _, o := range orders {
 		_ = ex.CancelOrder(symbol, o.ID)
 	}
+}
+
+// clampToBook keeps post-only quotes from crossing the exec book: ask never at/below
+// the venue bid (raise to bid+tick), bid never at/above the venue ask (lower to
+// ask−tick). Both clamps move quotes AWAY from aggression (better price if filled),
+// never closer. Zero/missing book sides leave the quote untouched.
+func clampToBook(bidPx, askPx, ebBid, ebAsk, tick float64) (bid, ask float64) {
+	bid, ask = bidPx, askPx
+	if ebBid > 0 && ask <= ebBid {
+		ask = ebBid + tick
+	}
+	if ebAsk > 0 && bid >= ebAsk {
+		bid = ebAsk - tick
+	}
+	return
+}
+
+// skewedQuote prices a post-only bid/ask around an inventory-skewed reservation
+// center: center = refMid*(1 - half*skewFrac*invRatio), invRatio clamped to [0,1].
+// More base held (higher invRatio) lowers the center → ask nears mid (lean to sell
+// down), bid recedes (buy less). invRatio=0 → symmetric quotes around refMid.
+func skewedQuote(refMid, half, invRatio, skewFrac, tick float64) (bid, ask float64) {
+	if invRatio < 0 {
+		invRatio = 0
+	} else if invRatio > 1 {
+		invRatio = 1
+	}
+	center := refMid * (1 - half*skewFrac*invRatio)
+	bid = roundToTick(center*(1-half), tick, false) // 买价向下取整到 tick
+	ask = roundToTick(center*(1+half), tick, true)  // 卖价向上取整到 tick
+	return
 }
 
 func roundToTick(px, tick float64, up bool) float64 {

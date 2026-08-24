@@ -105,10 +105,10 @@ func (f *BinanceFeed) readLoop(ctx context.Context, conn *websocket.Conn, cb fun
 			return
 		}
 		var e struct {
-			S string `json:"s"`
-			B string `json:"b"`
+			S  string `json:"s"`
+			B  string `json:"b"`
 			BB string `json:"B"`
-			A string `json:"a"`
+			A  string `json:"a"`
 			AA string `json:"A"`
 		}
 		if json.Unmarshal(raw, &e) != nil {

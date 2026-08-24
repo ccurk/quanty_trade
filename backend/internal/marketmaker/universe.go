@@ -52,8 +52,8 @@ type UniverseRow struct {
 	QuoteVol       float64 `json:"quote_vol"` // 执行所 24h 成交额(USDT,若接口提供)
 	Suspect        string  `json:"suspect"`   // 空=干净候选;否则为疑点(薄/偏离/宽价差),不删只标
 	// 持续性统计(跨多轮扫描累计,用于把"某一秒的快照"升级成"稳定信号"):
-	Samples int64   `json:"samples"`     // 累计采样数
-	PosRate float64 `json:"pos_rate"`    // 净边>0 的占比
+	Samples   int64   `json:"samples"`     // 累计采样数
+	PosRate   float64 `json:"pos_rate"`    // 净边>0 的占比
 	AvgNet    float64 `json:"avg_net_bps"` // 平均净边
 	Signal    bool    `json:"signal"`      // 稳定信号:干净 + 采样够 + 大比例为正 + 平均为正
 	Tradeable bool    `json:"tradeable"`   // 能下单:干净 + 扣真实 per-pair 费后净边 > 0

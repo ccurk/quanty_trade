@@ -11,8 +11,8 @@ import (
 // LoadConfigFromEnv builds the market-maker config from environment (fits a .env
 // workflow) with this precedence for the STRUCTURE (pairs/feed/exec names/flags):
 //
-//	1. $MARKETMAKER_CONFIG_JSON — the whole config inline as a JSON string, or
-//	2. $MARKETMAKER_CONFIG       — path to a JSON file.
+//  1. $MARKETMAKER_CONFIG_JSON — the whole config inline as a JSON string, or
+//  2. $MARKETMAKER_CONFIG       — path to a JSON file.
 //
 // SECRETS are then overlaid from discrete env vars so keys never live in the JSON
 // (or the repo): for each exec entry, an empty api_key/api_secret is filled from
