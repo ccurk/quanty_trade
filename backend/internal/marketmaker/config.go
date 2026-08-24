@@ -24,6 +24,10 @@ type ExecConfig struct {
 	APISecret string `yaml:"api_secret" json:"api_secret"`
 	// Passphrase is a 3rd credential some exchanges require (e.g. KuCoin). Empty otherwise.
 	Passphrase string `yaml:"passphrase" json:"passphrase"`
+	// WSTrade routes order place/cancel over the exchange's WebSocket trade API
+	// where the adapter supports it (today: gate). Default false = REST only —
+	// flipping this back off is the rollback path for the WS channel.
+	WSTrade bool `yaml:"ws_trade" json:"ws_trade"`
 }
 
 // PairConfig defines one market-making pair: which feed symbol to reference, and

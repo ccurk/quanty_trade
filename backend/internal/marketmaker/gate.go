@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"quanty_trade/internal/logger"
 )
 
 // Gate.io spot API v4 (NOT Binance-compatible): signed with HMAC-SHA512 over
@@ -29,13 +31,20 @@ func init() {
 		if base == "" {
 			base = gateDefaultBaseURL
 		}
-		return &GateExchange{
+		e := &GateExchange{
 			baseURL: base,
 			apiKey:  cfg.APIKey,
 			secret:  cfg.APISecret,
 			http:    &http.Client{Timeout: 10 * time.Second},
 			filters: map[string]SymbolFilter{},
-		}, nil
+		}
+		if cfg.WSTrade {
+			// ws_trade=true: 下单/撤单优先走 WS 长连接(建连+登录惰性发生在首单),
+			// REST 保留为回退路径; 详细回退语义见 gate_ws.go 头注。
+			e.ws = newGateWSTrader("", cfg.APIKey, cfg.APISecret)
+			logger.Infof("[mm-gatews] ws_trade enabled for gate exec")
+		}
+		return e, nil
 	})
 }
 
@@ -44,6 +53,7 @@ type GateExchange struct {
 	apiKey  string
 	secret  string
 	http    *http.Client
+	ws      *gateWSTrader // nil = REST only (ws_trade=false, 默认)
 
 	filterMu sync.Mutex
 	filters  map[string]SymbolFilter
@@ -191,6 +201,18 @@ func (e *GateExchange) PlaceLimit(symbol, side string, price, qty float64, tif s
 		"price":         strconv.FormatFloat(price, 'f', -1, 64),
 		"time_in_force": t,
 	}
+	if e.ws != nil {
+		id, sentOut, err := e.ws.PlaceLimit(payload)
+		if err == nil {
+			return id, nil
+		}
+		if sentOut {
+			// 帧已出站: 订单可能已被交易所接受, REST 重发=双挂单风险, 直接报错;
+			// engine 下个 refresh 周期经 OpenOrders 对账自愈。
+			return "", err
+		}
+		logger.Warnf("[mm-gatews] place %s: WS unavailable pre-send, REST fallback: %v", payload["currency_pair"], err)
+	}
 	body, _ := json.Marshal(payload)
 	resp, err := e.signed(http.MethodPost, "/spot/orders", nil, body)
 	if err != nil {
@@ -206,6 +228,14 @@ func (e *GateExchange) PlaceLimit(symbol, side string, price, qty float64, tif s
 }
 
 func (e *GateExchange) CancelOrder(symbol, orderID string) error {
+	if e.ws != nil {
+		if err := e.ws.CancelOrder(orderID, gateSym(symbol)); err == nil {
+			return nil
+		} else {
+			// 撤单幂等: WS 任一阶段失败都可安全 REST 兜底(重复撤单最多报"不存在")。
+			logger.Warnf("[mm-gatews] cancel %s: WS failed, REST fallback: %v", orderID, err)
+		}
+	}
 	_, err := e.signed(http.MethodDelete, "/spot/orders/"+orderID, url.Values{"currency_pair": {gateSym(symbol)}}, nil)
 	return err
 }
