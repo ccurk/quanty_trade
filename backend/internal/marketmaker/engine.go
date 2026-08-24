@@ -228,21 +228,8 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref BookTicker) {
 		return
 	}
 
-	bals, err := ex.Balances()
-	if err != nil {
-		logger.Warnf("[mm] %s@%s 余额读取失败,撤单避险: %v", p.ExecSymbol, ex.Name(), err)
-		e.cancelAll(ex, p.ExecSymbol)
-		return
-	}
-	baseHeld := bals[filt.BaseAsset]
-
-	bidQty := roundToStep(p.OrderQty, filt.StepSize)
-	askQty := roundToStep(minf(p.OrderQty, baseHeld), filt.StepSize) // 现货只能卖出已持有的量
-
-	// 库存闸:持仓已达上限不再买;无库存不挂卖;两边都要过最小名义额。
-	wantBid := baseHeld < p.MaxPosition && bidQty > 0 && bidPx*bidQty >= filt.MinNotional
-	wantAsk := askQty > 0 && askPx*askQty >= filt.MinNotional
-
+	// 先读挂单:卖单里锁着的 SOL 仍是你的持仓,必须先拿到它。否则"挂卖→可用余额变少→
+	// 下轮卖量算小→判定量不符→撤挂重下"会每秒死循环(thrash)。
 	orders, err := ex.OpenOrders(p.ExecSymbol)
 	if err != nil {
 		logger.Warnf("[mm] %s@%s openOrders 读取失败,本轮不动单: %v", p.ExecSymbol, ex.Name(), err)
@@ -259,6 +246,26 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref BookTicker) {
 			_ = ex.CancelOrder(p.ExecSymbol, orders[i].ID) // 同侧多余挂单清掉,每侧只留一张
 		}
 	}
+
+	bals, err := ex.Balances()
+	if err != nil {
+		logger.Warnf("[mm] %s@%s 余额读取失败,撤单避险: %v", p.ExecSymbol, ex.Name(), err)
+		e.cancelAll(ex, p.ExecSymbol)
+		return
+	}
+	// 持仓 = 可用余额 + 自己卖单里锁着的量(去掉这一项就会 thrash)。
+	baseHeld := bals[filt.BaseAsset]
+	if curAsk != nil {
+		baseHeld += curAsk.Qty
+	}
+
+	bidQty := roundToStep(p.OrderQty, filt.StepSize)
+	askQty := roundToStep(minf(p.OrderQty, baseHeld), filt.StepSize) // 现货只能卖出已持有的量
+
+	// 库存闸:总持仓达上限不再买;无库存不挂卖;两边都要过最小名义额。
+	wantBid := baseHeld < p.MaxPosition && bidQty > 0 && bidPx*bidQty >= filt.MinNotional
+	wantAsk := askQty > 0 && askPx*askQty >= filt.MinNotional
+
 	tol := filt.TickSize
 	e.reconcileSide(ex, p.ExecSymbol, "BUY", bidPx, bidQty, wantBid, curBid, tol, filt.StepSize)
 	e.reconcileSide(ex, p.ExecSymbol, "SELL", askPx, askQty, wantAsk, curAsk, tol, filt.StepSize)
