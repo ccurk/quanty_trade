@@ -55,12 +55,27 @@ func Start(cfg Config) (*Engine, error) {
 		}
 		go e.runPair(ctx, p, ex)
 	}
+	if !cfg.ObserveOnly {
+		go e.runDeadMansSwitch(ctx) // 交易所侧死人开关(唯一能扛进程崩溃的兜底)
+	}
 	return e, nil
 }
 
 func (e *Engine) Stop() {
 	setRunning(false)
-	if e != nil && e.stop != nil {
+	if e == nil {
+		return
+	}
+	// 优雅关闭:撤掉所有残留挂单,绝不把裸单留在交易所(否则重启/崩溃后被人慢慢吃)。
+	if !e.cfg.ObserveOnly {
+		for _, p := range e.cfg.Pairs {
+			if ex, ok := e.execs[p.Exec]; ok {
+				e.cancelAll(ex, p.ExecSymbol)
+			}
+		}
+		logger.Infof("[mm] Stop: 已撤所有挂单")
+	}
+	if e.stop != nil {
 		e.stop()
 	}
 }
@@ -80,6 +95,13 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 		return
 	}
 	defer stop()
+
+	// 启动先撤掉该 symbol 的所有残留挂单(上次运行/崩溃留下的孤儿单),报价前先 reconcile 干净。
+	if !e.cfg.ObserveOnly {
+		e.cancelAll(ex, p.ExecSymbol)
+		logger.Infof("[mm] %s@%s 启动清残留挂单", p.ExecSymbol, ex.Name())
+	}
+	var devSince time.Time // exec-vs-ref 中价持续偏离的起始时刻(长时间偏移撤单用)
 
 	tk := time.NewTicker(time.Duration(p.refresh()) * time.Millisecond)
 	defer tk.Stop()
@@ -125,10 +147,31 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 				e.cancelAll(ex, p.ExecSymbol)
 				continue
 			}
+			// 长时间偏移:exec 与 ref 中价持续偏离超阈值 → 撤单暂停(可能真错价/数据问题,
+			// 按错价裸挂会被逆向吃穿);回到阈值内才恢复报价。
+			midDiffBps := math.Abs(eb.Mid()-refMid) / refMid * 10000
+			if midDiffBps > maxLiveDivergenceBps {
+				if devSince.IsZero() {
+					devSince = time.Now()
+				}
+				if time.Since(devSince) > maxDeviationDuration {
+					e.cancelAll(ex, p.ExecSymbol)
+					continue
+				}
+			} else {
+				devSince = time.Time{}
+			}
 			e.quote(p, ex, ref)
 		}
 	}
 }
+
+const (
+	// maxLiveDivergenceBps: exec 与 ref 中价偏离超过此值(1%)视为异常。
+	maxLiveDivergenceBps = 100
+	// maxDeviationDuration: 持续偏离超此时长即撤单暂停,避免按错价/陈价裸挂被逆向吃穿。
+	maxDeviationDuration = 30 * time.Second
+)
 
 func staleAfter(p PairConfig) time.Duration {
 	d := 3 * time.Duration(p.refresh()) * time.Millisecond
