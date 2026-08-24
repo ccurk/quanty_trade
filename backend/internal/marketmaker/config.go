@@ -11,6 +11,8 @@ type Config struct {
 	Feed        string       `yaml:"feed" json:"feed"` // feed source name, e.g. "binance"
 	Exec        []ExecConfig `yaml:"exec" json:"exec"` // one entry per execution exchange
 	Pairs       []PairConfig `yaml:"pairs" json:"pairs"`
+	// MaxDailyLossUSD: 单日盯市亏损(USDT)达到此值即撤单并停报价至次日 UTC。0=不启用。
+	MaxDailyLossUSD float64 `yaml:"max_daily_loss_usd" json:"max_daily_loss_usd"`
 }
 
 // ExecConfig holds one execution exchange's endpoint + credentials (OWNER fills).

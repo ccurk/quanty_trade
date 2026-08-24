@@ -3,6 +3,7 @@ package marketmaker
 import (
 	"context"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,6 +104,15 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 	}
 	var devSince time.Time // exec-vs-ref 中价持续偏离的起始时刻(长时间偏移撤单用)
 
+	// 成交/PnL 追踪 + 单日止损(仅 gate live;账户是用户自己的 gate key,my_trades=本引擎成交)。
+	var tracker *pnlTracker
+	var baseAsset string
+	if !e.cfg.ObserveOnly && strings.EqualFold(ex.Name(), "gate") {
+		tracker = newPnLTracker()
+		baseAsset = strings.SplitN(p.ExecSymbol, "_", 2)[0]
+	}
+	var lastPoll, haltUntil time.Time
+
 	tk := time.NewTicker(time.Duration(p.refresh()) * time.Millisecond)
 	defer tk.Stop()
 	for {
@@ -142,6 +152,10 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 		})
 
 		if !e.cfg.ObserveOnly {
+			// 单日止损熔断中:停报价至次日 UTC。
+			if !haltUntil.IsZero() && time.Now().Before(haltUntil) {
+				continue
+			}
 			// 参考盘口过期就撤掉两边报价,绝不按陈旧参考挂单(防参考断流时裸报价)。
 			if time.Since(ref.Ts) > staleAfter(p) {
 				e.cancelAll(ex, p.ExecSymbol)
@@ -160,6 +174,21 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 				}
 			} else {
 				devSince = time.Time{}
+			}
+			// 成交/PnL 追踪 + 单日止损(每 ~10s 拉一次成交)。
+			if tracker != nil && time.Since(lastPoll) > 10*time.Second {
+				lastPoll = time.Now()
+				if fills, ferr := gateMyTrades(p.ExecSymbol, 100); ferr == nil {
+					tracker.apply(fills, baseAsset)
+					pnl := tracker.mtmPnL(eb.Mid())
+					recordMMPnL(ex.Name(), p.ExecSymbol, pnl)
+					if e.cfg.MaxDailyLossUSD > 0 && pnl < -e.cfg.MaxDailyLossUSD {
+						e.cancelAll(ex, p.ExecSymbol)
+						haltUntil = nextUTCMidnight()
+						logger.Errorf("[mm] %s@%s 触发单日止损 PnL=%.2f < -%.2f → 停报价至次日", p.ExecSymbol, ex.Name(), pnl, e.cfg.MaxDailyLossUSD)
+						continue
+					}
+				}
 			}
 			e.quote(p, ex, ref)
 		}

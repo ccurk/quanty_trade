@@ -22,8 +22,8 @@ func GetMMObserve(c *gin.Context) {
 		"pairs":  matched,    // 全市场匹配到的对数(跨所,动态)
 		"shown":  len(rows),  // 展示的 top-N
 		"rows":   rows,       // 已按净边(扣费后)降序,跨所混排
-		// observe 阶段不下单、无成交,已实现收益恒为 0。切实盘后由成交撮合 PnL 回填。
-		"realized_pnl": 0.0,
+		// 实盘做市的盯市 PnL(observe/未 live 时为 0;live 后由 gate 成交实时回填)。
+		"realized_pnl": marketmaker.LiveMMPnL(),
 	}
 	if len(rows) > 0 {
 		best := rows[0] // 净边最高的
