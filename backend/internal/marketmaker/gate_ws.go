@@ -264,6 +264,20 @@ func (t *gateWSTrader) markBroken(conn *websocket.Conn) {
 	t.mu.Unlock()
 }
 
+// isPlaceEchoFrame 判定 spot.order_place 的两段式应答中的第一帧(回执):status=200
+// 且 data.result 为【请求回显】(带 req_param 字段)。实测(2026-08-25 探针):下单先回
+// 一帧请求回显,+3ms 后第二帧才是真结果(订单对象或 errs);撤单/登录则单帧直返。
+// 判别必须限定 channel:login 的单帧应答同样含回显字段,不能被跳过。
+func isPlaceEchoFrame(ack gateWSAck) bool {
+	if ack.Header.Channel != "spot.order_place" || len(ack.Data.Result) == 0 {
+		return false
+	}
+	var probe struct {
+		ReqParam json.RawMessage `json:"req_param"`
+	}
+	return json.Unmarshal(ack.Data.Result, &probe) == nil && probe.ReqParam != nil
+}
+
 func (t *gateWSTrader) readLoop(conn *websocket.Conn, closed chan struct{}) {
 	defer t.markBroken(conn)
 	for {
@@ -280,6 +294,9 @@ func (t *gateWSTrader) readLoop(conn *websocket.Conn, closed chan struct{}) {
 		var ack gateWSAck
 		if err := json.Unmarshal(data, &ack); err != nil || ack.RequestID == "" {
 			continue // 非 api-ack 帧(ping 回显/订阅推送等)直接略过
+		}
+		if isPlaceEchoFrame(ack) {
+			continue // order_place 的回执帧(请求回显),真结果在下一帧 —— pending 保留继续等
 		}
 		t.pendingMu.Lock()
 		ch, ok := t.pending[ack.RequestID]

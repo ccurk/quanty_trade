@@ -6,8 +6,9 @@ import (
 )
 
 // 签名向量与 python hmac/hashlib 独立计算结果钉死(跨语言双证, 防串接顺序/编码回归):
-//   HMAC_SHA512("test-secret", "api\nspot.order_place\n{\"currency_pair\":\"BTC_USDT\"}\n1700000000")
-//   HMAC_SHA512("test-secret", "api\nspot.login\n\"\"\n1700000000")
+//
+//	HMAC_SHA512("test-secret", "api\nspot.order_place\n{\"currency_pair\":\"BTC_USDT\"}\n1700000000")
+//	HMAC_SHA512("test-secret", "api\nspot.login\n\"\"\n1700000000")
 func TestGateSignWSVectors(t *testing.T) {
 	got := gateSignWS("test-secret", "spot.order_place", []byte(`{"currency_pair":"BTC_USDT"}`), 1700000000)
 	want := "a0e3cd6601fb76b835c1026178ad1300f44dfcab1c9daa92b88e38c477a2adaf3e0b3abb689e269b7d6faac8fdcdcd77b5d967490875893ea827a953009b9696"
@@ -43,6 +44,47 @@ func TestGateWSEnvelopeReqParamBytesStable(t *testing.T) {
 	}
 	if string(back.Payload.ReqParam) != string(raw) {
 		t.Fatalf("req_param bytes rewritten in envelope:\n sent %s\n got  %s", raw, back.Payload.ReqParam)
+	}
+}
+
+// 向量取自 2026-08-25 线上探针的真实帧(截断无关 header 字段):order_place 是两段式,
+// 帧1=请求回显(必须跳过),帧2=真结果;order_cancel/login 单帧(不得跳过)。
+func TestIsPlaceEchoFrame(t *testing.T) {
+	echo := []byte(`{"header":{"status":"200","channel":"spot.order_place","event":"api"},"data":{"result":{"req_id":"qt-1","timestamp":"1787590984","signature":"ab","req_param":{"side":"buy","amount":"0.0001"}}},"request_id":"qt-1"}`)
+	var ack gateWSAck
+	if err := json.Unmarshal(echo, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if !isPlaceEchoFrame(ack) {
+		t.Fatalf("place 回显帧必须被识别为 echo")
+	}
+
+	final := []byte(`{"header":{"status":"400","channel":"spot.order_place","event":"api"},"data":{"errs":{"label":"INVALID_PARAM_VALUE","message":"too small"}},"request_id":"qt-1"}`)
+	ack = gateWSAck{}
+	if err := json.Unmarshal(final, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if isPlaceEchoFrame(ack) {
+		t.Fatalf("place 真结果帧(errs)不得被当成 echo")
+	}
+
+	success := []byte(`{"header":{"status":"200","channel":"spot.order_place","event":"api"},"data":{"result":{"id":"1119","text":"apiv4-ws","amount":"48"}},"request_id":"qt-2"}`)
+	ack = gateWSAck{}
+	if err := json.Unmarshal(success, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if isPlaceEchoFrame(ack) {
+		t.Fatalf("place 成功帧(订单对象)不得被当成 echo")
+	}
+
+	// login 单帧应答同样含 req_param 回显 —— 但 channel 不同,绝不能跳过(否则登录死等超时)。
+	login := []byte(`{"header":{"status":"200","channel":"spot.login","event":"api"},"data":{"result":{"api_key":"947f","req_param":""}},"request_id":"login-1"}`)
+	ack = gateWSAck{}
+	if err := json.Unmarshal(login, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if isPlaceEchoFrame(ack) {
+		t.Fatalf("login 应答不得被当成 echo(会导致登录超时)")
 	}
 }
 
