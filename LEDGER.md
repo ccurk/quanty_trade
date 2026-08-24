@@ -200,6 +200,7 @@
 
 | # | 类型 | 内容 | 依据 | 复现计数 | 状态 |
 |---|---|---|---|---|---|
+| 71 | M通道候部署(做市模块,非策略组) | **Gate做市WS下单通道**(claude/dev-gate-ws-trade已推):marketmaker/gate.go下单/撤单优先走WS长连接省REST建连时延,开关ws_trade默认false=纯REST回滚路径;幂等回退(下单仅发送前失败回退REST防双挂单,撤单一律REST兜底);协议与Gate官方SDK逐字段核对+签名跨语言双证;整仓build✓单测3/3✓race✓ | owner交互直令@08-24 15:xx'接入ws下单省建连时间';现状实证=策略组三载具Binance走REST /fapi/v1/order(binance.go:1250)+做市Gate走REST /spot/orders,全库无WS下单路径 | n/a | 候部署(部署权owner;TG已报备msg7608三选项A只gate/B也做Binance合约WS/C搁置);**注:未动策略组Binance路径=当前交易零影响** |
 | 69 | E7类(trend重申请;队首) | **EXP:trend低波解锁三值包重申请(adt0.5+lcp0.149+mces null)**——原_exp按预注册终裁rollback(段净−0.40≤0)已忠实执行;但亏损全源=ACE(已隔离):ex-ACE n14毛+4.52净+4.11 wr86%=组内唯一费覆🟢域,隔离后子段n10净+1.65 wr80%;机制①连开闸2币池结构死结(strategy_signal.go:262)②adt1.0低ATR域抬门raw0.875均落源码=可行动 | 终裁全文config._exp;逐笔本轮git | n14 ex-ACE | **executed@08-23 09:18Z**(否决窗空置+反转检查过[后滚段n1轶事];新_exp open于trend config,终裁随_exp二元;跟踪权威=§1.5 trend行) |
 | 35 | M通道 | S14 CB状态持久化(restart清计数株连修复;候选=引擎计数DB落库或cron快照种子) | 方案+先例链git(08-14轮) | n=2币/−7.66 | 候选(候部署;缓解=restart节流纪律) |
 | 37 | M通道 | logs端点?limit(≤2000)+?q过滤 | 读端Limit(100)硬编码堵S23评判读口;详史git 45e2f36前 | n/a | **已部署实证@08-15 15:37**(limit500✓/?q✓;统计行标签新引擎='IDLE';#34回补通道就绪)〔全文git 26eaf24〕 |
