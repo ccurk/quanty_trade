@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -94,8 +95,8 @@ type gateWSTrader struct {
 	conn      *websocket.Conn
 	loggedIn  bool
 	lastDial  time.Time
-	writeMu   sync.Mutex // gorilla 单写者约束
-	reqSeq    uint64
+	writeMu   sync.Mutex    // gorilla 单写者约束
+	reqSeq    atomic.Uint64 // sendLocked 会被无 t.mu 的 request 路径并发调用,必须原子
 	pendingMu sync.Mutex
 	pending   map[string]chan gateWSAck
 	closed    chan struct{} // 当前连接的 reader 存活信号(每次重连换新)
@@ -190,8 +191,7 @@ func (t *gateWSTrader) dropPending(reqID string) {
 // (登录路径)或保证 conn 有效(request 路径经 mu 取得快照)。
 func (t *gateWSTrader) sendLocked(conn *websocket.Conn, channel string, reqParam json.RawMessage) (chan gateWSAck, string, error) {
 	now := time.Now().Unix()
-	t.reqSeq++
-	reqID := "qt-" + strconv.FormatInt(now, 10) + "-" + strconv.FormatUint(t.reqSeq, 10)
+	reqID := "qt-" + strconv.FormatInt(now, 10) + "-" + strconv.FormatUint(t.reqSeq.Add(1), 10)
 	req := gateWSRequest{
 		Time:    now,
 		Channel: channel,
