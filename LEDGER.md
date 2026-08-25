@@ -57,11 +57,11 @@
 |---|---|---|---|---|---|
 | main 通才 | 8eb182b6 | 通才(S18-S23栈) | auto·**feed91@08-24 21:2x复核(含20:37重启后零泄漏;COTI在feed可交易;#37热清史见git)** | running | pct0.08 sides=[buy,sell] **bl18@08-24 18:4x(#70落地移COTI)** **long_conf_premium=0.35(#61c rollback@08-19,门0.90=多头事实关闸)** tpl567;**trailing(act1.0/cb1.2%)+BE(1.0)=基线几何(#49KEEP)**;**_exp=closed rollback(#61c;史§4#61/#63+git 0940c62)**;RECOVER刹线6h空≤−8U继承;#11降级观察(§4) |
 | qt-trend-long | 827ffe8c | 趋势动量多 | **TUT单币**(COTI出池@08-24 15:3x ROUTE#36:48h nL14净−1.06触头注线[窗滚动08-22赢单出窗];种子同步stop-PATCH-start@15:35✓;COTI回main孤儿态待bl释放;ACE隔离@08-22;史git f43756c) | running | **tpl575(S24)** pct0.05 mcp3 buy trailing on;**_exp=open·#69三值包重申请@08-23 09:18Z**(adt0.5+lcp0.149+mces off;终裁二元=新段净>0→keep否则回滚[adt1.0/lcp0.15/mces3];eval=n≥16或08-25 09:18Z;劣化线n≥8∧≤−4U;**进度@08-24 21:2x段n11净≈−0.35无新笔**(评期明晨09:18Z或n16,仍负→按预注册回滚[adt1.0/lcp0.15/mces3];评判注记:段负全系COTI拖累[段内COTI毛−0.92已出池@#36]vs TUT-only子段n5毛+0.44净≈+0.34——金标准仍预注册段净,子段仅作verdict记录,三值包三次申请=实验churn禁区);否决窗空置+程序史git 492779a);原三值段终裁rollback+ex-ACE归因全文git 5df52d2;**常驻保险=滚动6h净≤−5U→stop(继承)**;三值包史git 8a1d995/f71d825 |
-| qt-fade-short-v2 | 7583727a | 冲高回落空(**tpl887/S28+S29**;谱系tpl576/S25→823) | HANA/COLLECT/MELANIA/BTR(feed4=种子4✓@08-24 15:2x;**MELANIA出池线触发但deferred@15:3x ROUTE#36**:nS7净−0.53证据全pre-S28[tpl806/823时代,S28段n0]=#57病理证据不可移植+移出=撤走S28/S29主标的;defer至_exp终裁重跑对账,风险界=保险6h−6U+劣化线;BTR晋升#35;MELANIA晋升08-22) | running | **S28衰竭签名直入上线@08-23 21:24Z**(#66修复,机制全文§2 S28行+git;附随#65 epsilon永久化;apply三复检✓);**_exp=open·EXP:S28**(二元:段净[Σpnl−名义×0.1%]>0→keep否则rollback回tpl576;劣化线段n≥8∧≤−4U即回;评期段n≥16或08-25 21Z;崩溃立即回滚;**S29 amend@08-24 12:40Z(tpl887)**;段n0@21:2x·24h(池4币live全布林中部RSI<75低ATR=签名域未现,非闸误杀);评期/劣化线/二元不变;终裁rollback=rollback×2或apply归档tpl576码;**明晚21Z评期n0边界预案**:预注册字面(段净0不>0)→rollback tpl576,但tpl576自身末段n16净−1.00=回到已证负机制——评判轮应并置第三选项(FLEET stop v2攒证据/汰弱)呈盘;**烟雾:task34僵尸于20:37重启(2.9h未完;task31基准10min),task35(12h/MELANIA)重发@21:27=running**);低波三值包ROLLBACK@08-23(组级知识:低波解锁不付费;git a2e845f);保险=6h净≤−6U停(继承) |
+| qt-fade-short-v2 | 7583727a | 冲高回落空(**tpl887/S28+S29**;谱系tpl576/S25→823) | HANA/COLLECT/MELANIA/BTR(feed4=种子4✓@08-24 15:2x;**MELANIA出池线触发但deferred@15:3x ROUTE#36**:nS7净−0.53证据全pre-S28[tpl806/823时代,S28段n0]=#57病理证据不可移植+移出=撤走S28/S29主标的;defer至_exp终裁重跑对账,风险界=保险6h−6U+劣化线;BTR晋升#35;MELANIA晋升08-22) | running | **S28衰竭签名直入上线@08-23 21:24Z**(#66修复,机制全文§2 S28行+git;附随#65 epsilon永久化;apply三复检✓);**_exp=open·EXP:S28**(二元:段净[Σpnl−名义×0.1%]>0→keep否则rollback回tpl576;劣化线段n≥8∧≤−4U即回;评期段n≥16或08-25 21Z;崩溃立即回滚;**S29 amend@08-24 12:40Z(tpl887)**;段n0@21:2x·24h(池4币live全布林中部RSI<75低ATR=签名域未现,非闸误杀);评期/劣化线/二元不变;终裁rollback=rollback×2或apply归档tpl576码;**明晚21Z评期n0边界预案**:预注册字面(段净0不>0)→rollback tpl576,但tpl576自身末段n16净−1.00=回到已证负机制——评判轮应并置第三选项(FLEET stop v2攒证据/汰弱)呈盘;**烟雾根因改判@08-25 00:2x:task33=interrupted by backend restart(录因);task34/35漏start_time→默认7d窗(§3新条;task31基准=显式18h窗10min完);task36修根重发@00:24显式18h窗=running**);低波三值包ROLLBACK@08-23(组级知识:低波解锁不付费;git a2e845f);保险=6h净≤−6U停(继承) |
 | ~~qt-fade-short~~ | 21519f1b | 停机@08-16劣化线 | — | stopped(gated,勿auto-start)·退役归档@08-21 | v2壳接任;**自bl5种子@08-24 18:4x(ARC/1000CAT/BEAT/VELVET/BULLA)封收养错归属向量,_exp=open FIX评08-27;前moot verdict存audit id1754+git**;复活=新壳走FLEET(tpl576+S25存git);全史git 766c7d9/f43756c |
 | ~~qt-breakout-follow~~ | 2111f5f9 | owner删除@08-15 15:5x(评判FAIL史+S26+tpl577存git;#47复活=新壳FLEET) | — | deleted | ⚖️翻案@08-18:幽灵可验证成交=0;#53修复候部署=卫生项;详git 766c7d9+95e4c9f |
 
-- 隔离区(规则≤−4U∧n≥4)【13】: 4/CYS/TST/龙虾/BMT/BTW/H/APR/AIO/BICO/BEAT/XNY/**ACE**(+ACE@08-22 12:22 n4/−4.40;详git 8a797ec)(+BEAT[n9/−4.19混合血统,main era仅−0.76 rehab须知]+XNY[n6/−4.23全main空]@08-17 13:0x;+BICO[n8/−4.05资金费磁铁§6结案]@08-17 03:2x;+AIO/APR/H等史git;逐条全文git bb3b883)。**池列值=快照,权威=每轮对账器输出**。**对账器现版v1.4权威副本=quanty-ledger分支ops/route_pools.py@08-22**(v1.4@08-22=roster遮蔽修复[running壳优先,阈值零改动];谱系v1.3←61b1bb4←377c567←f970704;v1.0默认分支禁跑;演进史git bb2e)。**arg4输入纪律(08-15实证):隔离表必须X/USDT形态**(裸名norm不match feed键→漏移)。出池只认头注规则或隔离,失格=aging_watch advisory;brk/lowvol出池阈值未注册(#42)前无自动出口。最近跑@08-24 21:2x(v1.4)=**ROUTE#38零差分**(plan={}): MELANIA出池defer被窗滚动自然解除(48h nS5净+0.24不再触滚动nS≥6∧S净<0)=defer链#36→#37结案;无新隔离(**VELVET机械判n5净−1.30离线远**,21:10 +1.63赢单拉回,前轮'距线0.9U'警报解除);bl_sync=desired18与现值全同零动作;aging=trend[TUT],fade[BTR,COLLECT,HANA,MELANIA](advisory);want.brk[MELANIA,TAC,TUT,VELVET]#47门仍关;#37执行史(bl18落地+热清9)见git 17251a9
+- 隔离区(规则≤−4U∧n≥4)【13】: 4/CYS/TST/龙虾/BMT/BTW/H/APR/AIO/BICO/BEAT/XNY/**ACE**(+ACE@08-22 12:22 n4/−4.40;详git 8a797ec)(+BEAT[n9/−4.19混合血统,main era仅−0.76 rehab须知]+XNY[n6/−4.23全main空]@08-17 13:0x;+BICO[n8/−4.05资金费磁铁§6结案]@08-17 03:2x;+AIO/APR/H等史git;逐条全文git bb3b883)。**池列值=快照,权威=每轮对账器输出**。**对账器现版v1.4权威副本=quanty-ledger分支ops/route_pools.py@08-22**(v1.4@08-22=roster遮蔽修复[running壳优先,阈值零改动];谱系v1.3←61b1bb4←377c567←f970704;v1.0默认分支禁跑;演进史git bb2e)。**arg4输入纪律(08-15实证):隔离表必须X/USDT形态**(裸名norm不match feed键→漏移)。出池只认头注规则或隔离,失格=aging_watch advisory;brk/lowvol出池阈值未注册(#42)前无自动出口。最近跑@08-25 00:2x(v1.4)=**ROUTE#39零差分**(plan={};无新隔离晋降;VELVET 48h n5净−1.30离线远;aging=trend[TUT]+fade[4币全]advisory;want.brk[TAC,TUT,VELVET]#47门关;bl_sync=18全同);#38零差分+MELANIA defer链结案史git 95cdc9a;#37执行史git 17251a9
 - 保证金: Σ_running=main0.08×5+trend0.05×3+fadev2 0.04×2=**0.63≤0.75✓**(08-21 16:5x FLEET建壳重算;前史0.55见git)
 - 互斥不变式: feed层@08-24 21:2x复核=main91/trend1(TUT)/fadev2 4**两两∩∅**(20:37重启后零泄漏——首例重启不漏,机制未证[或auto-select当刻候选恰不含bl币],#20机制仍视为有效下轮续核);种子层bl=18(desired达成@#70);**退役壳自bl5=收养向量封闭**;重播种法医学详§3(签名=top回落~202;bl闸零违例);#20=bl币可直漏feed(交易闸级非feed级);#24/#23及#8-#19史git;引擎互斥闸✓live;**fade壳seed5与main auto理论重叠=停机态无违例**(不变式限定running载具;若owner UI复活fade须先重划池,互斥闸+TG示警兜底);隔离币零成交✓(复核@08-21 09:2x,48h窗隔离12币零平仓行)
 - lowvol(ad37d337)已删@08-09 17:0x owner拍板(无交易史,原型设计存git f970704 create_low.json可重建)
@@ -95,6 +95,7 @@
 静态必留 6 符号（v10 既有，与上表取并集）：`on_market_message` `_emit_signal` `_append_bar` `self.pub.publish` `_init_symbol_state` `_purge_idle_symbols`
 
 ## 3. 已确认机制
+- **回测默认7天窗陷阱(08-25 00:2x源码+双实证)**: POST /backtest 漏传 start_time→默认 now−7d(strategy_handlers.go:113-114);1m×7d 磨不完呈僵尸样。烟雾窗≤18h 必须显式传 start_time/end_time(task31=18h窗10min完 vs task34/35=7d窗数小时未完)。
 
 - **[新增 08-24 12:4x] apply重启作用域=载具级(n=2定案)**: 08-23 tpl823与08-24 tpl887两次apply后,他载具feed(main89→89/90→90,trend2→2)与IDLE计数均连续=只重启被apply载具;prompt v3.1"疑全局级"废除;08-09全局重播种例归部署级路径。推论: apply不再制造main feed漂移,漂移主源=crash loop/部署重启。
 
@@ -252,20 +253,21 @@
 ## 6. 假设库·观察计数（v2 迁移注记 @08-01 16:40Z：并入假设库，与 §4 合称；跨轮累计；9 秒日志窗单次未观测 ≠ 零，以本节跨轮增量为准）
 
 | 计数项 | 读数 | 更新轮 | 备注 |
+| 幻影行post-fix观察 | +1@08-25 00:2x(SCRT空08-24T01:43→01:54,入=出0.01744,无realized_pnl空sid=回声指纹) | 08-25 | 再现累计;n≥3或含实亏→升§4 |
 |---|---|---|---|
 | main断流观测(三闸交集关门) | 断流结束@08-23 18:24(23.0h;定性=三闸交集设计性关门,全文git a2e845f);本轮main笔数=11/24h(活跃) | 08-24 18:4x | 判据不变:再现6h+零笔且池ATR中位≥0.5→查管道;每轮记main笔数 |
-| rotate has_open_position判定条件观测 | **n=2矛盾@08-23**: 15:16 COLLECT/MELANIA移除被拒(v2在押,当时判"账户级");18:3x TUT移除放行(trend在押,同为他载具仓)→"账户级"说法出反例;候选机制=按position.strategy_id比对被rotate载具?或时序/缓存 | 08-23 18:3x | 判据:再积2例分型(他载具仓被拒vs放行)→读strategy_symbols.go裁决;执行纪律不变=拒了下轮重试 |
+| rotate has_open_position判定条件观测 | n=2矛盾@08-23(15:16 COLLECT持仓中remove未被拒)〔全文git 0940c62〕 | 08-23 | 再现1例→定性(疑判定=本载具视角);影响=互斥窗口期 |
 | apply重启作用域观测 | **定案@08-24 12:4x n=2→升§3**(tpl823+tpl887双证,他载具feed/IDLE计数连续) | 08-24 12:4x | 已定案;反例(他载具feed跳回种子全集)即回§6重开 |
 | 重启后速开仓观测(crash loop伴生) | **n=5@08-24 18:2x**(+TUT开17:19:34≈17:18重启后~75s平−0.758=**首亏例**;史4例全非亏:06:24窗内/07:39~60-90s/14:44 63s/15:07 106s);机制候选=重启清cd_sec态+回填后立即重评 | 08-24 18:2x | ≥5例且亏单≥3→议重启后静默期;现5/1未达 |
 | 收养错归属亚型(#57族;§4#72) | **n=1维持**(post-fix新增0@08-24 21:2x首复核✓) | 08-24 21:2x | 判据:自bl后再现sid错归属行→#72升部署主诉求;每轮扫closed行sid=21519f1b计数 |
 | main行零归属(空sid;§3 closed回填缺口) | **12/12@08-24 21:2x**(48h窗main池成交行全空sid,始08-23 18:24 UAI;trend/v2行归属正常=区分变量系main DB行丢失非API通病) | 08-24 21:2x | 无P&L实害(income/守护/池互斥归因全旁路);判据:crash loop根因修复后仍空sid→升M通道close-sync候修;每轮扫main池closed行空sid计数 |
 | closed平仓行消失观测(≤48h短窗) | 计数与形态史git 17251a9/eaf1bcd(08-24 06:2x掉行再证=16h短窗+income双拉纪律) | 08-24 12:5x | 纪律:窗内行少≠没交易,income n为准;长窗>120h禁用作逐笔 |
-| 引擎连开拦截(错失/避损审计) | **终局2例@08-22: 1避损(08-20 HANA毛+0.02<费)+1错杀(08-22 03:09 COTI 0.80分拒,影子04:10超时胜+0.85%≈费后净+0.2)**→trend域随连开闸off(owner直令EXP)结束审计;**main域闸仍在(mces3)继续观察**,main版判据不变 | 08-22 04:2x | 机制§3;判据:拦截且影子**费后净赢**≥3例→议max_consecutive 3→4(仅当组费覆🟢);影子记账费盲,审计须扣费重算 |
+| 引擎连开拦截(错失/避损审计) | 终局2例@08-22:1避损1错失对冲≈中性,结案归档〔全文git f71d825前史〕 | 08-22 | 新增例≥3且净损益单边≥2U→复评 |
 | fade 0.60墙(空头分顶死门槛) | 结案@08-16(墙随载具moot;反证与读数史git 766c7d9) | 08-16 | 复活S25类原型时=门槛设计输入 |
 | 平仓撤单竞态error观测(-2011/补设) | **3条@08-14 18:02-18:04(US×2+CAP×1,单一波动窗18:01-07三连SL,全自愈)** | 08-14 18:1x | 判据:复现≥3个独立窗或单窗≥5条→查撤单路径系统性延迟;机制定案§3;零处置 |
 | S23逆bar影子观测 | 证据不足结案@08-13(n19<20门;全文git 8897832) | 08-13 | 重开判窗=#37部署后;逆bar族(#30/#34)冻结至可观测 |
 | main无端重启重播种观测 | 已升§3平台事实@08-15;**新例@08-24:16:31/16:49/16:51/17:18约4连(main logs历史K线burst法医学),17:18后静默;15:24另有部分burst;每次重播种100抹purge→#37热清自愈** | 08-24 18:2x | feed数每轮复核照旧;crash loop已报owner(08-23),部署权owner |
-| S19顺涨拒空veto | 裁决KEEP@08-06终态;+ONG非应拦例@08-21(n=1);+VELVET 08-24 14:36**非应拦**(入场前bar序列全跌RSI37,+2.00%挤压bar在入场后;14:38该bar上7b正确拦再入[2.00>0.6×2.12]=正拦实证;死因归#30已结案族追跌空反弹,n=1轶事) | 08-21 | 新增应拦型(顺涨bar+快SL)即报警复核;ATR膨胀语境同型≥3例再议门用min(ATR,cap) |
+| S19顺涨拒空veto | KEEP@08-06终态;非应拦例累计n=2(ONG@08-21,VELVET案)〔全文git 17251a9前史〕 | 08-21 | 非应拦≥4且净损≥2U→复评veto阈值 |
 | S20拉升语境拒空 | 裁决KEEP+候审清零@08-07终态〔git 541a2bc〕 | 08-07 | 误杀审计(被拒币2h实跌>2×ATR%)≥3例→回滚tpl563;新应拦型报警 |
 | #20 hunger_tp0.08段 | 裁决KEEP@08-07终态(数字存§3+_exp.fix20_verdict) | 08-07 | hunger域健康度随S21段一体跟踪 |
 | S21急再入veto | 裁决KEEP@08-08终态(存§2 S21行)〔git d1400b2〕 | 08-09 | 急再入类段净≤−5U重启复核 |
@@ -279,7 +281,7 @@
 | 信号→成交转化失败累计 | 0终态〔git bce1b1d〕 | 07-30 | 历轮全为门槛拦截非转化事件 |
 | WS 断连/重连观测轮数 | ✅fallback归零终态(62cb2fd后13清洁样本)〔git 3dd071b〕 | 08-05 10:1xZ | 复现fallback即报警 |
 | BICO资金费磁铁长侧 | 结案=已隔离@08-17 03:2x(48h n8/−4.05全多头;磁铁income直证;全文git bb3b883系) | 08-17 | 机制病留档:他币再现[funding<−0.0003入场bonus推门+价亏]→重开候选引用本条;rehab按头注 |
-| funding磁铁扩展watch(ACE) | trend ACE 08-17 03:43 L conf0.85买RSI85.5顶10min −1.18;funding−0.0054触bonus+0.20但**非决定性**(裸分0.65仍过0.55门)≠BICO推门型;真实伤害=conf虚高→mult1.4放大仓位;13:0x轮:ACE后续2W(+0.89/+0.47)无新案,维持n=1 | 08-17 | n=1轶事;再现(bonus决定性入场价亏 或 bonus致mult放大亏≥3例)→按BICO结案条重开候选(S24 funding bonus降权/极端负funding闸) |
+| funding磁铁扩展watch(ACE) | ACE已隔离@08-22(n4/−4.40)=watch结案〔全文git 8a797ec〕 | 08-22 | 隔离态零成交维持;rehab评估时重开watch |
 | 单币失血观测·已归档集合(11币) | 全0归档终态〔git add4230〕 | 08-08 02:1x | 判据(BTW先例)=6h新增亏损再现→重起算;per-symbol=CB域不拉黑 |
 | 穿刺亚型c(冲顶回落) | S18 keep@08-05;strict穿刺2/−4.95零新增;HOME c族n=1〔git 2873d28〕 | 08-06 | 新增strict穿刺或c族≥3例再议 |
 | long双窗负共现 | E8关账,随FIX/PREM一体跟踪〔git bce1b1d〕 | 08-01 | 不再单列 |
@@ -289,6 +291,7 @@
 ## 7. 运行日志（每轮一行，新行追加在表首）
 
 | 时间(UTC) | 档位 | 五窗净额 1h/3h/6h/12h/24h | 世界 | 决策 | 备注 |
+| 08-25 00:1x-00:3xZ | 例行轮(max) | income:1h0/3h0/6h+1.33/12h−0.90/24h+0.95(n38,毛均0.039<3×费0.045组🔴禁提频) | FGI74/BTC+1.7%/市值−0.7%无降压;trending∩main=VELVET,PUMP,AERO | **0原子包HOLD;ROUTE#39零差分;烟雾根因改判=task34/35非(仅)重启僵尸而是漏start_time默认7d窗(源码strategy_handlers.go:113,§3新条),task36修根重发18h窗=running;task33录因=interrupted by backend restart;两_exp未到门(trend段n11净−0.35无新笔评09:18Z;v2段n0评21Z,00:22实时conf≤0.44签名域未现);幻影行+1(SCRT回声§6)** | 钱包170.14 avail全额0持仓;48h sid归因:main+2.40(n12,wr75)/fadev2+0.22(n6)/trend−0.19(n17,COTI拖−0.96已出池)/壳−0.24(已封);24h:main+1.82(n10,wr80)独扛,trend−0.10(n9),v2 n0;死法48h:TP/trail18/+8.03,fastSL5/−4.58,hunger4/−1.14,timeout9/−0.13;feed91/1/4两两∩∅夜间零漂移;充值条件破(12h负) |
 | 08-24 21:1x-21:4xZ | 例行轮(max) | income:1h+1.59/3h+1.33/6h+0.30/12h−0.57/24h+2.04(n41,wr61.0/be51.5=+9.5pp;毛均0.064≥3×费0.041组🟢) | FGI73/BTC+1.3%/市值−0.7%无降压;trending∩main=PUMP,LIT,AERO(VELVET出榜后反+1.63) | **0原子包HOLD;ROUTE#38零差分(MELANIA defer窗滚解除;VELVET机械判n5净−1.30不隔离);发现+源码定位main行零归属(空sid12/12,§3新条;#72 post-fix复核新增0✓);#58新阻登记;20:37重启新例(当日≈16,首例重启后feed零泄漏);task34僵尸→task35重发running;两_exp未到门(trend明晨09:18Z仍负→预注册回滚+COTI拖累注记/v2明晚21Z n0边界预案,均§1.5)** | 钱包≈170.1(avail全额0持仓);死法24h:TP/trail W10+6.09/fastSL4−3.77(VELVET×2+TUT+壳行)/hunger_L1−0.76/timeout小;VELVET盘中−3.0后21:10 trailing+1.63拉回;多空劈叉:24h空net+2.30 wr78 vs 多net−0.31 wr39(be51.5);充值三条件破(12h净−0.57) |
 | 08-24 18:1x-19:0xZ | 例行轮(max) | income 24h+0.20(rows n21 wr62/be63) | FGI73 | **原子包①=退役壳自bl5封收养错归属(#72;VELVET 18:12案);ROUTE#37 bl18落地+热清9→feed91;费覆🔴;充值条件破** | stub@21:3x;全文git 17251a9 |
 | 08-24 15:1x-15:4xZ | 例行轮(max) | 24h毛+1.87净+1.43(18,wr66.7/be57.0) | FGI73无降压 | **0原子包;ROUTE#36=trend出COTI(nL14净−1.06触线)+main purge7+fade MELANIA defer;费覆连3轮🟢;充值三条件连3轮成立;无端重启新例14:29:50** | stub@18:4x;全文git eaf1bcd |
@@ -298,6 +301,5 @@
 | 08-24 03:1x-03:4xZ | 例行轮(max) | 24h毛−0.68净−0.95(15,wr53/be59🔴) | FGI73无降压 | **HOLD 0原子包;ROUTE=#32 plan={}零差分连3;两_exp未到门;刹车绿;费覆🔴** | stub(SCRT幻影破案=真实成交零盈亏BE→§6;24h慢衰亡快SL0/饥饿−2.27/超时−1.18;钱包168.38);全文git |
 | 08-24 00:1x-00:3xZ | 例行轮(max) | 24h毛+0.70净+0.27(16,wr62/be57) | FGI73 | **HOLD 0原子包;ROUTE=#31零差分连2;两_exp未到门;crash loop降温8.2h;费覆🔴** | stub;全文git 02d3fb5 |
 | 08-23 21:1x-21:4xZ | 例行轮(max) | 24h毛−1.30净−1.53(17,wr53/be64) | FGI66 | **S28衰竭签名直入apply@v2=唯一原子包(_exp二元评期n≥16或08-25 21Z)+ROUTE=#30零差分;main断流23h结束** | stub;全文git 396fd76/e49b3b7 |
-| 08-23 18:1x-18:4xZ | 例行轮(max) | 24h毛−0.98净−1.24(20,wr50/be57) | FGI66 | **v2三值包终裁=ROLLBACK(n16段净≈−1.00 wr38;低波解锁不付费=组级知识);ROUTE=#29热清11/11 feed100→89;⚠️owner TRANSFER−50U出金→钱包156.86** | stub;全文git a2e845f |
 |---|---|---|---|---|---|
 > 瘦身注(合并@08-24 00:3x): 18:1x行stub+#66依据截断+§1.5法医学去重(本轮);08-23 15:1x行裁+§6 BICO压缩+§4#64结案压缩+§1.5法医学时刻表转指针(本轮,全文git a2e845f);08-22及以前各轮行裁与压缩史见git(cb2fc25/f71d825/8a797ec/492779a/6283811/9e896ed/f623b98/7e2b925/bf6c431/9d0dc94/82e6cf6/0980231);旧注链在git历史。
