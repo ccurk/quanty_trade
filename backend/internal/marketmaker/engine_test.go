@@ -79,36 +79,41 @@ func TestSkewedQuote(t *testing.T) {
 	}
 }
 
-func TestClampToBook(t *testing.T) {
-	// 今晚 ONG 的真实场景:gate 比 binance 贵,skew 后的卖价(0.07377)低于 gate 买一
-	// (假设 0.07380)→ post-only 必被拒。钳制后卖价应抬到 gate 买一 + tick,买价不动。
-	bid, ask := clampToBook(0.07330, 0.07377, 0.07380, 0.07385, 0.00001)
-	if math.Abs(ask-0.07381) > 1e-12 {
-		t.Fatalf("ask should clamp to venue bid+tick 0.07381, got %v", ask)
+func TestRideToBook(t *testing.T) {
+	// PORTAL 真实场景:gate 比 binance 贵。我们按 spread 算出的卖价 100.15 远在 gate 卖一
+	// (100.33)之下 → 过去就是这样贱卖。ride 后卖价应顶到 gate 卖一−tick=100.32,吃满溢价;
+	// 买价 99.85 已在 gate 买一(100.11)之下 → 不动。
+	bid, ask := rideToBook(99.85, 100.15, 100.11, 100.33, 0.01)
+	if math.Abs(ask-100.32) > 1e-9 {
+		t.Fatalf("ask should ride up to venue ask-tick 100.32, got %v", ask)
 	}
-	if bid != 0.07330 {
-		t.Fatalf("bid must be untouched, got %v", bid)
-	}
-
-	// 反向:执行所比参考便宜,买价(100.2)高于其卖一(100.1)→ 压到 100.1−tick。
-	bid, ask = clampToBook(100.2, 100.5, 100.0, 100.1, 0.01)
-	if math.Abs(bid-100.09) > 1e-9 {
-		t.Fatalf("bid should clamp to venue ask-tick 100.09, got %v", bid)
-	}
-	if ask != 100.5 {
-		t.Fatalf("ask must be untouched, got %v", ask)
+	if bid != 99.85 {
+		t.Fatalf("bid should stay at fair floor 99.85, got %v", bid)
 	}
 
-	// 不穿越时:两边都原样。
-	bid, ask = clampToBook(99.0, 101.0, 99.5, 100.5, 0.01)
+	// 紧盘口(SOL 类):gate 卖一 100.02 比我们的 100.10 更低 → 不下调(不砍自己的价);
+	// gate 买一 99.98 比我们的 99.90 更高 → 不上调(不追高)。两边原样 = 守住 fair 价差。
+	bid, ask = rideToBook(99.90, 100.10, 99.98, 100.02, 0.01)
+	if bid != 99.90 || ask != 100.10 {
+		t.Fatalf("tight book must not tighten our quotes, got %v/%v", bid, ask)
+	}
+
+	// 折价所:gate 买一 100.30 高于我们的买价上限 → 不追(买价不得越过 fair 上限)。
+	bid, ask = rideToBook(99.90, 100.50, 100.30, 100.40, 0.01)
+	if bid != 99.90 {
+		t.Fatalf("bid must not chase a premium venue bid, got %v", bid)
+	}
+
+	// post-only 安全:算出的卖价会穿过 gate 买一 → 抬到买一+tick,不成 taker。
+	bid, ask = rideToBook(99.0, 99.5, 100.0, 100.2, 0.01)
+	if ask <= 100.0 {
+		t.Fatalf("ask must not cross into venue bid, got %v", ask)
+	}
+
+	// 盘口缺边(0)跳过 ride 与安全钳制。
+	bid, ask = rideToBook(99.0, 101.0, 0, 0, 0.01)
 	if bid != 99.0 || ask != 101.0 {
-		t.Fatalf("non-crossing quotes must pass through, got %v/%v", bid, ask)
-	}
-
-	// 盘口缺边(0)不钳制。
-	bid, ask = clampToBook(99.0, 101.0, 0, 0, 0.01)
-	if bid != 99.0 || ask != 101.0 {
-		t.Fatalf("zero book sides must not clamp, got %v/%v", bid, ask)
+		t.Fatalf("zero book sides must pass through, got %v/%v", bid, ask)
 	}
 }
 

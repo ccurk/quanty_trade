@@ -271,16 +271,19 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker) {
 		invRatio = baseHeld / p.MaxPosition
 	}
 	bidPx, askPx := skewedQuote(refMid, half, invRatio, inventorySkewFrac, filt.TickSize)
-	// 钳制到执行所盘口内:卖不低于其买一+tick,买不高于其卖一−tick。否则 post-only 会被
-	// POC_FILL_IMMEDIATELY 拒掉并每秒重试(白烧 API)。执行所比参考贵时,卖单顺势挂到其
-	// 买一上方 = 比目标价更高,严格更优;反向同理。
-	bidPx, askPx = clampToBook(bidPx, askPx, eb.BidPx, eb.AskPx, filt.TickSize)
+	// 吃满执行所盘口价差:执行所卖一比"公允+spread"更贵时,把卖单顶到其卖一下方 1 tick
+	// (捕获整段溢价,而不是按固定 spread 自己砍价贱卖);买一更便宜时同理下探。同时严格
+	// 留在盘口内 → post-only 不会被 POC_FILL_IMMEDIATELY 拒。这是"面板正、成交负"的正解:
+	// 面板量的是盘口既有价差,过去我们却挂在它里面把便宜货让了出去。
+	bidPx, askPx = rideToBook(bidPx, askPx, eb.BidPx, eb.AskPx, filt.TickSize)
 	if bidPx <= 0 || askPx <= 0 || askPx <= bidPx {
 		return
 	}
 
-	bidQty := roundToStep(p.OrderQty, filt.StepSize)
-	askQty := roundToStep(minf(p.OrderQty, baseHeld), filt.StepSize) // 现货只能卖出已持有的量
+	// 买量钳到"上限−持仓",防止在接近上限时又买满一整单冲破 cap(order_qty≈½cap 时最多溢出
+	// 50%);卖量最多卖出已持有的量(现货)。
+	bidQty := roundToStep(minf(p.OrderQty, p.MaxPosition-baseHeld), filt.StepSize)
+	askQty := roundToStep(minf(p.OrderQty, baseHeld), filt.StepSize)
 
 	// 库存闸:总持仓达上限不再买;无库存不挂卖;两边都要过最小名义额。
 	wantBid := baseHeld < p.MaxPosition && bidQty > 0 && bidPx*bidQty >= filt.MinNotional
@@ -330,12 +333,25 @@ func (e *Engine) cancelAll(ex ExecExchange, symbol string) {
 	}
 }
 
-// clampToBook keeps post-only quotes from crossing the exec book: ask never at/below
-// the venue bid (raise to bid+tick), bid never at/above the venue ask (lower to
-// ask−tick). Both clamps move quotes AWAY from aggression (better price if filled),
-// never closer. Zero/missing book sides leave the quote untouched.
-func clampToBook(bidPx, askPx, ebBid, ebAsk, tick float64) (bid, ask float64) {
+// rideToBook widens post-only quotes out to the exec venue's own book so we capture
+// its full spread instead of undercutting it: if the venue ask sits above our target
+// ask, ride up to venue_ask−tick (sell into the venue's richer offer, not below it);
+// if the venue bid sits below our target bid, ride down to venue_bid+tick. Both moves
+// go AWAY from aggression → strictly better fill price, never worse. Then clamp inside
+// the book so post-only never crosses/takes. Zero/missing book sides skip that step.
+//
+// This is the fix for "panel shows +bps but fills are −bps": the panel measured the
+// venue's existing book spread; a fixed spread_bps quote sat INSIDE it and gave the
+// edge away. Riding to the book captures the spread the panel actually measured.
+func rideToBook(bidPx, askPx, ebBid, ebAsk, tick float64) (bid, ask float64) {
 	bid, ask = bidPx, askPx
+	if ebAsk > 0 && ebAsk-tick > ask {
+		ask = ebAsk - tick // 执行所卖一更贵 → 顶上去吃溢价
+	}
+	if ebBid > 0 && ebBid+tick < bid {
+		bid = ebBid + tick // 执行所买一更便宜 → 下探占便宜
+	}
+	// post-only 安全:严格留在盘口内,绝不穿价成 taker。
 	if ebBid > 0 && ask <= ebBid {
 		ask = ebBid + tick
 	}
