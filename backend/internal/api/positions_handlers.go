@@ -24,6 +24,9 @@ type strategyPositionMeta struct {
 	AvgPrice     float64
 	TakeProfit   float64
 	StopLoss     float64
+	// RequestedAt 是该 symbol 最近一笔策略订单的下单时刻,收养归属用它判断
+	// "订单元数据是否新鲜到可以作为开仓归属的 ground truth"。
+	RequestedAt time.Time
 }
 
 func loadRecentStrategyOrderMeta(ownerID uint) map[string]strategyPositionMeta {
@@ -44,6 +47,7 @@ func loadRecentStrategyOrderMeta(ownerID uint) map[string]strategyPositionMeta {
 		bySymbol[key] = strategyPositionMeta{
 			StrategyID:   o.StrategyID,
 			StrategyName: o.StrategyName,
+			RequestedAt:  o.RequestedAt,
 		}
 	}
 	return bySymbol
@@ -55,33 +59,95 @@ func loadUserStrategyInstances(ownerID uint) []models.StrategyInstance {
 	return instRows
 }
 
+// findStrategyInstanceForSymbol 把 symbol 按静态配置(symbol/symbols)解析到策略实例。
+// #72 两趟解析: running 实例优先,停机实例只作兜底(停/删策略的在持仓位仍需可解析,
+// 但不得抢走 running 载具的归属 —— 08-24/08-26 VELVET 双案:退役停机壳的
+// config.symbols 命中率先于 running 载具,行级 sid 被污染,逐笔归因随之串账)。
+// 两趟都尊重 symbol_blacklist:组内币池互斥用 blacklist 表达,归属解析同样要认。
 func findStrategyInstanceForSymbol(instRows []models.StrategyInstance, sym string) *models.StrategyInstance {
 	want := exchange.NormalizeSymbol(sym)
+	var fallback *models.StrategyInstance
 	for i := range instRows {
 		var cfg map[string]interface{}
 		if err := json.Unmarshal([]byte(instRows[i].Config), &cfg); err != nil {
 			continue
 		}
-		if v, ok := cfg["symbol"].(string); ok && exchange.NormalizeSymbol(v) == want {
+		if !configMatchesSymbol(cfg, want) || configBlacklistsSymbol(cfg, want) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(instRows[i].Status), "running") {
 			return &instRows[i]
 		}
-		if raw, ok := cfg["symbols"]; ok {
-			if xs, ok := raw.([]interface{}); ok {
-				for _, it := range xs {
-					if s, ok := it.(string); ok && exchange.NormalizeSymbol(s) == want {
-						return &instRows[i]
-					}
+		if fallback == nil {
+			fallback = &instRows[i]
+		}
+	}
+	return fallback
+}
+
+func findStrategyInstanceByID(instRows []models.StrategyInstance, id string) *models.StrategyInstance {
+	if strings.TrimSpace(id) == "" {
+		return nil
+	}
+	for i := range instRows {
+		if instRows[i].ID == id {
+			return &instRows[i]
+		}
+	}
+	return nil
+}
+
+func configMatchesSymbol(cfg map[string]interface{}, want string) bool {
+	if v, ok := cfg["symbol"].(string); ok && exchange.NormalizeSymbol(v) == want {
+		return true
+	}
+	if raw, ok := cfg["symbols"]; ok {
+		switch xs := raw.(type) {
+		case []interface{}:
+			for _, it := range xs {
+				if s, ok := it.(string); ok && exchange.NormalizeSymbol(s) == want {
+					return true
 				}
-			} else if xs, ok := raw.([]string); ok {
-				for _, s := range xs {
-					if exchange.NormalizeSymbol(s) == want {
-						return &instRows[i]
-					}
+			}
+		case []string:
+			for _, s := range xs {
+				if exchange.NormalizeSymbol(s) == want {
+					return true
 				}
 			}
 		}
 	}
-	return nil
+	return false
+}
+
+// configBlacklistsSymbol 与引擎侧 isBlacklistedSymbol 同语义(数组或逗号分隔字符串),
+// 但工作在 DB 行的 JSON 配置上(API 层无内存实例可用)。
+func configBlacklistsSymbol(cfg map[string]interface{}, want string) bool {
+	raw, ok := cfg["symbol_blacklist"]
+	if !ok {
+		return false
+	}
+	switch xs := raw.(type) {
+	case []interface{}:
+		for _, it := range xs {
+			if s, ok := it.(string); ok && exchange.NormalizeSymbol(s) == want {
+				return true
+			}
+		}
+	case []string:
+		for _, s := range xs {
+			if exchange.NormalizeSymbol(s) == want {
+				return true
+			}
+		}
+	case string:
+		for _, s := range strings.Split(xs, ",") {
+			if exchange.NormalizeSymbol(strings.TrimSpace(s)) == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func findStrategyForSymbol(instRows []models.StrategyInstance, sym string) (string, string) {
@@ -247,17 +313,31 @@ func ListPositions(c *gin.Context) {
 					}
 				} else {
 					si := findStrategyInstanceForSymbol(instRows, p.Symbol)
-					if si != nil || orderMeta[key].StrategyID != "" {
+					meta, hasMeta := orderMeta[key]
+					// #72 归属优先级: 新鲜订单元数据 > 静态 symbols 扫描 > 陈旧订单兜底。
+					// entry 行落库前的竞态窗内本收养先行时,该仓一定刚有一笔策略订单,
+					// 它标注的 strategy_id 是开仓归属的 ground truth;静态扫描只该在
+					// 没有新鲜订单可依时使用(手工仓/重启后遗留仓)。
+					freshMeta := hasMeta && !meta.RequestedAt.IsZero() && time.Since(meta.RequestedAt) <= 15*time.Minute
+					if si != nil || hasMeta {
 						strategyID := ""
 						strategyName := ""
-						if si != nil {
+						if freshMeta {
+							strategyID = meta.StrategyID
+							strategyName = meta.StrategyName
+						} else if si != nil {
 							strategyID = si.ID
 							strategyName = si.Name
 						} else {
-							strategyID = orderMeta[key].StrategyID
-							strategyName = orderMeta[key].StrategyName
+							strategyID = meta.StrategyID
+							strategyName = meta.StrategyName
 						}
-						tp, sl := deriveTPSLFromStrategyInstance(si, p.Price, p.Direction)
+						// TP/SL 派生要跟归属走同一个策略,归属与 si 不一致时按 ID 重解析。
+						attributed := si
+						if attributed == nil || attributed.ID != strategyID {
+							attributed = findStrategyInstanceByID(instRows, strategyID)
+						}
+						tp, sl := deriveTPSLFromStrategyInstance(attributed, p.Price, p.Direction)
 						now := time.Now()
 						pos := models.StrategyPosition{
 							StrategyID:   strategyID,

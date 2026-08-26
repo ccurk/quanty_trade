@@ -336,6 +336,10 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 }
 
 func findGuardStrategyInstance(insts []*StrategyInstance, symbol string) *StrategyInstance {
+	// #72 running 优先两趟: 停机实例(含退役壳)只在没有任何 running 实例认领该
+	// symbol 时兜底(CR P2 语义保留 —— 停/删策略的在持仓位仍需有人维护交易所
+	// 止损),否则停机壳会按实例序抢走 running 载具的收养归属(VELVET 双案)。
+	var fallback *StrategyInstance
 	for _, inst := range insts {
 		if inst == nil {
 			continue
@@ -345,9 +349,15 @@ func findGuardStrategyInstance(insts []*StrategyInstance, symbol string) *Strate
 		if isBlacklistedSymbol(inst, symbol) {
 			continue
 		}
-		if isAllowedSymbol(inst, symbol) {
+		if !isAllowedSymbol(inst, symbol) {
+			continue
+		}
+		if inst.Status == StatusRunning {
 			return inst
 		}
+		if fallback == nil {
+			fallback = inst
+		}
 	}
-	return nil
+	return fallback
 }
