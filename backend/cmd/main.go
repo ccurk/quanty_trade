@@ -145,6 +145,9 @@ func main() {
 	mgr := app.BuildStrategyManager(runtimeCtx, hub)
 	app.StartBackgroundJobs(runtimeCtx, mgr)
 
+	// Health（免认证）: DB 层活性探针,挂死事故时给监控一个确定信号(2s 内 200/503)。
+	r.GET("/api/health/db", api.DBHealth)
+
 	// Auth Routes
 	r.POST("/api/login", api.Login)
 	r.POST("/api/register", api.Register)

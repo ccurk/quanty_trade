@@ -59,6 +59,13 @@ type DBConfig struct {
 	Host       string `yaml:"host"`
 	Port       string `yaml:"port"`
 	Name       string `yaml:"name"`
+	// MySQL 驱动级超时(go-sql-driver DSN 参数)。防 DB 侧卡死事务把 40 连接池
+	// 耗尽后全站无限挂起(2026-08-27 事故): 超时断连报错=池可回收、tick 可重试。
+	// 格式 time.ParseDuration("120s"); 留空用默认 dial 10s/read 120s/write 60s。
+	// read 默认给到 120s 是为兜住冷启动 AutoMigrate 的慢 DDL,不是查询预算。
+	DialTimeout  string `yaml:"dial_timeout"`
+	ReadTimeout  string `yaml:"read_timeout"`
+	WriteTimeout string `yaml:"write_timeout"`
 }
 
 type AdminConfig struct {
@@ -460,6 +467,15 @@ func applyEnvOverrides(c *Config) {
 	}
 	if v := strings.TrimSpace(os.Getenv("DB_NAME")); v != "" {
 		c.DB.Name = v
+	}
+	if v := strings.TrimSpace(os.Getenv("DB_DIAL_TIMEOUT")); v != "" {
+		c.DB.DialTimeout = v
+	}
+	if v := strings.TrimSpace(os.Getenv("DB_READ_TIMEOUT")); v != "" {
+		c.DB.ReadTimeout = v
+	}
+	if v := strings.TrimSpace(os.Getenv("DB_WRITE_TIMEOUT")); v != "" {
+		c.DB.WriteTimeout = v
 	}
 
 	if v := strings.TrimSpace(os.Getenv("ADMIN_USERNAME")); v != "" {

@@ -26,6 +26,21 @@ func fatalAlert(format string, args ...interface{}) {
 	log.Fatal(msg)
 }
 
+// parseTimeout 解析配置里的超时字符串；空串或非法值回退 def（宁可带默认超时跑，
+// 也不能因配置手误回到无超时的无限挂起态）。
+func parseTimeout(s string, def time.Duration) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		logger.Infof("DB 超时配置 %q 非法，回退默认 %s", s, def)
+		return def
+	}
+	return d
+}
+
 // generateRandomPassword 生成 n 字符长度的随机密码（base64-url-safe，无填充）。
 // 用 crypto/rand 保证不可预测。n 至少 24，否则 base64 截断后熵不足。
 func generateRandomPassword(n int) string {
@@ -67,15 +82,22 @@ func InitDB() {
 	gormCfg := &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true}
 
 	if dbType == "mysql" {
-		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+		// 驱动级超时: DB 侧卡死(锁堆积/磁盘满/长事务)时查询在 readTimeout 断连报错,
+		// 而不是无限挂起把连接池(40)耗尽拖死全站(2026-08-27 全 DB 端点永挂事故)。
+		// 断连还会释放该连接占的 MySQL 侧资源,给锁堆积一条自愈路径。
+		dial := parseTimeout(c.DB.DialTimeout, 10*time.Second)
+		readT := parseTimeout(c.DB.ReadTimeout, 120*time.Second)
+		writeT := parseTimeout(c.DB.WriteTimeout, 60*time.Second)
+		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&timeout=%s&readTimeout=%s&writeTimeout=%s",
 			c.DB.User,
 			c.DB.Pass,
 			c.DB.Host,
 			c.DB.Port,
 			c.DB.Name,
+			dial, readT, writeT,
 		)
 		DB, err = gorm.Open(mysql.Open(dsn), gormCfg)
-		logger.Infof("Connecting to MySQL database...")
+		logger.Infof("Connecting to MySQL database (dial=%s read=%s write=%s)...", dial, readT, writeT)
 	} else {
 		path := c.DB.SqlitePath
 		if path == "" {
@@ -95,6 +117,8 @@ func InitDB() {
 		sqlDB.SetMaxOpenConns(40)
 		sqlDB.SetMaxIdleConns(10)
 		sqlDB.SetConnMaxLifetime(30 * time.Minute)
+		// 空闲回收: DB 侧重启/断连后残留的半死连接不超过 5min 就被淘汰。
+		sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 	}
 
 	// Migrate user table first so we can bootstrap admin user safely.
