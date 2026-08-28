@@ -219,8 +219,23 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 	}
 	ensureExchangeLeverage(inst, bx, symbol, levChosen)
 	amount = finalNotional / px
+	// 最小手数救援：高价币（单枚价接近或超过名义额）算出的数量 < 一手时，交易所侧
+	// roundDownToStep 会取整到 0 → "quantity too small" 拒单，且该错误不含币名、
+	// 候选层只见"候选开仓失败"（实证：MVLL 26.9U/枚，conf-sizing 后名义 23.4U →
+	// 0.87 枚，两案同型）。数量已达一手的 2/3 时向上凑整一手（名义膨胀 ≤1.5×，
+	// 保证金影响可忽略）；不足 2/3 则显式跳过——凑整会把仓位放大到 sizing 意图之外。
+	if minLot := bx.MinTradableQty(symbol); minLot > 0 && amount < minLot {
+		if amount >= minLot*2.0/3.0 {
+			emitStrategyLog(inst, "info", fmt.Sprintf("最小手数凑整 symbol=%s qty=%.8f→%.8f 名义=%.2f→%.2f", symbol, amount, minLot, amount*px, minLot*px))
+			amount = minLot
+		} else {
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：数量不足最小手数 symbol=%s qty=%.8f minLot=%.8f 名义=%.2f 一手名义=%.2f", symbol, amount, minLot, amount*px, minLot*px))
+			return 0, nil
+		}
+	}
 	amount = clampOrderAmount(inst, amount)
 	if amount <= 0 {
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：数量钳制后<=0 symbol=%s", symbol))
 		return 0, nil
 	}
 	if amount*px < minNotional {

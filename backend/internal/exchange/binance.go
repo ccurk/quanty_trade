@@ -1287,14 +1287,14 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 		adjPrice := roundDownPrice(price, filters.TickSize)
 		adjQty := roundDownToStep(qty, filters.StepSize)
 		if filters.MinQty > 0 && adjQty < filters.MinQty {
-			return nil, fmt.Errorf("quantity too small")
+			return nil, fmt.Errorf("quantity too small symbol=%s qty=%.8f adjQty=%.8f minQty=%v step=%v", sym, qty, adjQty, filters.MinQty, filters.StepSize)
 		}
 		minNotional := filters.MinNotional
 		if b.market == "usdm" && minNotional < 5 {
 			minNotional = 5
 		}
 		if minNotional > 0 && adjQty*adjPrice < minNotional {
-			return nil, fmt.Errorf("notional too small")
+			return nil, fmt.Errorf("notional too small symbol=%s notional=%.4f min=%.4f", sym, adjQty*adjPrice, minNotional)
 		}
 		params.Set("quantity", formatByStep(adjQty, filters.StepSize))
 		params.Set("price", formatByStep(adjPrice, filters.TickSize))
@@ -1302,7 +1302,7 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 		params.Set("type", "MARKET")
 		adjQty := roundDownToStep(qty, filters.StepSize)
 		if filters.MinQty > 0 && adjQty < filters.MinQty {
-			return nil, fmt.Errorf("quantity too small")
+			return nil, fmt.Errorf("quantity too small symbol=%s qty=%.8f adjQty=%.8f minQty=%v step=%v", sym, qty, adjQty, filters.MinQty, filters.StepSize)
 		}
 		if b.market == "usdm" || filters.MinNotional > 0 {
 			px, err := b.LastPrice(symbol)

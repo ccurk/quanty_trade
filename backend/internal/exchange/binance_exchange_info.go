@@ -111,6 +111,23 @@ func (b *BinanceExchange) SupportsSymbol(symbol string) error {
 	return err
 }
 
+// MinTradableQty 返回该交易对的最小可成交数量 = max(StepSize, MinQty)。
+// 过滤器不可得时返回 0（调用方按"无约束"处理，交由下单路径最终裁决）。
+// 供策略 sizing 层在下单前做手数预检：高价币（单枚价 > 名义额）在
+// roundDownToStep 后会取整到 0，交易所侧直接拒单且错误里无币名，
+// sizing 层需要这个值来决定"凑整一手"还是"显式跳过"。
+func (b *BinanceExchange) MinTradableQty(symbol string) float64 {
+	f, err := b.getFilters(symbol)
+	if err != nil {
+		return 0
+	}
+	q := f.StepSize
+	if f.MinQty > q {
+		q = f.MinQty
+	}
+	return q
+}
+
 func splitBaseQuote(sym string) (string, string) {
 	s := strings.ToUpper(strings.TrimSpace(sym))
 	if strings.Contains(s, "/") {
