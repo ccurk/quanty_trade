@@ -80,6 +80,8 @@ docker run -d \
   ${MM_ENV_ARG} \
   --name "${CONTAINER_NAME}" \
   --restart always \
+  --log-opt max-size=50m \
+  --log-opt max-file=3 \
   -p "${HOST_PORT}:8080" \
   -v "${STRATEGIES_DIR}:/app/strategies" \
   -v "/root/work/quanty_trade/conf:/app/conf" \
