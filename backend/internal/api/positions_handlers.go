@@ -157,6 +157,13 @@ func findStrategyForSymbol(instRows []models.StrategyInstance, sym string) (stri
 	return "", ""
 }
 
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
+}
+
 func getConfigNumber(v interface{}) float64 {
 	switch t := v.(type) {
 	case float64:
@@ -319,7 +326,15 @@ func ListPositions(c *gin.Context) {
 					// 它标注的 strategy_id 是开仓归属的 ground truth;静态扫描只该在
 					// 没有新鲜订单可依时使用(手工仓/重启后遗留仓)。
 					freshMeta := hasMeta && !meta.RequestedAt.IsZero() && time.Since(meta.RequestedAt) <= 15*time.Minute
-					if si != nil || hasMeta {
+					// 陈旧订单兜底只在该订单贴近本仓开仓时刻(≤15m)时可信——此时它
+					// 确为本仓的入场单(重启后遗留仓救援)。时间远离 = 他仓的历史回声:
+					// 本 owner 域内某载具早已平仓的旧订单,会把【另一 owner 域载具】
+					// 刚开的新仓错认到本域旧载具名下(跨域轮询时 fresh/静态两层全空手,
+					// 08-29 BTR 案: main 开仓被错标到已退役 fade-v2)。宁可不归属、
+					// 不建行(仓位照常展示,sid 空),也不给错壳建幽灵行招来错配守护。
+					staleMetaUsable := hasMeta && !freshMeta && !meta.RequestedAt.IsZero() && !p.OpenTime.IsZero() &&
+						absDuration(p.OpenTime.Sub(meta.RequestedAt)) <= 15*time.Minute
+					if si != nil || freshMeta || staleMetaUsable {
 						strategyID := ""
 						strategyName := ""
 						if freshMeta {
