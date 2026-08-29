@@ -29,6 +29,8 @@
 #   排除=晋升整体封死,COTI 案实证:maxmv5.45%达 breakout 入池条被静默拦下)。配套:
 #   plan.main.remove 改用 post-plan 专家池期望集→晋升币同轮移出 main(封 v1.1 单轮
 #   重叠窗);执行序=先 main remove 后专家 add,失败方向=孤儿态(安全)。头注阈值零改动。
+#   roster 语义 v1.5 (2026-08-29): ROSTER 增补 breakout v2复活壳 3b646bf4(owner 提频直令
+#   FLEET@08-29);头注阈值零改动。
 #   roster 语义 v1.4 (2026-08-22): 同角色多壳(如 fade v1停机壳+v2 running壳)时
 #   running 壳优先,stopped 壳不得遮蔽(修 v1.3 以来 fade 差分静默跳过 bug;头注阈值零改动)。
 #   CLI: route_pools.py <closed48.json> <token_file> [trending.json] [registry_quarantine.json]
@@ -43,7 +45,8 @@ ROSTER = {  # id → (原型, live判定由/api/strategies现拉; 此表只定�
     "827ffe8c-64a9-428a-b876-9d28b711d224": "trend",
     "21519f1b-af98-4156-b1f6-9721f3f8f6c4": "fade",   # v1旧壳(stopped归档)
     "7583727a-1817-4c35-bd9d-74c5534b78c4": "fade",   # v2壳 FLEET@08-21(a451d32部署后)
-    "2111f5f9-d1fa-48c7-a018-2249483615c4": "breakout",
+    "2111f5f9-d1fa-48c7-a018-2249483615c4": "breakout",  # 旧壳deleted@08-15
+    "3b646bf4-5fab-4531-b46a-e11572cf3983": "breakout",  # v2复活壳FLEET@08-29(owner提频直令)
     "ad37d337-17c7-4f9c-803f-59ede2f18db8": "lowvol",
 }
 CAP = {"trend": 8, "fade": 6, "breakout": 6, "lowvol": 6}
