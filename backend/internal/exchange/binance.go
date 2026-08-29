@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -652,6 +653,29 @@ func symbolSelectCacheKey(c SymbolSelectCriteria) string {
 }
 
 var binanceIPBanUntilRe = regexp.MustCompile(`banned until\s+(\d+)`)
+
+// 哨兵错误:让调用方按语义分流,而不是靠字符串匹配。
+var (
+	// ErrNoOpenPosition: 交易所侧已无该 symbol 的持仓。补挂 TP/SL 时遇到它属于正常
+	// 竞态(DB 状态滞后于交易所:仓位刚被打掉/手动平掉),应跳过而非报 error。
+	ErrNoOpenPosition = errors.New("no open position for symbol")
+	// ErrStopLossBreached: 当前价已穿越止损价,止损单挂不上去 = 仓位无保护。这是资金
+	// 安全事件,调用方须立即处置(现策略:市价平仓兑现止损)。
+	ErrStopLossBreached = errors.New("sl would immediately trigger")
+)
+
+// IsBenignOrderMiss 判定"要撤/要改的订单已不存在"这类幂等成功:目的已达成,
+// 不应记为 error。币安 -2011 Unknown order sent 即此类(订单已成交或已撤)。
+func IsBenignOrderMiss(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrNoOpenPosition) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "-2011") || strings.Contains(s, "Unknown order sent")
+}
 
 func parseBinanceIPBanUntil(errMsg string) (time.Time, bool) {
 	if !strings.Contains(errMsg, "\"code\":-1003") && !strings.Contains(errMsg, "Way too many requests") {
@@ -2518,7 +2542,7 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		return nil, err
 	}
 	if positionAmt == 0 {
-		return nil, fmt.Errorf("no open position for symbol")
+		return nil, ErrNoOpenPosition
 	}
 	dualSideMode, err := b.usdmPositionSideMode(cred)
 	if err != nil {
@@ -2675,35 +2699,34 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		}
 	}
 
+	// 价格已穿越某一腿的触发价时,那一腿挂上去等于立刻市价平仓,交易所也会拒。此处
+	// 逐腿判定并【跳过】该腿,另一腿照常挂 —— 过去是整体 return,导致一腿失效连累
+	// 另一腿也没挂上,仓位彻底裸奔(2026-08-29 TUT/USDT 事故)。
+	// 止损被穿越是资金安全事件,用哨兵错误上抛,由调用方决定处置(现策略:立即市价平仓)。
 	ref := markPrice
 	if ref <= 0 {
 		ref = entryPrice
 	}
+	skipTP, slBreached := false, false
 	if ref > 0 && filters.TickSize > 0 {
 		if takeProfit > 0 {
 			adj := roundDownPrice(takeProfit, filters.TickSize)
-			if closeSide == "SELL" && adj <= ref {
-				return nil, fmt.Errorf("tp would immediately trigger")
-			}
-			if closeSide == "BUY" && adj >= ref {
-				return nil, fmt.Errorf("tp would immediately trigger")
-			}
+			skipTP = (closeSide == "SELL" && adj <= ref) || (closeSide == "BUY" && adj >= ref)
 		}
 		if stopLoss > 0 {
 			adj := roundDownPrice(stopLoss, filters.TickSize)
-			if closeSide == "SELL" && adj >= ref {
-				return nil, fmt.Errorf("sl would immediately trigger")
-			}
-			if closeSide == "BUY" && adj <= ref {
-				return nil, fmt.Errorf("sl would immediately trigger")
-			}
+			slBreached = (closeSide == "SELL" && adj >= ref) || (closeSide == "BUY" && adj <= ref)
 		}
 	}
-	if takeProfit > 0 {
+	if takeProfit > 0 && !skipTP {
 		place("tp", "TAKE_PROFIT", takeProfit)
 	}
-	if stopLoss > 0 {
+	if stopLoss > 0 && !slBreached {
 		place("sl", "STOP", stopLoss)
+	}
+	if slBreached {
+		// 已挂上的 TP 一并带出,调用方平仓后会撤掉;错误优先上报止损失效。
+		return created, ErrStopLossBreached
 	}
 	return created, firstErr
 }

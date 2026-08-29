@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -146,7 +147,23 @@ func (m *Manager) tpslGuardTick() {
 				}
 				baseClientOrderID := models.GenerateUUID()
 				created, err := bx.PlaceUSDMTPStopOrders(uid, baseClientOrderID, row.Symbol, tp, sl)
-				if err != nil {
+				switch {
+				case errors.Is(err, exchange.ErrStopLossBreached):
+					// 价格已穿越止损位 → 止损条件其实已满足,但挂单挂不上去(挂上即触发),
+					// 仓位处于无保护状态。立即市价平仓兑现止损,防止亏损继续扩大。
+					emitStrategyLog(inst, "error", fmt.Sprintf("止损价已被穿越,立即市价平仓 symbol=%s sl=%v", row.Symbol, sl))
+					if cerr := bx.ClosePosition(row.Symbol, uid); cerr != nil {
+						emitStrategyLog(inst, "error", fmt.Sprintf("止损失效后市价平仓失败,请人工介入 symbol=%s err=%v", row.Symbol, cerr))
+					} else {
+						emitStrategyLog(inst, "info", fmt.Sprintf("止损失效已市价平仓 symbol=%s", row.Symbol))
+						_ = bx.CancelUSDMAlgoOpenOrders(uid, row.Symbol) // 平仓后清掉残留的另一腿
+					}
+					return
+				case exchange.IsBenignOrderMiss(err):
+					// 仓位已被平掉(DB 落后于交易所)。补挂本就该跳过,不是故障。
+					emitStrategyLog(inst, "info", fmt.Sprintf("补设止盈止损跳过:仓位已不存在 symbol=%s", row.Symbol))
+					return
+				case err != nil:
 					emitStrategyLog(inst, "error", fmt.Sprintf("补设交易所止盈止损失败 symbol=%s tp=%v sl=%v err=%v", row.Symbol, tp, sl, err))
 					return
 				}

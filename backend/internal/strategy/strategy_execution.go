@@ -394,7 +394,12 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 		}
 	}
 	if found, canceled, err := m.cancelLinkedTPSLOrders(inst.OwnerID, inst.ID, sym); err != nil {
-		emitStrategyLog(inst, "error", fmt.Sprintf("平仓前撤销关联止盈止损失败 symbol=%s canceled=%d found=%d err=%v", sym, canceled, found, err))
+		// 要撤的单已不存在(已成交/已撤,币安 -2011)属幂等成功,目的已达成,记 info 不记 error。
+		lvl := "error"
+		if exchange.IsBenignOrderMiss(err) {
+			lvl = "info"
+		}
+		emitStrategyLog(inst, lvl, fmt.Sprintf("平仓前撤销关联止盈止损失败 symbol=%s canceled=%d found=%d err=%v", sym, canceled, found, err))
 	} else if found > 0 {
 		emitStrategyLog(inst, "info", fmt.Sprintf("平仓前撤销关联止盈止损完成 symbol=%s canceled=%d found=%d", sym, canceled, found))
 	}
@@ -473,7 +478,12 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 func (m *Manager) closeSpotPosition(inst *StrategyInstance, sym string) error {
 	m.stopPositionTPStopMonitor(inst, sym)
 	if found, canceled, err := m.cancelLinkedTPSLOrders(inst.OwnerID, inst.ID, sym); err != nil {
-		emitStrategyLog(inst, "error", fmt.Sprintf("平仓前撤销关联止盈止损失败 symbol=%s canceled=%d found=%d err=%v", sym, canceled, found, err))
+		// 要撤的单已不存在(已成交/已撤,币安 -2011)属幂等成功,目的已达成,记 info 不记 error。
+		lvl := "error"
+		if exchange.IsBenignOrderMiss(err) {
+			lvl = "info"
+		}
+		emitStrategyLog(inst, lvl, fmt.Sprintf("平仓前撤销关联止盈止损失败 symbol=%s canceled=%d found=%d err=%v", sym, canceled, found, err))
 	} else if found > 0 {
 		emitStrategyLog(inst, "info", fmt.Sprintf("平仓前撤销关联止盈止损完成 symbol=%s canceled=%d found=%d", sym, canceled, found))
 	}
