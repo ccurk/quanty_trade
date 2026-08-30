@@ -67,6 +67,12 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓:方向不在 allowed_sides symbol=%s side=%s", symbol, normalizedSide))
 		return
 	}
+	// 黑名单在下单口复检:信号层(strategy_signal)与 ROI 层各查过一次,但和 allowed_sides
+	// 同理,只有这里是所有开仓路径的唯一收口,漏一条路径黑名单就等于没设。
+	if isBlacklistedSymbol(inst, symbol) {
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓:交易对在黑名单 symbol=%s", symbol))
+		return
+	}
 	amount = clampOrderAmount(inst, amount)
 	if amount <= 0 {
 		return
@@ -958,6 +964,49 @@ func (m *Manager) runPositionTPStopMonitor(ctx context.Context, inst *StrategyIn
 	}
 }
 
+// minHoldDuration 读 config.min_hold_seconds(0/缺省=不启用,保持原行为)。
+func minHoldDuration(inst *StrategyInstance) time.Duration {
+	if inst == nil {
+		return 0
+	}
+	if v := getNumber(inst.Config["min_hold_seconds"]); v > 0 {
+		return time.Duration(v) * time.Second
+	}
+	return 0
+}
+
+// isRiskExit 判定该平仓属于风控出场,必须无条件放行 —— 最短持仓保护绝不能拦住止损,
+// 否则等于在亏损扩大时把风控关掉。止盈同样豁免:已经赚到的钱不该因为"持仓不够久"而吐回去。
+// 仅"信号反转/轮换"这类主动平仓才受最短持仓约束。
+func isRiskExit(reason string) bool {
+	r := strings.ToLower(strings.TrimSpace(reason))
+	if r == "" {
+		return true // 来源不明 → 保守放行,宁可平掉也不冒险扣住仓位
+	}
+	return strings.Contains(r, "sl") || strings.Contains(r, "tp") ||
+		strings.Contains(r, "guard") || strings.Contains(r, "hunger") ||
+		strings.Contains(r, "liquidat") || strings.Contains(r, "risk")
+}
+
+// withinMinHold 查该 symbol 当前未平仓位的开仓时间,判断是否仍在最短持仓期内。
+// 返回 (剩余时长, true) 表示应当拦截;查不到仓位/已超期则 (0, false) 放行。
+func withinMinHold(inst *StrategyInstance, symbol string, hold time.Duration) (time.Duration, bool) {
+	if inst == nil || database.DB == nil {
+		return 0, false
+	}
+	var row models.StrategyPosition
+	err := database.DB.
+		Where("strategy_id = ? AND symbol = ? AND status = ?", inst.ID, exchange.NormalizeSymbol(symbol), "open").
+		Order("open_time DESC").First(&row).Error
+	if err != nil || row.OpenTime.IsZero() {
+		return 0, false // 查不到开仓时间就不拦(宁可放行,不能凭空扣住仓位)
+	}
+	if elapsed := time.Since(row.OpenTime); elapsed < hold {
+		return hold - elapsed, true
+	}
+	return 0, false
+}
+
 func (m *Manager) closePositionForInstance(inst *StrategyInstance, symbol string, reason string, signalID string) error {
 	if inst == nil {
 		return fmt.Errorf("nil instance")
@@ -968,6 +1017,15 @@ func (m *Manager) closePositionForInstance(inst *StrategyInstance, symbol string
 	}
 
 	_ = signalID
+	// 最短持仓保护:开仓后 min_hold_seconds 内不因信号反转平仓。逐仓统计显示
+	// <15 分钟的短命仓是唯一亏钱的时长档(59 仓 −$37.38,其余档合计 +$95.85),
+	// 即被噪音触发又被迅速打脸的假信号。止损/风控类平仓一律豁免(见 isRiskExit)。
+	if hold := minHoldDuration(inst); hold > 0 && !isRiskExit(reason) {
+		if remain, ok := withinMinHold(inst, sym, hold); ok {
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过平仓:未达最短持仓 symbol=%s reason=%s remaining=%s", sym, reason, remain.Truncate(time.Second)))
+			return nil
+		}
+	}
 	if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
 		err := m.closeUSDMPosition(inst, bx, sym)
 		if err == nil {
