@@ -1,0 +1,13 @@
+{
+  "action": "EXP: S31 regime动态方向偏置上线(池内EMA-up宽度三档→premium加减;owner 08-29动态化直令首件)",
+  "closed_ts": "2026-09-02T06:35:00Z",
+  "eval_after": "2026-09-04T09:00:00Z或S31段n>=20先到;到点段n<5(宕机后市场未热)=顺延48h一次,再不足判INCONCLUSIVE关guard保码",
+  "expect": "regime分档可观测(detail五键上报);RISK_ON段多头均净>=NEUTRAL段;劣化线触发即关guard",
+  "hypothesis": "premium静态死数字=3h轮间盲区(NIL案14:48入场14:55闪跌);宽度regime做行情状态机:RISK_OFF(<0.35)lcp+0.10/NEUTRAL(0.35-0.60)零调/RISK_ON(>0.60)lcp-0.05,scp+0.05;有效premium下限0;冷启动与新鲜样本<8=NEUTRAL不动门;历史重放不喂宽度store",
+  "metric": "S31段(生效后)多头n/毛净+detail.s31五键regime分布+组wr-be;劣化线=S31段多头净<=-3U 或 组wr-be劣化>=5pp@n>=20 → S31_ENABLED=False",
+  "prev": "EXP多头闸+S30@08-29 14:52 verdict:未劣化KEEP@09-01(多头段n3净≈-1.2>-3U;lcp0.15+S30维持;史git 0940c62)",
+  "rollback": "current_code内S31_ENABLED=True→False单点;config premium静态路径原样在场",
+  "status": "closed",
+  "ts": "2026-09-01T10:01:49Z",
+  "verdict": "评期'S31段n>=20先到'@09-02 06:3x触发(n22,首笔09-01 10:48)。metric=段n22/W15L7/毛净-0.11U/wr68.2 be68.5 wr-be-0.3pp;多头n9净-1.09>-3U线未触;wr-be-0.3pp未达劣化>=5pp口径(注册轮五窗全0笔无外部基线,按段自身vs0读;段内峰值+5.2pp@n15→-0.3pp滑落5.5pp如实记录=末7笔4L集中)。expect①五键可观测=达(重建法三点回验:ONG w0.656 ON/MARSCOIN w0.312 OFF/SKR w0.591 N)②ON档多头均净>=N档=达且对未标签笔稳健(ON n3均+0.73[ONG+0.372/USELESS+0.446/SKR+1.376] vs N/OFF n5净-1.99;末笔SKR 09-02 03:43多-1.30 conf0.95>>全档门,门法regime不可辨,ON/N两种归档下ON均净皆>N均净,结论同向)→KEEP:S31_ENABLED=True维持,动态premium并入基线机制,config静态路径+False-guard原样保留,后续按常规监控。非盈利宣称:段毛≈0费后为负;多头亏损集中N档极端超卖接刀型(FF 15:49/SKR 00:07/SKR 03:43各≈-1.3U;03:43=03:42 3bar累跌veto拦截后单绿bar重置即入,44/45再闪跌SL穿刺hold2m实锤)→veto无记忆机制缺口立案§4 S32候选攒证据。"
+}
