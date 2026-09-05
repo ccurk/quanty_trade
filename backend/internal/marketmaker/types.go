@@ -76,6 +76,12 @@ type ExecExchange interface {
 	PlaceLimit(symbol, side string, price, qty float64, tif string, postOnly bool) (orderID string, err error)
 	CancelOrder(symbol, orderID string) error
 	OpenOrders(symbol string) ([]OpenOrder, error)
-	// Balances returns free (available) balances keyed by asset symbol.
+	// Balances returns free (available) balances keyed by asset symbol. On a
+	// derivatives venue this is the signed POSITION per asset (negative = short).
 	Balances() (map[string]float64, error)
+	// SupportsShort reports whether the venue lets us sell without holding the
+	// asset first (perps/margin). Spot venues return false: there the engine may
+	// only sell inventory it already owns, which forces one-sided quoting whenever
+	// the venue trades at a premium — the structural leak measured on gate.
+	SupportsShort() bool
 }

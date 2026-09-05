@@ -85,6 +85,9 @@ type bnCompatExchange struct {
 
 func (e *bnCompatExchange) Name() string { return e.name }
 
+// SupportsShort: 这些都是现货所(coinsph/mexc 等),只能卖出已持有的量。
+func (e *bnCompatExchange) SupportsShort() bool { return false }
+
 func normSym(s string) string {
 	s = strings.ToUpper(strings.TrimSpace(s))
 	s = strings.ReplaceAll(s, "/", "")

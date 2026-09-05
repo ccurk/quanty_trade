@@ -61,6 +61,9 @@ type GateExchange struct {
 
 func (e *GateExchange) Name() string { return "gate" }
 
+// SupportsShort: 现货,只能卖出已持有的量。
+func (e *GateExchange) SupportsShort() bool { return false }
+
 // gateSym converts any of BTC/USDT, BTC-USDT, BTCUSDT(only if it has a sep) to Gate's BTC_USDT.
 func gateSym(s string) string {
 	s = strings.ToUpper(strings.TrimSpace(s))

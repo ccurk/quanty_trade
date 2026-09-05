@@ -55,6 +55,9 @@ type KucoinExchange struct {
 
 func (e *KucoinExchange) Name() string { return "kucoin" }
 
+// SupportsShort: 现货,只能卖出已持有的量。
+func (e *KucoinExchange) SupportsShort() bool { return false }
+
 func kucoinSym(s string) string {
 	s = strings.ToUpper(strings.TrimSpace(s))
 	s = strings.ReplaceAll(s, "/", "-")

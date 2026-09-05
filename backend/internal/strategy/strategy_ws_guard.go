@@ -27,8 +27,8 @@ const (
 
 type wsGuardState struct {
 	mu        sync.Mutex
-	lastPrice map[string]float64   // symbol(大写无斜杠) -> 上次触发扫描时的标记价
-	watched   map[string]struct{}  // 当前有在持仓位的 symbol 集（scanROILimits 每轮重建）
+	lastPrice map[string]float64  // symbol(大写无斜杠) -> 上次触发扫描时的标记价
+	watched   map[string]struct{} // 当前有在持仓位的 symbol 集（scanROILimits 每轮重建）
 	lastFire  time.Time
 	inFlight  bool
 }
