@@ -150,6 +150,10 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 			Exchange: ex.Name(), Symbol: p.ExecSymbol, RefMid: refMid, ExecMid: eb.Mid(),
 			ExecSpreadBps: eb.SpreadBps(), BuyEdgeBps: buyEdge, SellEdgeBps: sellEdge, FeeBps: feeBps, FeeLive: feeLive, NetBestEdgeBps: bestGross - 2*feeBps, Ts: time.Now(),
 		})
+		// 喂 markout:上面那两个 edge 测的是【报价时刻】的边,可以永远为正而 PnL 永远为负。
+		// markout 测【成交之后】价格往哪走,是唯一能把"手续费太贵"和"被逆向选择"分开的指标。
+		// 搭这趟已有的行情轮询,不额外发请求。
+		markoutTracker.Observe(p.ExecSymbol, refMid, time.Now())
 
 		if !e.cfg.ObserveOnly {
 			// 单日止损熔断中:停报价至次日 UTC。
@@ -180,6 +184,14 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 				lastPoll = time.Now()
 				if fills, ferr := gateMyTrades(p.ExecSymbol, 100); ferr == nil {
 					tracker.apply(fills, baseAsset)
+					// 同一批成交喂给 markout(内部按 fillID 去重)。
+					// 只有拿到交易所给的成交时刻才喂 —— 没有时刻就算不出 markout,
+					// 硬用轮询时刻会把 1s horizon 测成噪音。
+					for _, f := range fills {
+						if !f.Ts.IsZero() {
+							markoutTracker.RecordFill(ex.Name(), p.ExecSymbol, f.ID, f.Side, f.Price, f.Amount, feeBps, f.Ts)
+						}
+					}
 					pnl := tracker.mtmPnL(eb.Mid())
 					recordMMPnL(ex.Name(), p.ExecSymbol, pnl)
 					if e.cfg.MaxDailyLossUSD > 0 && pnl < -e.cfg.MaxDailyLossUSD {

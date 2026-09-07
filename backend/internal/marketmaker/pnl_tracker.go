@@ -31,6 +31,7 @@ type gateFill struct {
 	Price  float64
 	Fee    float64 // in quote (USDT) terms after normalization; here we store raw + currency
 	FeeCur string
+	Ts     time.Time // 交易所给的成交时刻(create_time)。markout 按它算,不用轮询时刻
 }
 
 // gateMyTrades fetches recent fills for a pair (GET /spot/my_trades, HMAC-SHA512).
@@ -74,16 +75,24 @@ func gateMyTrades(symbol string, limit int) ([]gateFill, error) {
 		Price       string `json:"price"`
 		Fee         string `json:"fee"`
 		FeeCurrency string `json:"fee_currency"`
+		CreateTime  string `json:"create_time"` // 秒级 unix,markout 必需
 	}
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		return nil, err
 	}
 	out := make([]gateFill, 0, len(rows))
 	for _, r := range rows {
+		// 成交时刻必须用交易所给的,不能用"现在" —— 这里每 10s 才轮询一次,
+		// 用轮询时刻会把 1s horizon 的 markout 彻底测废。
+		var ts time.Time
+		if sec, err := strconv.ParseInt(r.CreateTime, 10, 64); err == nil && sec > 0 {
+			ts = time.Unix(sec, 0)
+		}
 		out = append(out, gateFill{
 			ID: r.ID, Side: strings.ToLower(r.Side),
 			Amount: atofP(r.Amount), Price: atofP(r.Price),
 			Fee: atofP(r.Fee), FeeCur: strings.ToUpper(r.FeeCurrency),
+			Ts: ts,
 		})
 	}
 	return out, nil
