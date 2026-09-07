@@ -1,0 +1,18 @@
+{
+  "action": "BOOK: FREQ扩面rider评判KEEP@09-05 06:2x;select_limit150转常规config;槽位让渡S33",
+  "e9_verdict": "ROLLBACK@2026-09-03T21:2xZ 双条件同触:①劣化线A=滚动24h组净-9.03<=-8U(28笔wr50%,毛口径,窗21:12Z拉取)②48h费覆钟21:15Z到点且[24h费覆红(均笔毛-0.32<0<3x来回费)∧rider段(pct0.10生效03:46Z后)n21/-9.42<0];段死法=SL穿刺13笔-17.41(S10/L3)主导,赢14笔+8.81不抵;结论=+25%名义在反弹收割市况下放大穿刺失血,证据不支持维持0.10;pct回0.08(owner直令0.10史留档,重升须新直令或市况转变+费覆双绿);S32劣化线-3U先于本rider已触发独立回滚@18:3x=同段双实验均负,市况型主因(BTC+4.95%反弹日空侧被收割24h空n20/-5.79);margin重算Σ=main0.08x5+trend0.05x3=0.55<=0.75",
+  "eval_after": "FREQ:新面cohort滚动净<=-4U(读数@21:1x n9/-3.08 proxy=CAP,COLLECT,HEMI,MARSCOIN,PORTAL)或feed不稳即回100",
+  "freq_verdict": "KEEP@2026-09-05T06:2xZ 48h钟06:23:14到点双判据全绿:①新面cohort(CAP,COLLECT,HEMI,MARSCOIN,PORTAL)滚动净-2.85>-4U线(n20 wr50%,正腿CAP+2.43/COLLECT+0.73 vs 负腿PORTAL-2.21/MARSCOIN-1.94/HEMI-1.86;末段09-04 17:16后零新增cohort笔=收敛)②feed稳140/140全窗(09-03 06:23注册至今零断流/零饥饿评估);结论=信号面+50%未产生越线失血,select_limit=150转常规config值,cohort单币命运交路由器(CAP已由规则A晋升trend=#83;MARSCOIN watch距线2.06独立看护);劣化条款终止,后续扩面(150->200)须新_exp;原注册全文=本对象rider_freq键",
+  "metric_s32_final": "段多头n3/-3.0044;拦截3(误杀1/3);段空头n11/-3.89未入metric仅存证",
+  "prev": "rider_e9原注册@09-03 03:46全文=audit1796+git 8ddf77f版行;EXP S32原注册@09-03 03:35全文=audit1795+git tpl989归档;S31 KEEP@09-02 ops/exp_archive/s31_verdict_20260902.json",
+  "rider_freq": {
+    "action": "FREQ扩面: select_limit 100->150(owner直令09-03[增加开仓数量和频率];信号面+50%,发现漏斗=波动率排序前N;质量门栈零改动=非垃圾档)",
+    "degrade_rollback": "新面cohort(本rider后新入feed币)滚动净<=-4U 或 引擎不稳(feed断流/评估饥饿) -> select_limit回100;组6h/24h刹车外层不变",
+    "evidence": "择优攒批落选合计≈0(留存窗仅1个60s窗落选=1)=攒批窗杠杆无肉;cd180=硬边界底;mcp200非约束;阈值下调被逐笔证据否(wr63<be68,边际带更差)→唯一有肉的合规杠杆=信号面",
+    "note": "S32计数metric不受污染;bl15照常闸新币;150名内隔离币由bl+rotate清",
+    "ts": "2026-09-03T06:23:14Z"
+  },
+  "s32_verdict": "ROLLBACK@2026-09-03T18:3xZ 劣化线1触发:段(apply03:44后)多头n3/净-3.0044<=-3U[HEMI06:43 -2.021(W-bar,600s窗外)/CAP15:14 +0.600(W-bar)/MARSCOIN16:10 -1.583(W-bar,日志bar向=W实锤)]=段损失100%在放行域;拦截n3=EDGE08:23(误杀#1,60m+4.54%)+FLOCK15:59(正确,60m低-5.7%无新高)+FLOCK16:05(中性偏正确,60m高+1.1%<1.5×ATR)误杀1/3=33%<50%审计线未触;结论=A-bar拦截侧2/3正确,但W-bar放行侧不设防继续流血,段多头净较S31基线(-1.09/9笔)恶化→按预注册劣化线1回滚;学习=不稳定窗A-bar非病根主体,病根候选=拉升史+W-bar反弹确认后二段下杀(§4#80候审n3/-4.89,S33判据n>=4∧<=-4U差1例);保码=S32整层False-guard在场,复活须新预注册",
+  "status": "closed",
+  "ts": "2026-09-05T06:23:14Z"
+}
