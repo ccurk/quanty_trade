@@ -49,8 +49,13 @@ type UniverseRow struct {
 	FeeBps         float64 `json:"fee_bps"`
 	FeeLive        bool    `json:"fee_live"`
 	NetBestEdgeBps float64 `json:"net_best_edge_bps"`
-	QuoteVol       float64 `json:"quote_vol"` // 执行所 24h 成交额(USDT,若接口提供)
-	Suspect        string  `json:"suspect"`   // 空=干净候选;否则为疑点(薄/偏离/宽价差),不删只标
+	// RoundTripNetBps: 两腿都成交(一个来回)的净边 = 执行所自身价差 − 2×maker 费。
+	// 与参考所无关,因此不含基差。NetBestEdgeBps 用单腿收入减双腿成本,基差大的品种会虚高
+	// ≈(|基差| − 半价差),排序时把"两个所本来就不同价"当成机会 —— 选品要看这一列。
+	// (精确式含一个交叉项,见 ObserveRow.RoundTripNetBps 的注释;量级 ~0.05bps,不影响排序。)
+	RoundTripNetBps float64 `json:"round_trip_net_bps"`
+	QuoteVol        float64 `json:"quote_vol"` // 执行所 24h 成交额(USDT,若接口提供)
+	Suspect         string  `json:"suspect"`   // 空=干净候选;否则为疑点(薄/偏离/宽价差),不删只标
 	// 持续性统计(跨多轮扫描累计,用于把"某一秒的快照"升级成"稳定信号"):
 	Samples   int64   `json:"samples"`     // 累计采样数
 	PosRate   float64 `json:"pos_rate"`    // 净边>0 的占比
@@ -188,8 +193,11 @@ func scanUniverseOnce(exchanges []string) {
 				RefMid: refMid, ExecMid: execMid, ExecSpreadBps: execSpreadBps, MidDiffBps: midDiffBps,
 				BuyEdgeBps: buyEdge, SellEdgeBps: sellEdge,
 				FeeBps: feeBps, FeeLive: feeLive, NetBestEdgeBps: best - 2*feeBps,
-				QuoteVol: tk.quoteVol, Suspect: suspect,
-				Tradeable: suspect == "" && best-2*feeBps > 0,
+				RoundTripNetBps: execSpreadBps - 2*feeBps,
+				QuoteVol:        tk.quoteVol, Suspect: suspect,
+				// "能下单"以【一个来回】为准:单腿边为正但来回为负的品种,挂上去只会一边成交、
+				// 另一边永不成交,攒的是方向性头寸而不是做市收益(台账 #7)。
+				Tradeable: suspect == "" && execSpreadBps-2*feeBps > 0,
 			})
 		}
 	}

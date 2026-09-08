@@ -136,24 +136,22 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 		//   sellEdge = 在执行所【卖】(其 ask 上方)相对参考中价还有多少空间 → 高卖潜力
 		// 两边都要扣执行所手续费才是净边。这些数就是"哪个所/哪个对机会大"的实测依据。
 		refMid := ref.Mid()
-		buyEdge := (refMid - eb.BidPx) / refMid * 10000
-		sellEdge := (eb.AskPx - refMid) / refMid * 10000
-		logger.Infof("[mm-observe] %s@%s ref=%s refMid=%.8f execMid=%.8f midDiff=%.1fbps execSpread=%.1fbps buyEdge=%.1fbps sellEdge=%.1fbps",
-			p.ExecSymbol, ex.Name(), e.feed.Name(), refMid, eb.Mid(),
-			(eb.Mid()-refMid)/refMid*10000, eb.SpreadBps(), buyEdge, sellEdge)
 		feeBps, feeLive := MakerFeeBps(ex.Name(), p.ExecSymbol)
-		bestGross := buyEdge
-		if sellEdge > bestGross {
-			bestGross = sellEdge
-		}
-		recordObserve(ObserveRow{
-			Exchange: ex.Name(), Symbol: p.ExecSymbol, RefMid: refMid, ExecMid: eb.Mid(),
-			ExecSpreadBps: eb.SpreadBps(), BuyEdgeBps: buyEdge, SellEdgeBps: sellEdge, FeeBps: feeBps, FeeLive: feeLive, NetBestEdgeBps: bestGross - 2*feeBps, Ts: time.Now(),
-		})
+		// 一条记录同时供三处消费:面板(内存)、离线复核(server.log 里的单行 JSON)、
+		// 单测。三者共用 observeRow 这一份口径,不再各算各的。
+		row := p.observeRow(ex.Name(), e.feed.Name(), ref, eb, feeBps, feeLive, time.Now())
+		logObserve(row)
+		recordObserve(row)
 		// 喂 markout:上面那两个 edge 测的是【报价时刻】的边,可以永远为正而 PnL 永远为负。
 		// markout 测【成交之后】价格往哪走,是唯一能把"手续费太贵"和"被逆向选择"分开的指标。
 		// 搭这趟已有的行情轮询,不额外发请求。
-		markoutTracker.Observe(p.ExecSymbol, refMid, time.Now())
+		//
+		// 基准必须是【成交发生的那个所】的中价(eb.Mid()),不能是参考所中价:
+		// markoutBps 算的是 (midAfter - fillPx)/fillPx,fillPx 来自 gate。拿 binance 中价当
+		// midAfter,基差 b 会原封不动进结果 —— 买单恒 -b、卖单恒 +b,与价格实际漂移无关。
+		// 2026-09-08 实测 ONG_USDT b=+45.2bps,足以把 markout 整体淹掉;那样它就无法回答
+		// 它被造出来要回答的问题(逆向选择 vs 费率),也无法用来 A/B 报价锚点。
+		markoutTracker.Observe(p.ExecSymbol, eb.Mid(), time.Now())
 
 		if !e.cfg.ObserveOnly {
 			// 单日止损熔断中:停报价至次日 UTC。

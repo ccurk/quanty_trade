@@ -99,3 +99,24 @@ func TestStaleFillsAreDropped(t *testing.T) {
 		t.Fatalf("过期未采齐的成交应被丢弃,还剩 %d 笔", n)
 	}
 }
+
+// TestMarkoutBasisContamination 锁死"基准必须与成交同所"这条(台账 #7)。
+// 场景:gate 比 binance 系统性贵 45.2bps(2026-09-08 ONG_USDT 实测形态),
+// 价格【完全不动】—— 真实 markout 应为 0。
+func TestMarkoutBasisContamination(t *testing.T) {
+	const refMid = 100.0
+	const basisBps = 45.2
+	execMid := refMid * (1 + basisBps/10000) // gate 中价
+	fillPx := execMid                        // 在 gate 按其中价成交
+
+	// 错误做法:拿参考所(binance)中价当 midAfter —— 价格没动,却测出 ∓基差。
+	if got := markoutBps("buy", fillPx, refMid); math.Abs(got+basisBps) > 0.3 {
+		t.Fatalf("跨所基准下买单 markout 应≈-%.1fbps(纯基差),得到 %.2f", basisBps, got)
+	}
+	if got := markoutBps("sell", fillPx, refMid); math.Abs(got-basisBps) > 0.3 {
+		t.Fatalf("跨所基准下卖单 markout 应≈+%.1fbps(纯基差),得到 %.2f", basisBps, got)
+	}
+	// 正确做法:同所基准,价格没动就该是 0,基差整段抵消。
+	approx(t, markoutBps("buy", fillPx, execMid), 0, 1e-9, "同所基准 buy")
+	approx(t, markoutBps("sell", fillPx, execMid), 0, 1e-9, "同所基准 sell")
+}

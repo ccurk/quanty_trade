@@ -37,12 +37,15 @@ var MarkoutHorizons = []time.Duration{time.Second, 5 * time.Second, 30 * time.Se
 // 正 = 成交后价格朝对我们有利的方向走(买完涨了 / 卖完跌了)= 这笔成交是好的。
 // 负 = 被逆向选择,对手方比我们知道得多。
 //
+// midAfter 必须与 fillPx 来自【同一个交易所】。跨所相减等于把基差算进 markout:
+// 常数基差 b 会让买单恒 -b、卖单恒 +b,与价格是否真的漂移无关(见 Observe 注释)。
+//
 // 纯函数,不碰时间和 IO —— 阈值调整与回归全部可单测。
-func markoutBps(side string, fillPx, refMidAfter float64) float64 {
-	if fillPx <= 0 || refMidAfter <= 0 {
+func markoutBps(side string, fillPx, midAfter float64) float64 {
+	if fillPx <= 0 || midAfter <= 0 {
 		return 0
 	}
-	move := (refMidAfter - fillPx) / fillPx * 10000
+	move := (midAfter - fillPx) / fillPx * 10000
 	if side == "sell" {
 		return -move // 卖出后价格下跌才是赚,所以要反号
 	}
@@ -102,16 +105,19 @@ func NewMarkoutTracker() *MarkoutTracker {
 	}
 }
 
-// Observe 喂一个参考中价样本,并结算所有到点的 pending 成交。
+// Observe 喂一个中价样本,并结算所有到点的 pending 成交。
 // 引擎的观测循环每轮调一次即可。
-func (t *MarkoutTracker) Observe(symbol string, refMid float64, now time.Time) {
-	if refMid <= 0 {
+//
+// mid 必须是【成交所】的中价(gate),不是参考所(binance)的 —— 否则 gate 与 binance
+// 之间的系统性基差会整个进到 markout 里,把"被逆向选择"和"两个所本来就不同价"混成一个数。
+func (t *MarkoutTracker) Observe(symbol string, mid float64, now time.Time) {
+	if mid <= 0 {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	h := append(t.mids[symbol], midSample{ts: now, mid: refMid})
+	h := append(t.mids[symbol], midSample{ts: now, mid: mid})
 	// 只留最长 horizon 再多一点的窗口,防内存无限涨
 	cutoff := now.Add(-(MarkoutHorizons[len(MarkoutHorizons)-1] + 30*time.Second))
 	i := sort.Search(len(h), func(k int) bool { return h[k].ts.After(cutoff) })
