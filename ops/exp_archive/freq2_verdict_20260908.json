@@ -1,0 +1,107 @@
+{
+ "exp": "FREQ2扩面 select_limit 150->200 (注册2026-09-07T09:25Z)",
+ "verdict": "KEEP",
+ "verdict_ts": "2026-09-08T09:32Z",
+ "eval_trigger": "cohort n>=15>=15先到(eval_after=09-09T09:30Z未到)",
+ "cohort_rows": [
+  {
+   "close": "2026-09-07T11:29",
+   "sym": "哈基米/USDT",
+   "dir": "short",
+   "pnl": 0.348
+  },
+  {
+   "close": "2026-09-07T12:05",
+   "sym": "HEMI/USDT",
+   "dir": "long",
+   "pnl": -0.656
+  },
+  {
+   "close": "2026-09-07T13:00",
+   "sym": "HEMI/USDT",
+   "dir": "long",
+   "pnl": -0.522
+  },
+  {
+   "close": "2026-09-07T14:07",
+   "sym": "哈基米/USDT",
+   "dir": "short",
+   "pnl": 0.486
+  },
+  {
+   "close": "2026-09-07T15:03",
+   "sym": "哈基米/USDT",
+   "dir": "short",
+   "pnl": 0.155
+  },
+  {
+   "close": "2026-09-07T15:59",
+   "sym": "哈基米/USDT",
+   "dir": "short",
+   "pnl": 0.626
+  },
+  {
+   "close": "2026-09-07T16:11",
+   "sym": "PLAY/USDT",
+   "dir": "short",
+   "pnl": 1.027
+  },
+  {
+   "close": "2026-09-07T16:28",
+   "sym": "PIEVERSE/USDT",
+   "dir": "short",
+   "pnl": 0.046
+  },
+  {
+   "close": "2026-09-07T16:30",
+   "sym": "PONS/USDT",
+   "dir": "short",
+   "pnl": 0.688
+  },
+  {
+   "close": "2026-09-08T00:17",
+   "sym": "FLOCK/USDT",
+   "dir": "long",
+   "pnl": -1.297
+  },
+  {
+   "close": "2026-09-08T04:53",
+   "sym": "哈基米/USDT",
+   "dir": "short",
+   "pnl": 0.661
+  },
+  {
+   "close": "2026-09-08T07:01",
+   "sym": "哈基米/USDT",
+   "dir": "short",
+   "pnl": 0.19
+  },
+  {
+   "close": "2026-09-08T07:36",
+   "sym": "SOPH/USDT",
+   "dir": "long",
+   "pnl": -1.724
+  },
+  {
+   "close": "2026-09-08T08:52",
+   "sym": "SOPH/USDT",
+   "dir": "long",
+   "pnl": 0.39
+  },
+  {
+   "close": "2026-09-08T09:31",
+   "sym": "TAC/USDT",
+   "dir": "short",
+   "pnl": -0.472
+  }
+ ],
+ "cohort_n": 15,
+ "cohort_net": -0.05,
+ "cohort_avg_gross": -0.004,
+ "criteria": {
+  "劣化线": "cohort滚动净<=-4U或feed断流/评估饥饿→回150",
+  "实测": "net=-0.05>-4U;feed=186稳定;main 24h n=23无评估饥饿",
+  "费覆": "avg_gross=-0.004<0.069→KEEP但不得再扩面(sl250禁,除非cohort费覆转达标)"
+ },
+ "notes": "新面主赢币=哈基米(6笔+2.47);主亏=SOPH-1.33/FLOCK-1.30/HEMI-1.18;TAC末笔现算入表;正腿币已在池生命周期,对账器接管"
+}
