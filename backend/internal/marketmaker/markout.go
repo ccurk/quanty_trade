@@ -76,6 +76,16 @@ type midSample struct {
 type pendingFill struct {
 	row  MarkoutRow
 	left map[time.Duration]bool // 还没采到的 horizon
+	// at 记下【每个 horizon 实际用掉的那个中价样本】(值 + 它自己的时刻)。
+	// 只留 ByHorizon 的 bps 是不可复核的:第二个人拿到一个 -7.7bps 没法判断它是
+	// 真的价格走了,还是采到的样本晚了 20 秒。存下 mid 和样本时刻之后,落库那行
+	// 就能被独立重算(见 MarkoutRecord.Verify)。
+	at map[time.Duration]midSample
+	// midAtFill 是【成交时刻】的执行所中价(取 FillTs 之前最后一个样本)。
+	// markout 本身用不到它,但少了它就无法把"成交价本身好不好"和"成交之后价格
+	// 往哪走"分开:(midAtFill − fillPx) 是这笔拿到的边,后面三个 horizon 是它
+	// 之后的漂移。两者相加才是这笔的经济性。零值 = 成交时刻没有样本覆盖。
+	midAtFill midSample
 }
 
 // MarkoutTracker 记录成交,并在参考中价样本到点时把 markout 补齐。
@@ -149,8 +159,24 @@ func (t *MarkoutTracker) RecordFill(exchange, symbol, fillID, side string, px, a
 			FillPx: px, Amount: amount, FeeBps: feeBps,
 			ByHorizon: map[string]float64{}, FillTs: ts,
 		},
-		left: left,
+		left:      left,
+		at:        map[time.Duration]midSample{},
+		midAtFill: t.sampleAtOrBeforeLocked(symbol, ts),
 	})
+}
+
+// sampleAtOrBeforeLocked 返回 ts 之前(含)最后一个中价样本;没有则返回零值。
+// 与 resolveLocked 的取法方向相反是有意的:horizon 要的是"到点【之后】的第一个",
+// 成交时刻要的是"成交【之前】最后一个"—— 后者若取之后的样本,就把成交后的漂移
+// 算进了成交价本身,两个量会互相污染。调用方须持锁。
+func (t *MarkoutTracker) sampleAtOrBeforeLocked(symbol string, ts time.Time) midSample {
+	s := t.mids[symbol]
+	// 第一个 ts 之后的样本,它前面那个就是要的
+	i := sort.Search(len(s), func(k int) bool { return s[k].ts.After(ts) })
+	if i == 0 {
+		return midSample{}
+	}
+	return s[i-1]
 }
 
 // resolveLocked 把到点的 horizon 补上。调用方须持锁。
@@ -175,6 +201,7 @@ func (t *MarkoutTracker) resolveLocked(symbol string, now time.Time) {
 				continue // 还没有覆盖到该时点的样本,下轮再说
 			}
 			pf.row.ByHorizon[horizonKey(h)] = markoutBps(pf.row.Side, pf.row.FillPx, samples[idx].mid)
+			pf.at[h] = samples[idx]
 			pf.left[h] = false
 		}
 		if len(pf.row.ByHorizon) == len(MarkoutHorizons) {
@@ -182,10 +209,18 @@ func (t *MarkoutTracker) resolveLocked(symbol string, now time.Time) {
 			if len(t.done) > t.maxDone {
 				t.done = t.done[len(t.done)-t.maxDone:]
 			}
+			// 落库(异步、非阻塞、失败即丢)。内存里的 t.done 是滚动窗口,重启即失 ——
+			// 这条 enqueue 才是"能事后回溯"的那份。绝不能在这里阻塞:调用链是
+			// engine.go 的报价循环 → Observe → resolveLocked,且此刻还持着 t.mu。
+			emitMarkoutRecord(pf, now, true)
 			continue // 已完成,不再 keep
 		}
 		// 超过最长 horizon 还没采齐(行情断流),丢弃避免堆积
 		if now.Sub(pf.row.FillTs) > MarkoutHorizons[len(MarkoutHorizons)-1]+2*time.Minute {
+			// 采不齐的也要落一条(Complete=false)。原来这里是静默丢弃,于是
+			// "行情断流吃掉了多少笔成交"在事后完全不可见 —— 而那正好是最该看见的
+			// 一类缺口:样本少到底是没成交,还是我们没记上,两者结论相反。
+			emitMarkoutRecord(pf, now, false)
 			continue
 		}
 		keep = append(keep, pf)

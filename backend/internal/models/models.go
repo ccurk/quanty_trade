@@ -583,6 +583,106 @@ type ExchangeFill struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// MarkoutFill is one market-making fill's markout measurement — "where did the
+// price go AFTER this fill", sampled at 1s/5s/30s. One immutable row per fill.
+//
+// Why it exists: marketmaker.MarkoutTracker computed all of this already, but only
+// into a 5000-entry in-memory ring that dies with the process. Every decision that
+// needed it (ledger #7 quote-anchor, #18, #42) had to re-derive markout OFFLINE
+// from server.log using a hand-written copy of the formula — see
+// state/strategy/quote-anchor-decision-2026-09-09.md §6. Two copies of a formula
+// that nobody diffs is a silent-drift generator; this table ends it by storing
+// what the LIVE code actually computed.
+//
+// Deliberately append-only, mirroring ExchangeFill:
+//   - no "current value" column that a later write overwrites (the ledger #42
+//     mistake: balance read tens of thousands of times, never once inserted);
+//   - the RAW inputs are stored next to every derived bps, so one row alone is
+//     enough to recompute the number and disagree with it. MarkoutBps1s must
+//     equal (Mid1s-FillPx)/FillPx*1e4 (sign-flipped for sells) — the SQL that
+//     checks it ships in scripts/markout_persistence.sql;
+//   - nothing derived that a query could compute: net-of-fee markout stays
+//     MarkoutBps30s - FeeBps at query time, so a later fee correction cannot
+//     create a second source of truth.
+//
+// Uniqueness is (Exchange, Symbol, FillID). The engine re-polls the last 100 fills
+// every ~10s, so the same fill is seen many times; writes are ON CONFLICT DO
+// NOTHING so a re-poll is a no-op instead of a duplicate that would double-weight
+// that fill in every average.
+type MarkoutFill struct {
+	ID uint `gorm:"primaryKey" json:"id"`
+
+	Exchange string `gorm:"type:varchar(32);index:idx_markout_fill_uniq,unique" json:"exchange"`
+	Symbol   string `gorm:"type:varchar(64);index:idx_markout_fill_uniq,unique" json:"symbol"`
+	// FillID is the exchange trade id, text so no integer-format ambiguity can
+	// break the dedup key.
+	FillID string `gorm:"type:varchar(64);index:idx_markout_fill_uniq,unique" json:"fill_id"`
+
+	Side   string  `gorm:"type:varchar(8);index" json:"side"`
+	FillPx float64 `json:"fill_px"`
+	Amount float64 `json:"amount"`
+	// FeeBps is the one-leg maker fee assumed at measurement time. Stored per row
+	// because it is an ASSUMPTION (MakerFeeBps falls back to a default when the
+	// venue's live rate is unavailable) — a later account-tier discovery must not
+	// silently rewrite what past rows were judged against.
+	FeeBps float64 `json:"fee_bps"`
+	// FillTs is the EXCHANGE's fill time (create_time), never our poll time: the
+	// engine polls every ~10s and poll time would destroy the 1s horizon.
+	FillTs time.Time `gorm:"index" json:"fill_ts"`
+
+	// MidAtFill is the exec-venue mid at the moment of the fill (last sample at or
+	// before FillTs; 0 when no sample covered it). It splits this fill's economics
+	// in two: (MidAtFill - FillPx) is the edge CAPTURED, the markout columns are
+	// the drift AFTERWARDS. Without it the two are indistinguishable, and "quoted
+	// well but the market ran" reads identically to "quoted badly".
+	// MidAtFillLagMs is FillTs - MidAtFillTs, i.e. how stale that sample was.
+	MidAtFill      float64   `gorm:"column:mid_at_fill" json:"mid_at_fill"`
+	MidAtFillTs    time.Time `gorm:"column:mid_at_fill_ts" json:"mid_at_fill_ts"`
+	MidAtFillLagMs int64     `gorm:"column:mid_at_fill_lag_ms" json:"mid_at_fill_lag_ms"`
+
+	// Per-horizon evidence. Mid* is the exec-venue mid actually used (must be the
+	// venue the fill happened on — a cross-venue mid folds the basis straight into
+	// markout, ledger #7's headline trap). Lag*Ms is how late that sample was
+	// relative to FillTs+horizon; a large lag means the row measured a longer
+	// horizon than its name says, so it is a quality filter, not decoration.
+	//
+	// Every column name here is PINNED explicitly. GORM's default namer turns
+	// Mid1s into "mid1s" and Lag1sMs into "lag1s_ms" (digits do not get a
+	// separator), so the hand-written DDL and the model would silently disagree —
+	// the same class of trap DailyPnL.RealizedPnL hit with "realized_pn_l".
+	Mid1s         float64 `gorm:"column:mid_1s" json:"mid_1s"`
+	MarkoutBps1s  float64 `gorm:"column:markout_bps_1s" json:"markout_bps_1s"`
+	Lag1sMs       int64   `gorm:"column:lag_1s_ms" json:"lag_1s_ms"`
+	Mid5s         float64 `gorm:"column:mid_5s" json:"mid_5s"`
+	MarkoutBps5s  float64 `gorm:"column:markout_bps_5s" json:"markout_bps_5s"`
+	Lag5sMs       int64   `gorm:"column:lag_5s_ms" json:"lag_5s_ms"`
+	Mid30s        float64 `gorm:"column:mid_30s" json:"mid_30s"`
+	MarkoutBps30s float64 `gorm:"column:markout_bps_30s" json:"markout_bps_30s"`
+	Lag30sMs      int64   `gorm:"column:lag_30s_ms" json:"lag_30s_ms"`
+
+	// Complete=false means the feed stalled and some horizon was never sampled.
+	// Such rows are KEPT (with HorizonsDone < 3) rather than dropped: "few samples"
+	// and "we failed to record" lead to opposite conclusions, and only a stored
+	// row can tell them apart.
+	Complete     bool `gorm:"index" json:"complete"`
+	HorizonsDone int  `json:"horizons_done"`
+
+	// ParamHash is sha256 over the canonical, secret-free market-making params in
+	// force for this pair. Always present — it is what makes a row answer "which
+	// settings produced this number" without any join.
+	ParamHash string `gorm:"type:varchar(64);index" json:"param_hash"`
+	// ParamVersionID points at the StrategyParamVersion row carrying the full
+	// config for that hash. NULL when the registry write failed — a missing stamp
+	// degrades to ParamHash, a WRONG stamp would not, so it is never guessed.
+	ParamVersionID *uint `gorm:"index" json:"param_version_id,omitempty"`
+
+	// ResolvedAt is when the last horizon settled; CreatedAt is when the row was
+	// written. The gap between them and FillTs is how the persistence lag itself
+	// gets audited.
+	ResolvedAt time.Time `json:"resolved_at"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 type TelegramSubscriber struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	ChatID    int64     `gorm:"uniqueIndex" json:"chat_id"`
@@ -641,4 +741,62 @@ type RebalanceTransfer struct {
 	Mode         string    `gorm:"size:16" json:"mode"`
 	CreatedBy    uint      `json:"created_by"`
 	CreatedAt    time.Time `gorm:"index" json:"created_at"`
+}
+
+// EquitySnapshot is one venue's holding of one asset at one instant — the missing
+// INSERT behind 台账 #42.
+//
+// Why it exists: internal/marketmaker/engine.go reads the Gate balance ~4x/second
+// and internal/exchange/binance.go reads the perp balance on every position
+// size-up. Both have always thrown the number away. The capability to read equity
+// was never missing; the row was. Consequently every funding number so far has
+// been BACK-SOLVED from fill notionals and config percentages
+// (state/strategy/equity-blindspot-2026-09-09.md §3) — a lower bound resting on
+// unverified assumptions, not a measurement.
+//
+// Append-only, mirroring ExchangeFill and MarkoutFill:
+//
+//   - NO "current value" / "total equity" column. Total equity is a query-time SUM
+//     over venues, never stored: storing it would make one FX or haircut revision
+//     invalidate every historical row and would create a second source of truth.
+//     A stored current-value column is exactly the mistake #42 diagnosed.
+//   - Never UPDATEd. A snapshot is an observation; a later observation is a new row.
+//   - Free, Total and Unrealized are all kept as READ, so one row alone lets a
+//     second person recompute any aggregate and disagree with it.
+//
+// Venue is MANDATORY and is the point of the table. #18 and #22 collided because
+// $57.60 (Polymarket) and $236 (Binance perp) were treated as two estimates of one
+// quantity and triangulated, when they are two venues' balances and belong ADDED
+// (equity-blindspot-2026-09-09.md §4). An unlabelled balance is not weak data, it
+// is a trap, so equity.Emit refuses a row without a venue.
+//
+// Uniqueness is (Venue, Asset, TakenAt). Writes are ON CONFLICT DO NOTHING, so a
+// replayed or duplicated observation is a no-op rather than a second row that
+// would double-weight that instant in any average.
+type EquitySnapshot struct {
+	ID uint `gorm:"primaryKey" json:"id"`
+
+	// Venue is where the money physically is: binance_usdm|binance_spot|gate_spot|
+	// polymarket. See internal/equity for the constants.
+	Venue string `gorm:"type:varchar(32);index:idx_equity_snap_uniq,unique" json:"venue"`
+	Asset string `gorm:"type:varchar(32);index:idx_equity_snap_uniq,unique" json:"asset"`
+	// TakenAt is when the balance was OBSERVED, not when the row was inserted;
+	// the two differ by the sink queue and matter separately when reconciling.
+	TakenAt time.Time `gorm:"type:datetime(3);index:idx_equity_snap_uniq,unique" json:"taken_at"`
+
+	// Free is spendable now; Total additionally includes what is committed but
+	// still ours (posted margin, open-order locks). The GAP between them is the
+	// answer to "we have money, why can't the engine open a position".
+	Free  float64 `json:"free"`
+	Total float64 `json:"total"`
+	// Unrealized is open-position mark-to-market, meaningful only on a derivatives
+	// venue. On a spot venue it is structurally 0; Venue is what tells a reader
+	// that 0 means "not applicable" rather than "we failed to read it".
+	Unrealized float64 `json:"unrealized"`
+
+	// Source is the exact endpoint decoded, e.g. "GET /fapi/v2/balance", so a
+	// reader can re-issue that call and check this row without reading the code.
+	Source string `gorm:"type:varchar(64)" json:"source"`
+
+	CreatedAt time.Time `gorm:"type:datetime(3)" json:"created_at"`
 }
