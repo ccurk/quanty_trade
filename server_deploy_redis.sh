@@ -7,20 +7,69 @@ HOST_PORT="6379"
 
 DATA_DIR="/root/quanty_trade/redis"
 
-REDIS_PASSWORD="work@..."
+# 密码只从环境变量读取，脚本里不留明文。未设置直接退出，不使用默认值。
+REDIS_PASSWORD="${REDIS_PASSWORD:-}"
+
+RECREATE=0
+ASSUME_YES=0
+for arg in "$@"; do
+  case "$arg" in
+    --recreate) RECREATE=1 ;;
+    --yes) ASSUME_YES=1 ;;
+    -h|--help)
+      echo "用法: $0 [--recreate] [--yes]"
+      echo "  不带参数: 容器已存在则不做任何事；不存在才创建。"
+      echo "  --recreate: 允许先停掉并删除已存在的容器再重建（需确认）。"
+      echo "  --yes     : 跳过交互确认（供非交互场景使用）。"
+      echo "环境变量(必填): REDIS_PASSWORD"
+      exit 0
+      ;;
+    *) echo "未知参数: $arg（可用: --recreate --yes）"; exit 1 ;;
+  esac
+done
+
+if [ -z "$REDIS_PASSWORD" ]; then
+  echo "错误: 环境变量 REDIS_PASSWORD 未设置。请先 export，不要写进脚本。" >&2
+  exit 1
+fi
 
 docker version >/dev/null
 
-if [ "$REDIS_PASSWORD" = "REPLACE_REDIS_PASSWORD" ] || [ -z "$REDIS_PASSWORD" ]; then
-  echo "请先在脚本顶部填写 REDIS_PASSWORD"
-  exit 1
+container_state() {
+  docker inspect -f '{{.State.Status}}' "$1" 2>/dev/null || echo absent
+}
+
+STATE="$(container_state "$CONTAINER_NAME")"
+
+if [ "$STATE" != "absent" ] && [ "$RECREATE" -ne 1 ]; then
+  echo "容器 ${CONTAINER_NAME} 已存在（状态: ${STATE}），本脚本不会动它。"
+  echo "确实需要重建请显式加 --recreate。"
+  exit 0
+fi
+
+if [ "$STATE" != "absent" ]; then
+  echo "即将重建 ${CONTAINER_NAME}（当前状态: ${STATE}）。"
+  echo "数据目录: ${DATA_DIR} -> /data（宿主机 bind mount，删容器不删数据）"
+  echo "当前实际挂载:"
+  docker inspect -f '{{range .Mounts}}  {{.Type}} {{.Source}} -> {{.Destination}}{{println}}{{end}}' "$CONTAINER_NAME"
+  if [ "$ASSUME_YES" -ne 1 ]; then
+    read -r -p "确认停机并重建？输入 recreate 继续: " reply
+    if [ "$reply" != "recreate" ]; then
+      echo "已取消，未做任何改动。"
+      exit 1
+    fi
+  fi
 fi
 
 mkdir -p "$DATA_DIR"
 
 docker pull "$REDIS_IMAGE"
 
-docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+if [ "$STATE" != "absent" ]; then
+  # 先优雅停（让 AOF/RDB 落盘），再删；避免 rm -f 直接 SIGKILL 丢掉最后一段写入。
+  docker stop -t 30 "$CONTAINER_NAME" >/dev/null
+  docker rm "$CONTAINER_NAME" >/dev/null
+fi
 
 docker run -d \
   --name "$CONTAINER_NAME" \
@@ -33,13 +82,13 @@ docker run -d \
   --requirepass "$REDIS_PASSWORD" >/dev/null
 
 for _ in $(seq 1 60); do
-  if docker exec "$CONTAINER_NAME" redis-cli -a "$REDIS_PASSWORD" ping >/dev/null 2>&1; then
+  if docker exec -e REDISCLI_AUTH="$REDIS_PASSWORD" "$CONTAINER_NAME" redis-cli ping >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
 
-if ! docker exec "$CONTAINER_NAME" redis-cli -a "$REDIS_PASSWORD" ping >/dev/null 2>&1; then
+if ! docker exec -e REDISCLI_AUTH="$REDIS_PASSWORD" "$CONTAINER_NAME" redis-cli ping >/dev/null 2>&1; then
   echo "Redis 未在预期时间内就绪"
   exit 1
 fi

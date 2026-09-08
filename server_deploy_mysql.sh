@@ -7,28 +7,80 @@ HOST_PORT="3306"
 
 DATA_DIR="/root/quanty_trade/mysql"
 
-MYSQL_ROOT_PASSWORD="work@..."
-MYSQL_DATABASE="quanty_trade"
-MYSQL_USER="quanty"
-MYSQL_PASSWORD="work@..."
+# 密码只从环境变量读取，脚本里不留明文。未设置直接退出，不使用默认值。
+MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
+MYSQL_DATABASE="${MYSQL_DATABASE:-quanty_trade}"
+MYSQL_USER="${MYSQL_USER:-quanty}"
 
-docker version >/dev/null
+RECREATE=0
+ASSUME_YES=0
+for arg in "$@"; do
+  case "$arg" in
+    --recreate) RECREATE=1 ;;
+    --yes) ASSUME_YES=1 ;;
+    -h|--help)
+      echo "用法: $0 [--recreate] [--yes]"
+      echo "  不带参数: 容器已存在则不做任何事；不存在才创建。"
+      echo "  --recreate: 允许先停掉并删除已存在的容器再重建（需确认）。"
+      echo "  --yes     : 跳过交互确认（供非交互场景使用）。"
+      echo "环境变量(必填): MYSQL_ROOT_PASSWORD MYSQL_PASSWORD"
+      exit 0
+      ;;
+    *) echo "未知参数: $arg（可用: --recreate --yes）"; exit 1 ;;
+  esac
+done
 
-if [ "$MYSQL_ROOT_PASSWORD" = "REPLACE_MYSQL_ROOT_PASSWORD" ] || [ -z "$MYSQL_ROOT_PASSWORD" ]; then
-  echo "请先在脚本顶部填写 MYSQL_ROOT_PASSWORD"
+if [ -z "$MYSQL_ROOT_PASSWORD" ]; then
+  echo "错误: 环境变量 MYSQL_ROOT_PASSWORD 未设置。请先 export，不要写进脚本。" >&2
   exit 1
 fi
 
-if [ "$MYSQL_PASSWORD" = "REPLACE_MYSQL_PASSWORD" ] || [ -z "$MYSQL_PASSWORD" ]; then
-  echo "请先在脚本顶部填写 MYSQL_PASSWORD"
+if [ -z "$MYSQL_PASSWORD" ]; then
+  echo "错误: 环境变量 MYSQL_PASSWORD 未设置。请先 export，不要写进脚本。" >&2
   exit 1
+fi
+
+docker version >/dev/null
+
+container_state() {
+  docker inspect -f '{{.State.Status}}' "$1" 2>/dev/null || echo absent
+}
+
+STATE="$(container_state "$CONTAINER_NAME")"
+
+if [ "$STATE" != "absent" ] && [ "$RECREATE" -ne 1 ]; then
+  echo "容器 ${CONTAINER_NAME} 已存在（状态: ${STATE}），本脚本不会动它。"
+  echo "确实需要重建请显式加 --recreate。"
+  exit 0
+fi
+
+if [ "$STATE" != "absent" ]; then
+  # 数据落在宿主机 bind mount（见下方 DATA_DIR），删容器不等于删数据；
+  # 但这是实盘库，停机会中断在跑的交易写入，仍然要一次显式确认。
+  echo "即将重建 ${CONTAINER_NAME}（当前状态: ${STATE}）。"
+  echo "数据目录: ${DATA_DIR} -> /var/lib/mysql（宿主机 bind mount，删容器不删数据）"
+  echo "当前实际挂载:"
+  docker inspect -f '{{range .Mounts}}  {{.Type}} {{.Source}} -> {{.Destination}}{{println}}{{end}}' "$CONTAINER_NAME"
+  echo "建议先备份: tar czf /root/quanty_trade/mysql-backup-\$(date +%F).tgz -C ${DATA_DIR} ."
+  if [ "$ASSUME_YES" -ne 1 ]; then
+    read -r -p "确认停机并重建？输入 recreate 继续: " reply
+    if [ "$reply" != "recreate" ]; then
+      echo "已取消，未做任何改动。"
+      exit 1
+    fi
+  fi
 fi
 
 mkdir -p "$DATA_DIR"
 
 docker pull "$MYSQL_IMAGE"
 
-docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+if [ "$STATE" != "absent" ]; then
+  # 先优雅停（让 InnoDB 正常 flush），再删；避免 rm -f 直接 SIGKILL 造成崩溃恢复。
+  docker stop -t 60 "$CONTAINER_NAME" >/dev/null
+  docker rm "$CONTAINER_NAME" >/dev/null
+fi
 
 docker run -d \
   --name "$CONTAINER_NAME" \
@@ -42,13 +94,13 @@ docker run -d \
   "$MYSQL_IMAGE" >/dev/null
 
 for _ in $(seq 1 60); do
-  if docker exec "$CONTAINER_NAME" mysqladmin ping -uroot "-p${MYSQL_ROOT_PASSWORD}" --silent >/dev/null 2>&1; then
+  if docker exec -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" "$CONTAINER_NAME" mysqladmin ping -uroot --silent >/dev/null 2>&1; then
     break
   fi
   sleep 2
 done
 
-if ! docker exec "$CONTAINER_NAME" mysqladmin ping -uroot "-p${MYSQL_ROOT_PASSWORD}" --silent >/dev/null 2>&1; then
+if ! docker exec -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" "$CONTAINER_NAME" mysqladmin ping -uroot --silent >/dev/null 2>&1; then
   echo "MySQL 未在预期时间内就绪"
   exit 1
 fi
