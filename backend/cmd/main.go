@@ -47,25 +47,11 @@ func initLogging() {
 	}
 	_ = os.MkdirAll(logDir, 0o755)
 
-	serverPath := filepath.Join(logDir, "server.log")
-	serverFile, err := os.OpenFile(serverPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		log.SetOutput(os.Stdout)
-		gin.DefaultWriter = os.Stdout
-		gin.DefaultErrorWriter = os.Stderr
-		return
-	}
-
-	gatewayPath := filepath.Join(logDir, "gateway.log")
-	gatewayFile, err := os.OpenFile(gatewayPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		mw := io.MultiWriter(os.Stdout, serverFile)
-		log.SetOutput(mw)
-		log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-		gin.DefaultWriter = os.Stdout
-		gin.DefaultErrorWriter = mw
-		return
-	}
+	// 两个文件 sink 都走 size-based 轮转(50MB x3,见 logrotate.go)。
+	// lumberjack 惰性开文件、构造不会失败,写不进去时也只是丢掉文件侧日志、
+	// stdout 一路照常,所以这里不再需要原来的 open 失败降级分支。
+	serverFile := newRotatingWriter(filepath.Join(logDir, "server.log"), logMaxSizeMB)
+	gatewayFile := newRotatingWriter(filepath.Join(logDir, "gateway.log"), logMaxSizeMB)
 
 	businessWriter := io.MultiWriter(os.Stdout, serverFile)
 	gatewayWriter := io.MultiWriter(os.Stdout, gatewayFile)
