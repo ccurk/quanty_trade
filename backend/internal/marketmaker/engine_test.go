@@ -128,3 +128,40 @@ func TestExecRegistry(t *testing.T) {
 		t.Fatalf("unknown exec must error")
 	}
 }
+
+func TestQuoteAnchor(t *testing.T) {
+	// 基差场景:执行所中价比参考所高 45bps —— 复刻 2026-09-08 实测的 ONG_USDT。
+	refMid, execMid := 100.0, 100.45
+
+	// 默认(未配置)锚参考所,保持历史行为不变
+	var pRef PairConfig
+	if got := pRef.anchorMid(refMid, execMid); got != refMid {
+		t.Fatalf("默认应锚参考所 %.4f,得到 %.4f", refMid, got)
+	}
+	// 显式 "ref" 同样锚参考所
+	pExplicit := PairConfig{QuoteAnchor: "ref"}
+	if got := pExplicit.anchorMid(refMid, execMid); got != refMid {
+		t.Fatalf(`"ref" 应锚参考所,得到 %.4f`, got)
+	}
+	// "exec" 锚执行所
+	pExec := PairConfig{QuoteAnchor: "exec"}
+	if got := pExec.anchorMid(refMid, execMid); got != execMid {
+		t.Fatalf(`"exec" 应锚执行所 %.4f,得到 %.4f`, execMid, got)
+	}
+	// 执行所中价拿不到(0)时必须回退参考所,绝不能拿 0 当中心去报价
+	if got := pExec.anchorMid(refMid, 0); got != refMid {
+		t.Fatalf("execMid=0 应回退参考所,得到 %.4f", got)
+	}
+
+	// 效果验证:半价差 15bps。锚参考所时两条腿都落在执行所盘口下方(错误一侧);
+	// 锚执行所时才骑在执行所中价两边。
+	half := 15.0 / 10000
+	_, askRef := skewedQuote(pRef.anchorMid(refMid, execMid), half, 0, 1.0, 0)
+	bidExec, askExec := skewedQuote(pExec.anchorMid(refMid, execMid), half, 0, 1.0, 0)
+	if askRef >= execMid {
+		t.Fatalf("锚参考所时卖价 %.4f 本应低于执行所中价 %.4f(这正是被秒吃的原因)", askRef, execMid)
+	}
+	if !(bidExec < execMid && askExec > execMid) {
+		t.Fatalf("锚执行所时应骑在 %.4f 两侧,得到 买 %.4f 卖 %.4f", execMid, bidExec, askExec)
+	}
+}

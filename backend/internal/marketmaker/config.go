@@ -40,6 +40,27 @@ type PairConfig struct {
 	OrderQty    float64 `yaml:"order_qty" json:"order_qty"`       // base-asset size per quote
 	MaxPosition float64 `yaml:"max_position" json:"max_position"` // inventory cap (base asset)
 	RefreshMs   int     `yaml:"refresh_ms" json:"refresh_ms"`     // requote / observe cadence (default 1000)
+
+	// QuoteAnchor 决定报价中心锚在哪:
+	//   ""/"ref"  参考所(binance)中价 —— 历史默认,保持不变
+	//   "exec"    执行所(gate)自身中价
+	//
+	// 为什么要能切:2026-09-08 实测 ONG_USDT 中位基差 +45.2bps 而中位价差仅 23.0bps
+	// (3572 个样本)。锚在 binance 时,两条腿同时落在 gate 盘口的错误一侧 ——
+	// 卖单扎进买盘被秒吃、买单挂在天上永不成交,结构性只卖不买。
+	//
+	// 但"改锚 exec"是策略变更不是 bug 修复:锚 exec 等于放弃跨所信息,退化成
+	// 单所做市。哪个更好不该拍脑袋 —— markout 度量已上线,逐品种切换后用
+	// 成交后 1s/5s/30s 的 markout 对比,让数据判。所以默认不变,显式配置才切。
+	QuoteAnchor string `yaml:"quote_anchor" json:"quote_anchor"`
+}
+
+// anchorMid 按配置选报价中心。参考所中价用于方向与风控,不一定用于定价。
+func (p PairConfig) anchorMid(refMid, execMid float64) float64 {
+	if p.QuoteAnchor == "exec" && execMid > 0 {
+		return execMid
+	}
+	return refMid
 }
 
 func (p PairConfig) refresh() int {

@@ -282,7 +282,10 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker) {
 	if p.MaxPosition > 0 {
 		invRatio = baseHeld / p.MaxPosition
 	}
-	bidPx, askPx := skewedQuote(refMid, half, invRatio, inventorySkewFrac, filt.TickSize)
+	// 报价中心:默认锚参考所中价(历史行为);配了 quote_anchor:"exec" 就锚执行所自身中价。
+	// 基差大于半价差的品种,锚参考所会让两条腿同时挂在执行所盘口的错误一侧 —— 见 config.go 注释。
+	anchor := p.anchorMid(refMid, eb.Mid())
+	bidPx, askPx := skewedQuote(anchor, half, invRatio, inventorySkewFrac, filt.TickSize)
 	// 吃满执行所盘口价差:执行所卖一比"公允+spread"更贵时,把卖单顶到其卖一下方 1 tick
 	// (捕获整段溢价,而不是按固定 spread 自己砍价贱卖);买一更便宜时同理下探。同时严格
 	// 留在盘口内 → post-only 不会被 POC_FILL_IMMEDIATELY 拒。这是"面板正、成交负"的正解:
