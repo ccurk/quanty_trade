@@ -2,6 +2,7 @@ package marketmaker
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -40,6 +41,30 @@ func Start(cfg Config) (*Engine, error) {
 		}
 		execs[ec.Name] = ex
 	}
+	// 做空侧闸门。放在建 ctx / setRunning / 起 goroutine 之前:拒绝时整个模块一个
+	// 协程都没起、running 仍为 false、一张单都没下。
+	//
+	// 为什么是"拒绝启动"而不是"忽略该配置退回单边":静默退回在永续上最坏的形态是
+	// —— 人以为双边在跑、实际只在单边堆多头,再撞上单日止损【只撤单不平仓】那条
+	// (见下面 MaxDailyLossUSD 分支),就是带杠杆裸奔到次日。宁可后端起不来。
+	// 调用方 app/runtime.go:54 把这里的 error 打成 ERROR 日志(并进 Lark 告警),
+	// 进程本身不退,其它模块照常跑。
+	for _, p := range cfg.Pairs {
+		if !p.AllowShort {
+			continue
+		}
+		ex, ok := execs[p.Exec]
+		if !ok {
+			continue // exec 名字都对不上,下面 pair 循环会 warn 并跳过
+		}
+		if miss := shortSideBlockers(ex); len(miss) > 0 {
+			return nil, fmt.Errorf("pair %s@%s 配了 allow_short 但前置条件不满足:%s。"+
+				"永续风控四件套(止损 reduce-only 平仓/保证金率监控/显式杠杆/资金费入账)补齐前"+
+				"不要开这个开关,详见 state/strategy/gate-futures-mm-assessment-2026-09-08.md §4",
+				p.ExecSymbol, p.Exec, strings.Join(miss, ";"))
+		}
+		logger.Infof("[mm] pair %s@%s 双边报价已放开(allow_short),卖侧不再受已持有库存限制", p.ExecSymbol, p.Exec)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{cfg: cfg, feed: feed, execs: execs, stop: cancel}
 	mode := "LIVE-QUOTE"
@@ -53,6 +78,11 @@ func Start(cfg Config) (*Engine, error) {
 		if !ok {
 			logger.Warnf("[mm] pair %s: exec %q not in config, skipped", p.FeedSymbol, p.Exec)
 			continue
+		}
+		// 这条过去是无声的:接了永续适配器,引擎仍按现货规则把卖量钳在已持有量上,
+		// 空仓时一张卖单都挂不出来,日志里看不出任何异常。现在说出来。
+		if ex.SupportsShort() && !p.AllowShort {
+			logger.Infof("[mm] pair %s@%s:场馆支持做空但 allow_short 未开,卖侧仍按现货规则钳在已持有量上(空仓=只挂买单)", p.ExecSymbol, p.Exec)
 		}
 		go e.runPair(ctx, p, ex)
 	}
@@ -79,6 +109,29 @@ func (e *Engine) Stop() {
 	if e.stop != nil {
 		e.stop()
 	}
+}
+
+// shortSideBlockers 列出"这个场馆的卖侧还不能放开"的原因。空 = 可以放开。
+// 只在 pair 配了 allow_short 时才问它 —— 没配就是历史行为,不需要理由。
+//
+// 两条判据都必须是【运行时探针】而不是写死的开关,否则闸门本身就成了另一处
+// "写了没人调"的死代码 —— 这一轮修的正是那种东西(SupportsShort 全仓库零调用)。
+func shortSideBlockers(ex ExecExchange) []string {
+	var miss []string
+	if !ex.SupportsShort() {
+		miss = append(miss, fmt.Sprintf("场馆 %s 不支持做空(SupportsShort()=false)", ex.Name()))
+	}
+	if _, ok := ex.(PerpRiskControls); !ok {
+		miss = append(miss, fmt.Sprintf("适配器 %s 未实现 PerpRiskControls(缺强平/保证金率监控)", ex.Name()))
+	}
+	return miss
+}
+
+// shortSideEnabled 是"卖量能不能超过已持有量"的唯一判据。fail-closed:
+// 任何一条不满足都退回现货规则。Start 已经把不满足的配置挡在门外,这里再判一次
+// 是因为 Engine 可以不经 Start 构造(测试、将来的其它入口),闸不能只有一道。
+func shortSideEnabled(p PairConfig, ex ExecExchange) bool {
+	return p.AllowShort && len(shortSideBlockers(ex)) == 0
 }
 
 // runPair keeps the latest feed book (WS) and, each refresh, compares the exec
@@ -245,6 +298,11 @@ func staleAfter(p PairConfig) time.Duration {
 // than quoting blind. Cancel-replace only when the target moved more than the requote
 // band (a fraction of the half-spread), to avoid thrashing.
 func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBps float64) {
+	// 卖侧是"只能卖已持有"(现货)还是"可以卖到 −MaxPosition"(永续)。
+	// 全函数只在这里判一次,下面三处(持仓口径/卖量上限/库存偏移下界)共用同一个结论,
+	// 免得三处各判各的、将来漂成不一致。
+	shortOK := shortSideEnabled(p, ex)
+
 	filt, err := ex.SymbolFilter(p.ExecSymbol)
 	if err != nil {
 		logger.Warnf("[mm] %s@%s filter 读取失败,本轮不报价: %v", p.ExecSymbol, ex.Name(), err)
@@ -278,9 +336,13 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBp
 		e.cancelAll(ex, p.ExecSymbol)
 		return
 	}
-	// 持仓 = 可用余额 + 自己卖单里锁着的量(去掉这一项就会 thrash)。
+	// 现货持仓 = 可用余额 + 自己卖单里锁着的量(去掉这一项就会 thrash)。
+	//
+	// 放开做空后这一项必须【不加】:永续的 Balances() 返回的是清算所里的有符号持仓
+	// (hyperliquid.go Balances 注释),挂着的卖单不从里面扣,再加一次就把持仓算大了 ——
+	// 库存偏移和库存闸会一起偏向一侧。也不会 thrash,因为持仓本来就不随挂单变。
 	baseHeld := bals[filt.BaseAsset]
-	if curAsk != nil {
+	if curAsk != nil && !shortOK {
 		baseHeld += curAsk.Qty
 	}
 
@@ -289,6 +351,13 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBp
 	invRatio := 0.0
 	if p.MaxPosition > 0 {
 		invRatio = baseHeld / p.MaxPosition
+	}
+	// 现货余额恒非负,invRatio 本来就不会为负;这里把它钉死,是为了让"闸关着时
+	// 行为逐位不变"不依赖于余额接口的善意 —— 任何来源的负值都退回历史的 0。
+	// 闸开着时留住负号:持空仓 → 中枢上移 → 买价贴中价(早点买回来)、卖价推远
+	// (少继续做空),把仓位往中性拽,和多头方向对称。
+	if !shortOK && invRatio < 0 {
+		invRatio = 0
 	}
 	// 报价中心:默认锚参考所中价(历史行为);配了 quote_anchor:"exec" 就锚执行所自身中价;
 	// 配了 basis_half_life_s 则在参考所中价上叠加基差修正 corrBps(台账 #7 的修复形态)。
@@ -305,11 +374,18 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBp
 	}
 
 	// 买量钳到"上限−持仓",防止在接近上限时又买满一整单冲破 cap(order_qty≈½cap 时最多溢出
-	// 50%);卖量最多卖出已持有的量(现货)。
+	// 50%)。baseHeld 在永续上有符号,持空仓时这一项自然放大到 order_qty,买侧无需改。
 	bidQty := roundToStep(minf(p.OrderQty, p.MaxPosition-baseHeld), filt.StepSize)
-	askQty := roundToStep(minf(p.OrderQty, baseHeld), filt.StepSize)
+	// 卖量上限:现货是"已持有的量";放开做空后是"上限 + 持仓"(baseHeld 带符号),
+	// 即允许一路卖到 −MaxPosition,与买侧的 +MaxPosition 对称。
+	askCap := baseHeld
+	if shortOK {
+		askCap = p.MaxPosition + baseHeld
+	}
+	askQty := roundToStep(minf(p.OrderQty, askCap), filt.StepSize)
 
-	// 库存闸:总持仓达上限不再买;无库存不挂卖;两边都要过最小名义额。
+	// 库存闸:总持仓达上限不再买;卖侧由 askQty>0 兜住 —— 现货上它等价于"无库存不挂卖",
+	// 放开做空后等价于"空到 −上限就不再卖"。两边都要过最小名义额。
 	wantBid := baseHeld < p.MaxPosition && bidQty > 0 && bidPx*bidQty >= filt.MinNotional
 	wantAsk := askQty > 0 && askPx*askQty >= filt.MinNotional
 
@@ -386,12 +462,18 @@ func rideToBook(bidPx, askPx, ebBid, ebAsk, tick float64) (bid, ask float64) {
 }
 
 // skewedQuote prices a post-only bid/ask around an inventory-skewed reservation
-// center: center = refMid*(1 - half*skewFrac*invRatio), invRatio clamped to [0,1].
+// center: center = refMid*(1 - half*skewFrac*invRatio), invRatio clamped to [−1,1].
 // More base held (higher invRatio) lowers the center → ask nears mid (lean to sell
 // down), bid recedes (buy less). invRatio=0 → symmetric quotes around refMid.
+//
+// 下界从 0 放宽到 −1 是为了让空头方向的库存偏移生效:钳在 0 时,任何空仓都被当成
+// 平仓处理,报价永远对称 —— 没有任何价格上的力把空头往中性拽回,只有硬上限拦着,
+// 到了 −MaxPosition 直接停手。公式本身对负值就是对的,只是过去到不了。
+// 上界仍是 1(engine_test.go TestSkewedQuote 锁着这条)。
+// 谁能喂进负值由 quote() 的 shortOK 决定,现货路径进不来。
 func skewedQuote(refMid, half, invRatio, skewFrac, tick float64) (bid, ask float64) {
-	if invRatio < 0 {
-		invRatio = 0
+	if invRatio < -1 {
+		invRatio = -1
 	} else if invRatio > 1 {
 		invRatio = 1
 	}

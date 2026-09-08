@@ -83,5 +83,43 @@ type ExecExchange interface {
 	// asset first (perps/margin). Spot venues return false: there the engine may
 	// only sell inventory it already owns, which forces one-sided quoting whenever
 	// the venue trades at a premium — the structural leak measured on gate.
+	//
+	// 它是【必要不充分】条件:引擎放开卖侧还要求 pair 配了 allow_short,且适配器
+	// 实现了下面的 PerpRiskControls。判据只有一处 —— engine.go shortSideEnabled。
 	SupportsShort() bool
+}
+
+// PerpRiskControls 是"允许在这个场馆挂裸卖单"的前置能力集合。
+//
+// 为什么它单独一个接口、而不是塞进 ExecExchange:现货适配器既不能也不该实现它,
+// 而引擎需要在【运行时】判断某个适配器到底有没有这套东西 —— 类型断言就是那个探针。
+// 这不是可选装饰,是闸门本身:断言失败 = 拒绝启动(engine.go shortSideBlockers)。
+//
+// 四个方法一一对应 state/strategy/gate-futures-mm-assessment-2026-09-08.md §4
+// 里那四条"会把永续做市做到强平"的缺口:
+//
+//	ClosePosition   ① 单日止损只撤单不平仓。现货安全(拿着币而已),永续等于亏到
+//	                  阈值后把腿绑起来、带着杠杆仓位裸奔到次日 UTC 零点。
+//	MarginRatio     ③ 全包无保证金率概念。MaxPosition 是基础币/张数口径,和维持
+//	                  保证金没有关系,拦不住强平。
+//	SetLeverage     ⑥ 代码里从没设置过杠杆,开仓会落到账号默认档。
+//	FundingPaidUSD  ⑤ 资金费(gate 实测 funding_interval=28800 秒)完全不进 PnL,
+//	                  会重演"面板正、实际负"。
+//
+// 今天【没有任何适配器实现它】(hyperliquid.go 也没有),所以卖侧一定被拒 ——
+// 这是有意的 fail-closed:写永续适配器的人把这四个方法实现出来,闸自己就开。
+//
+// 注意它挡不住"实现成空壳":四个方法返回 nil 也能通过断言。它挡的是【忘了做】,
+// 不是【假装做了】。另外两条缺口是引擎级的,断言看不见,补齐前也别开:
+//   - ② deadman.go 的死人开关只撤单不平仓,进程崩溃后持仓继续裸露;
+//   - ④ 止损检查最快 10s 一次,且整段包在 `if err == nil` 里,接口报错时静默跳过。
+type PerpRiskControls interface {
+	// ClosePosition 用 reduce-only 单把该 symbol 的持仓平掉(幂等,已平返回 nil)。
+	ClosePosition(symbol string) error
+	// MarginRatio 返回当前保证金率,用于强平前刹车。
+	MarginRatio(symbol string) (float64, error)
+	// SetLeverage 显式设置杠杆倍数,不依赖账号默认档。
+	SetLeverage(symbol string, x float64) error
+	// FundingPaidUSD 返回累计已付/已收资金费(USD,付出为正),用于计入 PnL。
+	FundingPaidUSD(symbol string) (float64, error)
 }
