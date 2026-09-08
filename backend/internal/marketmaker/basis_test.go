@@ -2,12 +2,16 @@ package marketmaker
 
 import (
 	"math"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
 
-// 复刻 2026-09-09 实测的 ONG_USDT 工作点(467,006 条 [mm-observe] 记录,见 basis.go):
-// 中位基差 +88.8bps、中位价差 19.0bps(半价差 9.5bps),94.7% 的样本 |b| > s/2。
+// 一个 ONG_USDT 的【压力工作点】,不是中位数,别当实测结论引用:基差 88.8bps、
+// 价差 19.0bps(半价差 9.5bps)。72h 实测(949,534 条,见 basis.go)ONG 的中位基差是
+// +37.91、p90 是 +123.63,88.8 落在这个区间的上半段 —— 选它是因为下面几条断言要的是
+// "基差远大于半价差"这个工作区,取中位数反而试不出错边。
 const (
 	ongBasisBps  = 88.8
 	ongSpreadBps = 19.0
@@ -154,9 +158,12 @@ func TestBasisCorrectionKeepsRiskGateUsable(t *testing.T) {
 
 // TestBasisEWMAAveragesNoiseButTracksLevel 锁死"只修持续分量"这个选型依据本身。
 //
-// 实测里 MOVE_USDT 是零均值噪声(中位 b +2.7 / p10 −30.6 / p90 +38.8)、
-// ONG_USDT 是持续单边(中位 +88.8 / p10 仍是 +19.7)。选 EWMA 而不是直接锚执行所,
-// 就是赌它能把前者平均掉、把后者跟上。赌注写成断言。
+// 注意口径:这里锁的是【估计量本身的性质】——"零均值输入不该产生修正、有水位的
+// 输入该跟住水位"。这是选 EWMA 而不是直接锚执行所的理由,赌注写成断言。
+//
+// 它【不】等于"线上 MOVE 就是零均值噪声、修它就安全"。72h 实测(见 basis.go)显示
+// MOVE 的 β_ref 是 +0.161,即它的基差含真信号,修掉是误伤 —— 该不该对某个品种开修正,
+// 看的是 lead-lag,不是这条单测。
 func TestBasisEWMAAveragesNoiseButTracksLevel(t *testing.T) {
 	t0 := time.Unix(0, 0)
 	feed := func(samples []float64) float64 {
@@ -185,4 +192,45 @@ func TestBasisEWMAAveragesNoiseButTracksLevel(t *testing.T) {
 		level[i] += ongBasisBps
 	}
 	approx(t, feed(level), ongBasisBps, 5, "噪声叠在持续水位上时应跟住水位")
+}
+
+// TestExampleConfigCarriesBasisKnobs 守的是 #7 卡了三轮的那个具体毛病:
+// 代码里把 basis_half_life_s 读得好好的,配置模板里却【一个字都没有】,
+// 于是线上永远取默认 0 = 关闭,修复上线即空转,而且没有任何报错能提示这件事。
+//
+// 为什么这条必须是自动化断言而不是"注意一下":encoding/json 对未知字段是【静默忽略】的。
+// 把 basis_half_life_s 拼错成 basis_halflife_s,配置照样解析成功、照样跑,
+// 只是永远为 0 —— 人眼复核是抓不住这种错的,只有断言能。
+func TestExampleConfigCarriesBasisKnobs(t *testing.T) {
+	const path = "../../conf/marketmaker.example.json"
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读不到配置模板 %s: %v", path, err)
+	}
+	// 先按【文本】断言键名存在。走完 json 解析再断言是不够的:键名拼错时
+	// 解析依然成功、字段依然是零值,和"故意配 0"分不开。
+	for _, key := range []string{"basis_half_life_s", "basis_cap_bps", "quote_anchor"} {
+		if !strings.Contains(string(raw), key) {
+			t.Fatalf("配置模板里找不到 %q —— 线上就是这么变成永远关闭的", key)
+		}
+	}
+
+	t.Setenv("MARKETMAKER_CONFIG", path)
+	cfg := LoadConfigFromEnv()
+	if len(cfg.Pairs) == 0 {
+		t.Fatal("模板必须能被 LoadConfigFromEnv 解析出 pairs")
+	}
+	// 模板发布态必须是【关闭】:开关要可见、可 grep、可改,但不能替所有者做决定。
+	// 档位目前定不出来(判据随半衰期单调下降,见 basis_replay_test.go),只能等成交后 A/B。
+	for _, p := range cfg.Pairs {
+		if p.BasisHalfLifeS != 0 {
+			t.Fatalf("%s: 模板默认必须关闭(0),得到 %v", p.ExecSymbol, p.BasisHalfLifeS)
+		}
+		if p.BasisCapBps != defaultBasisCapBps {
+			t.Fatalf("%s: 模板的上限应显式写成 %v,得到 %v", p.ExecSymbol, defaultBasisCapBps, p.BasisCapBps)
+		}
+		if newBasisEWMA(p.BasisHalfLifeS, p.BasisCapBps) != nil {
+			t.Fatalf("%s: 模板配置下估计量必须是 nil(关闭)", p.ExecSymbol)
+		}
+	}
 }

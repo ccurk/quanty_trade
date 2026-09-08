@@ -1,5 +1,24 @@
 {
   "_readme": "跨所做市配置示例。用法:复制为真实文件(如 conf/marketmaker.json,勿入库),填好密钥,启动时设 MARKETMAKER_CONFIG=/app/conf/marketmaker.json。enabled=false 时整模块 no-op;observe_only=true 只测价差不下单(先用它验证机会)。",
+
+  "_basis_readme": [
+    "台账 #7(报价中心锚参考所,但执行所有基差 → 两条腿同时挂错边)的开关在每个 pair 的 basis_half_life_s 上。",
+    "basis_half_life_s: 基差 EWMA 的半衰期(秒)。0 = 关闭 = 保持历史行为(锚参考所中价),这是默认,也是本文件里所有 pair 现在的值。",
+    "  开启后报价中心 = 参考所中价 ×(1 + b̂/1e4),b̂ 是 exec-vs-ref 基差的 EWMA;撤单闸门同时改看残差而不是原始基差。",
+    "basis_cap_bps: 修正项绝对值上限(bps),0 = 用代码默认 200。防呆用:参考所断流/品种下架/合约乘数配错时基差会跑到几百上千 bps。",
+    "",
+    "为什么默认还是 0(关闭)—— 这不是保守,是【档位目前定不出来】:",
+    "  2026-09-08 拿 949,534 条 mm-observe 回放(TestBasisReplayOnObserveLog,窗口 09-05 17:56 → 09-08 17:55 UTC),",
+    "  判据『|残差| > 半价差 的时刻占比』随半衰期【单调下降】,一路降到 1s 都没有极小值 ——",
+    "  它只能证明『该修』,证明不了『该修多快』。半衰期取到极短就等于放弃参考所、退化成单所做市。",
+    "  真正能定档的是 markout A/B(markout.go 已上线),那需要有成交才做得了。所以:默认关闭,等有成交后用 A/B 定档。",
+    "",
+    "如果所有者决定先开一个:证据支持【只对 ONG_USDT 开,半衰期 60】,理由见 basis.go 顶部的 lead-lag 一段 ——",
+    "  ONG 的基差在 60 秒尺度上两边都不收敛(β_exec −0.013 / β_ref +0.010),即它不含跨所价格发现,修掉它不损失信息。",
+    "  MOVE_USDT 相反(β_ref +0.161,参考所会朝执行所走),对它开修正会吃掉真信号,不要开。",
+    "  SOL_USDT 的基差只有 1 个 tick 量级,开不开都没有经济意义。"
+  ],
+
   "enabled": false,
   "observe_only": true,
   "feed": "binance",
@@ -9,8 +28,8 @@
     { "name": "kucoin", "base_url": "https://api.kucoin.com", "api_key": "", "api_secret": "", "passphrase": "" }
   ],
   "pairs": [
-    { "feed_symbol": "BTCUSDT", "exec": "coinsph", "exec_symbol": "BTCUSDT", "spread_bps": 20, "order_qty": 0.001, "max_position": 0.01, "refresh_ms": 1000 },
-    { "feed_symbol": "SOLUSDT", "exec": "gate", "exec_symbol": "SOL_USDT", "spread_bps": 15, "order_qty": 0.1, "max_position": 1.0, "refresh_ms": 1000 },
-    { "feed_symbol": "SOLUSDT", "exec": "kucoin", "exec_symbol": "SOL-USDT", "spread_bps": 15, "order_qty": 0.1, "max_position": 1.0, "refresh_ms": 1000 }
+    { "feed_symbol": "BTCUSDT", "exec": "coinsph", "exec_symbol": "BTCUSDT", "spread_bps": 20, "order_qty": 0.001, "max_position": 0.01, "refresh_ms": 1000, "quote_anchor": "ref", "basis_half_life_s": 0, "basis_cap_bps": 200 },
+    { "feed_symbol": "SOLUSDT", "exec": "gate", "exec_symbol": "SOL_USDT", "spread_bps": 15, "order_qty": 0.1, "max_position": 1.0, "refresh_ms": 1000, "quote_anchor": "ref", "basis_half_life_s": 0, "basis_cap_bps": 200 },
+    { "feed_symbol": "SOLUSDT", "exec": "kucoin", "exec_symbol": "SOL-USDT", "spread_bps": 15, "order_qty": 0.1, "max_position": 1.0, "refresh_ms": 1000, "quote_anchor": "ref", "basis_half_life_s": 0, "basis_cap_bps": 200 }
   ]
 }
