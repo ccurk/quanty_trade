@@ -643,27 +643,52 @@ type MarkoutFill struct {
 	// Per-horizon evidence. Mid* is the exec-venue mid actually used (must be the
 	// venue the fill happened on — a cross-venue mid folds the basis straight into
 	// markout, ledger #7's headline trap). Lag*Ms is how late that sample was
-	// relative to FillTs+horizon; a large lag means the row measured a longer
-	// horizon than its name says, so it is a quality filter, not decoration.
+	// relative to FillTs+horizon.
+	//
+	// MarkoutBps* is a POINTER, i.e. NULLable, and that is the whole point:
+	// marketmaker.maxSampleLag caps how late a sample may be (max(2s, h/4)).
+	// Past that cap the sample measured a LONGER horizon than its name claims —
+	// a feed that stalls 5 minutes and comes back would otherwise settle 1s, 5s
+	// and 30s with one identical 5-minutes-later price, and those three fake
+	// numbers would sit in the same columns as real ones, indistinguishable.
+	// So an over-cap horizon stores its evidence (Mid*, Lag*Ms, Stale*=true) but
+	// leaves MarkoutBps* NULL:
+	//   - AVG(markout_bps_5s), the first query anyone writes, is then correct by
+	//     default (SQL AVG skips NULL) instead of quietly poisoned;
+	//   - SUM(stale_5s) still says exactly how many were thrown out — a silent
+	//     drop would make that uncountable, and "this symbol has few 5s samples"
+	//     vs "most of its 5s samples were eaten by a stalled feed" are opposite
+	//     conclusions;
+	//   - Lag*Ms stays on the row, so a stricter cut (WHERE lag_1s_ms < 500) is
+	//     still a query-time decision. The code-side cap is the floor of
+	//     trustworthiness, not the final word.
 	//
 	// Every column name here is PINNED explicitly. GORM's default namer turns
-	// Mid1s into "mid1s" and Lag1sMs into "lag1s_ms" (digits do not get a
-	// separator), so the hand-written DDL and the model would silently disagree —
-	// the same class of trap DailyPnL.RealizedPnL hit with "realized_pn_l".
-	Mid1s         float64 `gorm:"column:mid_1s" json:"mid_1s"`
-	MarkoutBps1s  float64 `gorm:"column:markout_bps_1s" json:"markout_bps_1s"`
-	Lag1sMs       int64   `gorm:"column:lag_1s_ms" json:"lag_1s_ms"`
-	Mid5s         float64 `gorm:"column:mid_5s" json:"mid_5s"`
-	MarkoutBps5s  float64 `gorm:"column:markout_bps_5s" json:"markout_bps_5s"`
-	Lag5sMs       int64   `gorm:"column:lag_5s_ms" json:"lag_5s_ms"`
-	Mid30s        float64 `gorm:"column:mid_30s" json:"mid_30s"`
-	MarkoutBps30s float64 `gorm:"column:markout_bps_30s" json:"markout_bps_30s"`
-	Lag30sMs      int64   `gorm:"column:lag_30s_ms" json:"lag_30s_ms"`
+	// Mid1s into "mid1s", Lag1sMs into "lag1s_ms" and Stale1s into "stale1s"
+	// (digits do not get a separator), so the hand-written DDL and the model
+	// would silently disagree — the same class of trap DailyPnL.RealizedPnL hit
+	// with "realized_pn_l". TestDDLMatchesModel is what keeps them married.
+	Mid1s         float64  `gorm:"column:mid_1s" json:"mid_1s"`
+	MarkoutBps1s  *float64 `gorm:"column:markout_bps_1s" json:"markout_bps_1s"`
+	Lag1sMs       int64    `gorm:"column:lag_1s_ms" json:"lag_1s_ms"`
+	Stale1s       bool     `gorm:"column:stale_1s" json:"stale_1s"`
+	Mid5s         float64  `gorm:"column:mid_5s" json:"mid_5s"`
+	MarkoutBps5s  *float64 `gorm:"column:markout_bps_5s" json:"markout_bps_5s"`
+	Lag5sMs       int64    `gorm:"column:lag_5s_ms" json:"lag_5s_ms"`
+	Stale5s       bool     `gorm:"column:stale_5s" json:"stale_5s"`
+	Mid30s        float64  `gorm:"column:mid_30s" json:"mid_30s"`
+	MarkoutBps30s *float64 `gorm:"column:markout_bps_30s" json:"markout_bps_30s"`
+	Lag30sMs      int64    `gorm:"column:lag_30s_ms" json:"lag_30s_ms"`
+	Stale30s      bool     `gorm:"column:stale_30s" json:"stale_30s"`
 
-	// Complete=false means the feed stalled and some horizon was never sampled.
-	// Such rows are KEPT (with HorizonsDone < 3) rather than dropped: "few samples"
-	// and "we failed to record" lead to opposite conclusions, and only a stored
-	// row can tell them apart.
+	// Complete=true means all three horizons produced a USABLE markout, so
+	// "WHERE complete = 1" alone is the clean-sample filter. false has two causes
+	// that must stay distinguishable, because they lead to opposite conclusions:
+	//   - the horizon was never sampled at all (feed died)  → Mid* = 0;
+	//   - it was sampled but too late (over maxSampleLag)   → Mid* > 0, Stale* = 1.
+	// HorizonsDone counts the USABLE horizons (0..3), not the sampled ones.
+	// Such rows are KEPT rather than dropped: "few samples" and "we failed to
+	// record" lead to opposite conclusions, and only a stored row tells them apart.
 	Complete     bool `gorm:"index" json:"complete"`
 	HorizonsDone int  `json:"horizons_done"`
 
@@ -782,7 +807,10 @@ type EquitySnapshot struct {
 	Asset string `gorm:"type:varchar(32);index:idx_equity_snap_uniq,unique" json:"asset"`
 	// TakenAt is when the balance was OBSERVED, not when the row was inserted;
 	// the two differ by the sink queue and matter separately when reconciling.
-	TakenAt time.Time `gorm:"type:datetime(3);index:idx_equity_snap_uniq,unique" json:"taken_at"`
+	// The column type is left to the dialect (MySQL DDL pins DATETIME(3)), matching
+	// MarkoutFill: pinning type:datetime(3) here makes sqlite store a string that
+	// cannot be scanned back into time.Time, which breaks every test round-trip.
+	TakenAt time.Time `gorm:"index:idx_equity_snap_uniq,unique" json:"taken_at"`
 
 	// Free is spendable now; Total additionally includes what is committed but
 	// still ours (posted margin, open-order locks). The GAP between them is the
@@ -798,5 +826,5 @@ type EquitySnapshot struct {
 	// reader can re-issue that call and check this row without reading the code.
 	Source string `gorm:"type:varchar(64)" json:"source"`
 
-	CreatedAt time.Time `gorm:"type:datetime(3)" json:"created_at"`
+	CreatedAt time.Time `json:"created_at"`
 }

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"quanty_trade/internal/equity"
 	"quanty_trade/internal/logger"
 )
 
@@ -264,6 +265,15 @@ func (e *GateExchange) OpenOrders(symbol string) ([]OpenOrder, error) {
 	return out, nil
 }
 
+// Balances returns spendable spot balances, keyed by upper-cased currency.
+//
+// The returned map is unchanged (available only) because that is what the quoting
+// loop's inventory maths needs. What IS new is that the same response's "locked"
+// field — resting-order locks, always present, see
+// internal/rebalance/balance_source.go which decodes it off this very endpoint —
+// is no longer discarded: it is recorded alongside available as an equity
+// snapshot. This call site is the ~4x/second read from 台账 #42 that had never
+// once been written down.
 func (e *GateExchange) Balances() (map[string]float64, error) {
 	resp, err := e.signed(http.MethodGet, "/spot/accounts", nil, nil)
 	if err != nil {
@@ -272,14 +282,30 @@ func (e *GateExchange) Balances() (map[string]float64, error) {
 	var raw []struct {
 		Currency  string `json:"currency"`
 		Available string `json:"available"`
+		Locked    string `json:"locked"`
 	}
 	if err := json.Unmarshal(resp, &raw); err != nil {
 		return nil, err
 	}
+	now := time.Now()
 	out := map[string]float64{}
 	for _, b := range raw {
-		if v := atof(b.Available); v > 0 {
-			out[strings.ToUpper(b.Currency)] = v
+		avail, locked := atof(b.Available), atof(b.Locked)
+		if avail > 0 {
+			out[strings.ToUpper(b.Currency)] = avail
+		}
+		// Record every asset that holds anything, including one whose balance is
+		// entirely locked in resting orders — that row is exactly the case the
+		// available-only view cannot see. Non-blocking and downsampled inside
+		// equity.Emit, so this stays free on the quoting path.
+		if avail > 0 || locked > 0 {
+			equity.Emit(equity.Snapshot{
+				Venue: equity.VenueGateSpot, Asset: strings.ToUpper(b.Currency), TakenAt: now,
+				// Spot has no mark-to-market, so Unrealized stays 0; the venue
+				// column is what marks that as "not applicable", not "unread".
+				Free: avail, Total: avail + locked,
+				Source: "GET /spot/accounts",
+			})
 		}
 	}
 	return out, nil

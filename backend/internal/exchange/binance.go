@@ -23,6 +23,7 @@ import (
 
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
+	"quanty_trade/internal/equity"
 	"quanty_trade/internal/models"
 	"quanty_trade/internal/secure"
 )
@@ -78,7 +79,7 @@ type BinanceExchange struct {
 
 	usdmAvailMu    sync.Mutex
 	usdmAvailExp   map[uint]time.Time
-	usdmAvailCache map[uint]float64
+	usdmAvailCache map[uint]USDMBalance
 
 	// per-symbol market-data float cache (oi/funding/ls), keyed "kind:SYM"
 	marketMu       sync.Mutex
@@ -153,7 +154,7 @@ func NewBinanceExchange() *BinanceExchange {
 	ex.acctKeyByOwner = make(map[uint]string)
 	ex.positionsRefreshLock = make(map[string]*sync.Mutex)
 	ex.usdmAvailExp = make(map[uint]time.Time)
-	ex.usdmAvailCache = make(map[uint]float64)
+	ex.usdmAvailCache = make(map[uint]USDMBalance)
 	ex.marketCache = make(map[string]float64)
 	ex.marketCacheExp = make(map[string]time.Time)
 	ex.rateLimitWeight1m = 1200 // sensible default; will be overridden by exchangeInfo
@@ -246,9 +247,48 @@ func (b *BinanceExchange) LastPrice(symbol string) (float64, error) {
 	return px, nil
 }
 
+// USDMBalance is one USD-M account reading, as reported by /fapi/v2/balance.
+//
+// All three fields arrive in the SAME response. Until 台账 #42 only Available was
+// decoded and the other two were dropped on the floor — which is why every equity
+// question had to be answered by back-solving from fill notionals instead of by
+// reading the number the exchange had already sent us.
+//
+// Deliberately NOT a computed "equity" field: wallet equity is Wallet+Unrealized,
+// and that sum belongs at query time next to every other venue's, not baked into
+// a struct here where it would become a second source of truth.
+type USDMBalance struct {
+	// Available is availableBalance: what can back a NEW order right now.
+	Available float64
+	// Wallet is balance: the wallet, INCLUDING margin already posted against open
+	// positions. Wallet-Available is therefore roughly the margin in use — the
+	// answer to "we have money, why was the order rejected".
+	Wallet float64
+	// Unrealized is crossUnPnl: mark-to-market on open cross positions. It moves
+	// every tick and can be negative; it is what makes Wallet alone not equity.
+	Unrealized float64
+}
+
 func (b *BinanceExchange) USDMAvailableUSDT(ownerID uint) (float64, error) {
+	bal, err := b.usdmBalanceUSDT(ownerID)
+	return bal.Available, err
+}
+
+// USDMWalletEquity returns the full USD-M reading (available + wallet +
+// unrealized) for the same cost as USDMAvailableUSDT — same endpoint, same 5s
+// cache, no extra call and no extra API permission. It exists so a caller that
+// needs equity rather than spendable balance is not forced to re-derive it.
+func (b *BinanceExchange) USDMWalletEquity(ownerID uint) (USDMBalance, error) {
+	return b.usdmBalanceUSDT(ownerID)
+}
+
+// usdmBalanceUSDT fetches (or serves from the 5s cache) the USDT row of
+// /fapi/v2/balance. Behaviour is unchanged from the original
+// USDMAvailableUSDT — including returning (zero, nil) when the account has no
+// USDT row at all — except that it now keeps all three fields instead of one.
+func (b *BinanceExchange) usdmBalanceUSDT(ownerID uint) (USDMBalance, error) {
 	if b.market != "usdm" {
-		return 0, fmt.Errorf("not usdm")
+		return USDMBalance{}, fmt.Errorf("not usdm")
 	}
 
 	now := time.Now()
@@ -262,34 +302,57 @@ func (b *BinanceExchange) USDMAvailableUSDT(ownerID uint) (float64, error) {
 
 	cred, err := b.getCred(ownerID)
 	if err != nil {
-		return 0, err
+		return USDMBalance{}, err
 	}
 	body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v2/balance", nil)
 	if err != nil {
-		return 0, err
+		return USDMBalance{}, err
 	}
+	// balance and crossUnPnl were always in this payload; #42's fix is just
+	// catching them. Adding fields to the decode costs nothing at runtime.
 	var raw []struct {
 		Asset            string `json:"asset"`
 		AvailableBalance string `json:"availableBalance"`
+		Balance          string `json:"balance"`
+		CrossUnPnl       string `json:"crossUnPnl"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return 0, err
+		return USDMBalance{}, err
 	}
 	for _, r := range raw {
 		if strings.EqualFold(r.Asset, "USDT") {
-			v, _ := strconv.ParseFloat(strings.TrimSpace(r.AvailableBalance), 64)
+			v := USDMBalance{
+				Available:  atofTrim(r.AvailableBalance),
+				Wallet:     atofTrim(r.Balance),
+				Unrealized: atofTrim(r.CrossUnPnl),
+			}
 			b.usdmAvailMu.Lock()
 			b.usdmAvailCache[ownerID] = v
 			b.usdmAvailExp[ownerID] = time.Now().Add(5 * time.Second)
 			b.usdmAvailMu.Unlock()
+			// Record it. Emitted only on a FRESH read, never on a cache hit, so
+			// TakenAt is the instant the venue actually reported this. Non-blocking
+			// and downsampled inside equity.Emit; a dead sink costs nothing here.
+			equity.Emit(equity.Snapshot{
+				Venue: equity.VenueBinanceUSDM, Asset: "USDT", TakenAt: time.Now(),
+				Free: v.Available, Total: v.Wallet, Unrealized: v.Unrealized,
+				Source: "GET /fapi/v2/balance",
+			})
 			return v, nil
 		}
 	}
 	b.usdmAvailMu.Lock()
-	b.usdmAvailCache[ownerID] = 0
+	b.usdmAvailCache[ownerID] = USDMBalance{}
 	b.usdmAvailExp[ownerID] = time.Now().Add(5 * time.Second)
 	b.usdmAvailMu.Unlock()
-	return 0, nil
+	return USDMBalance{}, nil
+}
+
+// atofTrim parses an exchange-supplied decimal string, tolerating padding.
+// A malformed field yields 0, matching the original behaviour.
+func atofTrim(s string) float64 {
+	v, _ := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	return v
 }
 
 func (b *BinanceExchange) SetUserCredentials(ownerID uint, apiKey, apiSecret string, testnet bool) {
