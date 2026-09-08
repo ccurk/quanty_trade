@@ -58,24 +58,46 @@ CREATE TABLE IF NOT EXISTS markout_fills (
     mid_at_fill_ts      DATETIME(3)     DEFAULT NULL,
     mid_at_fill_lag_ms  BIGINT          DEFAULT NULL,
 
-    -- 每个 horizon 的原始证据：用到的中价 + 由它算出的 markout + 采样滞后。
+    -- 每个 horizon 的原始证据：用到的中价 + 由它算出的 markout + 采样滞后 + 陈旧标记。
     -- mid_* 必须来自【成交发生的那个所】；跨所中价会把基差整段折进 markout
     -- （台账 #7 的头号陷阱：ONG 实测中位基差 +37.9bps，足以淹掉整个信号）。
     -- lag_*_ms = 样本时刻 −（成交时刻 + horizon），恒 ≥ 0。
-    -- lag 大 = 行情稀疏，那一行实际测的是更长的时间尺度 —— 这是质量过滤器，
-    -- 不是装饰。resolveLocked 对样本有多晚【不设上限】，断流 5 分钟后恢复的
-    -- 第一个中价会把 1s/5s/30s 一次性全结算掉。要干净样本就按 lag 卡。
+    --
+    -- 【样本陈旧度上限】marketmaker.maxSampleLag = max(2s, horizon/4)
+    --   → 1s 和 5s 卡 2000ms，30s 卡 7500ms。
+    -- 为什么要有：resolveLocked 取"target 之后的第一个样本"，原本对它有多晚不设上限。
+    -- 行情断流 5 分钟后恢复的第一个中价同时 ≥ 三个 target，会把 1s/5s/30s 用【同一个
+    -- 5 分钟后的价】一次性结算 —— 三个数完全相同、却分别叫 1s/5s/30s markout，
+    -- 和真样本躺在同一列里，事后分不出来。数字没算错，错在没标它是什么条件下产生的。
+    -- 下限 2s = 两个 refresh_ms(默认 1000)，即容忍恰好一次漏采；
+    -- 上限 h/4 = 长 horizon 最多被拉长 25%（30s 实测窗口 ≤ 37.5s）。
+    --
+    -- 超上限的那一档：证据照落（mid_*、lag_*_ms 有值，stale_* = 1），
+    -- 但 markout_bps_* 写 NULL。三个后果都是有意的：
+    --   * AVG(markout_bps_5s) —— 所有人打的第一条查询 —— 默认就是对的（AVG 跳过 NULL）；
+    --   * SUM(stale_5s) 数得出【扔掉了多少】。静默丢弃就数不出来了，而
+    --     "这个品种 5s 样本少"和"5s 大半被断流吃掉"是相反的结论；
+    --   * lag_*_ms 仍在行上，想更严就在查询期再切一刀（WHERE lag_1s_ms < 500）。
+    --     代码里那条线是【可信底线】，不是最终口径。
     mid_1s              DOUBLE          DEFAULT NULL,
     markout_bps_1s      DOUBLE          DEFAULT NULL,
     lag_1s_ms           BIGINT          DEFAULT NULL,
+    stale_1s            TINYINT(1)      DEFAULT NULL,
     mid_5s              DOUBLE          DEFAULT NULL,
     markout_bps_5s      DOUBLE          DEFAULT NULL,
     lag_5s_ms           BIGINT          DEFAULT NULL,
+    stale_5s            TINYINT(1)      DEFAULT NULL,
     mid_30s             DOUBLE          DEFAULT NULL,
     markout_bps_30s     DOUBLE          DEFAULT NULL,
     lag_30s_ms          BIGINT          DEFAULT NULL,
+    stale_30s           TINYINT(1)      DEFAULT NULL,
 
-    -- complete=0：行情断流，超时前没采齐。这类行【保留】而不是丢弃 ——
+    -- complete=1：三个 horizon 【全都产出了可用的 markout】。所以干净样本 = complete=1，
+    -- 一句话就够。complete=0 有两种成因，落库后分得开、且结论相反：
+    --   * 那个 horizon 从头到尾没样本（行情断了不回来）→ mid_* = 0；
+    --   * 有样本但太晚（超过上限）                     → mid_* > 0 且 stale_* = 1。
+    -- horizons_done = 【可用】的 horizon 数（0..3），不是采到样本的数量。
+    -- 这类行【保留】而不是丢弃 ——
     -- "样本少"和"我们没记上"会导出相反的结论，只有落了行才分得开。
     complete            TINYINT(1)      DEFAULT NULL,
     horizons_done       BIGINT          DEFAULT NULL,
@@ -108,13 +130,13 @@ CREATE TABLE IF NOT EXISTS markout_fills (
 --   定长：id 8 + (fill_px,amount,fee_bps) 3×8 + (mid/markout ×3 horizon) 6×8
 --         + (lag ×3) 3×8 + mid_at_fill 8 + mid_at_fill_lag_ms 8
 --         + DATETIME(3) ×5 (fill_ts, mid_at_fill_ts, resolved_at, created_at) 4×7
---         + complete 1 + horizons_done 8 + param_version_id 8      ≈ 165 B
+--         + complete 1 + stale_* 3×1 + horizons_done 8 + param_version_id 8 ≈ 168 B
 --   变长（utf8mb4，按实际内容）：exchange 5 + symbol 9 + fill_id 11
 --         + side 5 + param_hash 65                                  ≈  95 B
---   数据行 ≈ 260 B（含 InnoDB 行头）
+--   数据行 ≈ 265 B（含 InnoDB 行头；三个 stale_* 只加 3 B，不建索引）
 --   二级索引 6 个，每条 = 索引列 + 主键 8 + 开销：唯一键 ~48、param_hash ~88、
 --   其余 4 个各 ~25~30                                              ≈ 250 B
---   合计 ≈ 510 B/行；InnoDB 页填充率与 B 树分裂留白按 1.4× 计
+--   合计 ≈ 515 B/行；InnoDB 页填充率与 B 树分裂留白按 1.4× 计
 --   → 规划值 **≈ 700 B/行**
 --
 -- 一天多少行 = 一天多少笔成交（一笔成交一行，买卖两条腿都算）。
@@ -142,27 +164,52 @@ CREATE TABLE IF NOT EXISTS markout_fills (
 -- 下面这段与 markoutdb 的 TestPersistedRowIsRecheckableInPureSQL 是同一条，那里跑过。
 --
 -- 期望结果：0 行。任何非 0 都说明那些行本身坏了，不要拿去下判断。
+-- markout_bps_1s IS NOT NULL 是必须的：陈旧的那一档故意写 NULL（mid_1s 仍有值），
+-- 那不是"对不上"，是"这一档没有可用的 markout"。
 SELECT COUNT(*) AS mismatched_rows
 FROM markout_fills
 WHERE mid_1s > 0
+  AND markout_bps_1s IS NOT NULL
   AND ABS((CASE WHEN side = 'sell' THEN -1 ELSE 1 END)
           * (mid_1s - fill_px) / fill_px * 10000 - markout_bps_1s) > 1e-6;
 -- 5s / 30s 同理，把 mid_1s/markout_bps_1s 换成对应列即可。
+--
+-- 配套的第二条：NULL 和 stale 必须是同一件事的两面（写入端由 markoutdb 保证）。
+-- 期望结果：0 行。非 0 说明落库端把标记和值写岔了。
+SELECT COUNT(*) AS flag_value_disagreements
+FROM markout_fills
+WHERE (stale_1s  = 1 AND markout_bps_1s  IS NOT NULL)
+   OR (stale_5s  = 1 AND markout_bps_5s  IS NOT NULL)
+   OR (stale_30s = 1 AND markout_bps_30s IS NOT NULL)
+   OR (stale_1s  = 0 AND mid_1s  > 0 AND markout_bps_1s  IS NULL)
+   OR (stale_5s  = 0 AND mid_5s  > 0 AND markout_bps_5s  IS NULL)
+   OR (stale_30s = 0 AND mid_30s > 0 AND markout_bps_30s IS NULL);
 
 -- ---------------------------------------------------------------------------
 -- 4) 主查询：逐 symbol × 腿 × 参数版本的 markout（这就是台账 #7 那张表的线上版）
 -- ---------------------------------------------------------------------------
--- 三个刻意的写法：
---   * WHERE complete = 1 AND lag_30s_ms < 2000：只用采齐且样本不陈旧的行；
+-- 四个刻意的写法：
+--   * 【不再需要】手写 lag 阈值：陈旧样本的 markout_bps_* 已经是 NULL，AVG 天然跳过它。
+--     原来这里写 `AND lag_30s_ms < 2000` 是因为代码不设上限，只能在查询期补救 ——
+--     那等于把口径交给每个写查询的人，谁忘了写谁的数就是脏的。现在口径在写入端。
+--   * COUNT(*) 与 COUNT(markout_bps_*) 并列：前者是这段时间有多少笔，
+--     后者是每个尺度上真正能用的有多少笔。两个数差很多 = 行情喂得不够密，
+--     此时哪怕均值好看也别下结论（分母不同，跨 horizon 不可直接比较）。
 --   * 净值在查询里现算（markout − fee_bps），不落库 ——
 --     以后费率认知变了，改这一句就行，不会出现第二个"真相来源"；
 --   * 按 param_version_id 分组：换了参数就是另一组样本，混在一起平均没有意义。
+--
+-- 这里【不】加 complete = 1：那会把"30s 陈旧但 1s 好"的行整行扔掉，
+-- 而那一行的 1s 是好数据。按列各自取用比按行一刀切留下的样本多，且同样干净。
 SELECT
     m.symbol,
     m.side,
     m.param_version_id,
     v.label                              AS param_label,
     COUNT(*)                             AS fills,
+    COUNT(m.markout_bps_1s)              AS n_1s,      -- 各尺度真正可用的笔数
+    COUNT(m.markout_bps_5s)              AS n_5s,
+    COUNT(m.markout_bps_30s)             AS n_30s,
     AVG(m.markout_bps_1s)                AS mk_1s,
     AVG(m.markout_bps_5s)                AS mk_5s,
     AVG(m.markout_bps_30s)               AS mk_30s,
@@ -171,9 +218,7 @@ SELECT
         * (CASE WHEN m.side = 'sell' THEN -1 ELSE 1 END)) AS edge_at_fill_bps
 FROM markout_fills m
 LEFT JOIN strategy_param_versions v ON v.id = m.param_version_id
-WHERE m.complete = 1
-  AND m.lag_30s_ms < 2000
-  AND m.fill_ts >= NOW() - INTERVAL 7 DAY
+WHERE m.fill_ts >= NOW() - INTERVAL 7 DAY
 GROUP BY m.symbol, m.side, m.param_version_id, v.label
 ORDER BY m.symbol, m.side;
 
@@ -184,14 +229,30 @@ ORDER BY m.symbol, m.side;
 SELECT DATE(fill_ts)                                   AS day,
        COUNT(*)                                        AS rows_written,
        SUM(complete = 0)                               AS incomplete_rows,
-       SUM(lag_30s_ms >= 2000)                         AS stale_sample_rows,
+       -- 采到样本但太晚，被判不可用的（逐尺度分开数：它们的阈值不同）
+       SUM(stale_1s  = 1)                              AS stale_1s_rows,
+       SUM(stale_5s  = 1)                              AS stale_5s_rows,
+       SUM(stale_30s = 1)                              AS stale_30s_rows,
+       -- 从头到尾就没有样本的（和上面三个是不同的缺口，别混着看）
+       SUM(mid_30s = 0 OR mid_30s IS NULL)             AS unsampled_30s_rows,
        SUM(param_version_id IS NULL)                   AS unversioned_rows
 FROM markout_fills
 GROUP BY DATE(fill_ts)
 ORDER BY day DESC;
 -- rows_written 恒为 0 → 引擎没在落（表名/重启/enabled 三选一没到位）。
--- incomplete_rows 或 stale_sample_rows 占比高 → 行情样本喂得不够密，
+-- incomplete_rows 或 stale_*_rows 占比高 → 行情样本喂得不够密，
 --   markout 的时间尺度不可信，先修行情再谈结论。
+-- ⚠️ 如果 stale_1s_rows / stale_5s_rows 突然接近 100%，按顺序查这两件事：
+--    a) refresh_ms —— 陈旧下限 2s 是按 refresh_ms=1000（config.go:120 的默认值）定的，
+--       调到 2000 以上就会大面积误杀这两档；
+--    b) 本机时钟 —— lag = 样本时刻(【我们的】时钟) − (fill_ts(【交易所的】时钟) + horizon)。
+--       两边的钟差会原封不动进到 lag 里：本机慢 2s，所有 lag 就整体 +2s，
+--       1s/5s 两档会集体判陈旧，而行情其实一直好好的。
+--       下限取 2s 而不是贴着 refresh_ms 取 1.2s，一半就是为了吃掉这点钟差。
+--    这两条是本表设计里仅有的隐藏耦合，所以它们被做成"数得出来"的——而不是靠人记得。
+--    自查：SELECT AVG(mid_at_fill_lag_ms) FROM markout_fills WHERE fill_ts >= NOW() - INTERVAL 1 HOUR;
+--    它衡量的是同一个钟差（成交时刻 − 成交前最后一个样本），正常应在 0~refresh_ms 量级；
+--    若它也整体偏大，问题在时钟/轮询而不在行情。
 -- unversioned_rows > 0 → 参数版本登记失败，仍可按 param_hash 归组。
 --
 -- 5.2 参数版本长什么样（做市的版本挂在合成 strategy_id 上，形如 mm:gate:ONG_USDT）：

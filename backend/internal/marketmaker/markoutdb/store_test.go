@@ -131,13 +131,8 @@ func TestPersistedRowIsRecheckableInPureSQL(t *testing.T) {
 		t.Fatalf("写入失败: %v", err)
 	}
 
-	const recheck = `
-		SELECT COUNT(*) FROM markout_fills
-		WHERE mid_1s > 0 AND ABS(
-		  (CASE WHEN side = 'sell' THEN -1 ELSE 1 END)
-		  * (mid_1s - fill_px) / fill_px * 10000 - markout_bps_1s) > 1e-6`
 	var mismatched int64
-	if err := db.Raw(recheck).Scan(&mismatched).Error; err != nil {
+	if err := db.Raw(recheckSQL).Scan(&mismatched).Error; err != nil {
 		t.Fatalf("复核 SQL 跑不通: %v", err)
 	}
 	if mismatched != 0 {
@@ -147,6 +142,92 @@ func TestPersistedRowIsRecheckableInPureSQL(t *testing.T) {
 	db.Model(&models.MarkoutFill{}).Count(&total)
 	if total != 2 {
 		t.Fatalf("应有 2 行(买/卖各一),得到 %d", total)
+	}
+}
+
+// recheckSQL / flagCheckSQL 与 scripts/markout_persistence.sql §3 的两条是同一份口径。
+// markout_bps_1s IS NOT NULL 不可省:陈旧的那一档故意写 NULL,那不是"对不上"。
+const recheckSQL = `
+	SELECT COUNT(*) FROM markout_fills
+	WHERE mid_1s > 0 AND markout_bps_1s IS NOT NULL AND ABS(
+	  (CASE WHEN side = 'sell' THEN -1 ELSE 1 END)
+	  * (mid_1s - fill_px) / fill_px * 10000 - markout_bps_1s) > 1e-6`
+
+const flagCheckSQL = `
+	SELECT COUNT(*) FROM markout_fills
+	WHERE (stale_1s  = 1 AND markout_bps_1s  IS NOT NULL)
+	   OR (stale_5s  = 1 AND markout_bps_5s  IS NOT NULL)
+	   OR (stale_30s = 1 AND markout_bps_30s IS NOT NULL)
+	   OR (stale_1s  = 0 AND mid_1s  > 0 AND markout_bps_1s  IS NULL)
+	   OR (stale_5s  = 0 AND mid_5s  > 0 AND markout_bps_5s  IS NULL)
+	   OR (stale_30s = 0 AND mid_30s > 0 AND markout_bps_30s IS NULL)`
+
+// TestStaleHorizonPersistsAsNullWithFlag 锁住本轮的核心口径:
+// 采样太晚的 horizon【留证据、不留数】。
+//
+// 三件事必须同时成立,少一件这张表就退回"数字混在一起分不出"的状态:
+//  1. markout_bps_* 是 NULL —— 于是 AVG(markout_bps_5s)(所有人打的第一条查询)
+//     默认就只算好样本,不需要谁记得加 WHERE;
+//  2. mid_* / lag_*_ms 照样有值 —— 证据不丢,想用别的阈值重切随时可以;
+//  3. stale_* = 1 —— "扔掉了多少"数得出来。静默丢弃的话这个数永远拿不到,
+//     而"这个品种样本少"和"样本大半被断流吃了"是相反的结论。
+func TestStaleHorizonPersistsAsNullWithFlag(t *testing.T) {
+	db := testDB(t)
+	s := &Store{db: db, params: map[string]paramRef{}}
+
+	rec := sampleRecord()
+	rec.Complete = false
+	// 30s 那档样本晚了 20s(上限 7.5s):Bps 仍自洽,但不可用。
+	rec.Points[2].LagMs = 20000
+	rec.Points[2].Stale = true
+	if err := s.WriteMarkout(rec); err != nil {
+		t.Fatalf("陈旧记录仍必须落库(缺口本身是数据): %v", err)
+	}
+
+	var row models.MarkoutFill
+	if err := db.First(&row).Error; err != nil {
+		t.Fatalf("查表失败: %v", err)
+	}
+	if row.MarkoutBps30s != nil {
+		t.Fatalf("陈旧 horizon 的 markout 必须是 NULL,得到 %v", *row.MarkoutBps30s)
+	}
+	if !row.Stale30s {
+		t.Fatal("陈旧 horizon 必须打上 stale_30s 标记,否则事后数不出扔了多少")
+	}
+	if row.Mid30s != 201.00 || row.Lag30sMs != 20000 {
+		t.Fatalf("证据必须原样保留: mid_30s=%v lag_30s_ms=%d", row.Mid30s, row.Lag30sMs)
+	}
+	if row.MarkoutBps1s == nil || row.Stale1s || row.MarkoutBps5s == nil || row.Stale5s {
+		t.Fatal("准时的 1s/5s 两档不受影响,必须照常有值且不标 stale")
+	}
+	if row.HorizonsDone != 2 {
+		t.Fatalf("horizons_done 数的是【可用】的 horizon,应为 2,得到 %d", row.HorizonsDone)
+	}
+
+	// AVG 天然跳过 NULL:这就是"默认查询就是对的"这句话的可执行形式。
+	var n30 int64
+	db.Raw("SELECT COUNT(markout_bps_30s) FROM markout_fills").Scan(&n30)
+	if n30 != 0 {
+		t.Fatalf("COUNT(markout_bps_30s) 应为 0(唯一一行的 30s 不可用),得到 %d", n30)
+	}
+	var staleRows int64
+	db.Raw("SELECT SUM(stale_30s) FROM markout_fills").Scan(&staleRows)
+	if staleRows != 1 {
+		t.Fatalf("被剔除的样本数必须数得出来,SUM(stale_30s) 得到 %d", staleRows)
+	}
+	// 标记与值必须是同一件事的两面。
+	var disagreements int64
+	if err := db.Raw(flagCheckSQL).Scan(&disagreements).Error; err != nil {
+		t.Fatalf("标记一致性 SQL 跑不通: %v", err)
+	}
+	if disagreements != 0 {
+		t.Fatalf("有 %d 行的 stale_* 与 markout_bps_* 写岔了", disagreements)
+	}
+	// 陈旧行不能把复核查询带崩(NULL 参与比较不该被算成 mismatch)。
+	var mismatched int64
+	db.Raw(recheckSQL).Scan(&mismatched)
+	if mismatched != 0 {
+		t.Fatalf("复核查询在有陈旧行时应仍为 0,得到 %d", mismatched)
 	}
 }
 

@@ -92,19 +92,29 @@ func (s *Store) WriteMarkout(r marketmaker.MarkoutRecord) error {
 		MidAtFillTs:    r.MidAtFillTs,
 		MidAtFillLagMs: r.MidAtFillLagMs,
 		Complete:       r.Complete,
-		HorizonsDone:   len(r.Points),
 		ParamHash:      pref.hash, ParamVersionID: pref.id,
 		ResolvedAt: r.ResolvedAt,
 		CreatedAt:  time.Now(),
 	}
 	for _, p := range r.Points {
+		// A stale point keeps its evidence but writes NULL into markout_bps_*.
+		// Storing the number with only a flag beside it would leave
+		// AVG(markout_bps_5s) — the query everyone writes first — quietly wrong;
+		// dropping the point entirely would make "how many did we discard"
+		// uncountable. NULL + stale_* + lag_*_ms gives both.
+		var bps *float64
+		if !p.Stale {
+			v := p.Bps
+			bps = &v
+			row.HorizonsDone++
+		}
 		switch p.Horizon {
 		case "1s":
-			row.Mid1s, row.MarkoutBps1s, row.Lag1sMs = p.Mid, p.Bps, p.LagMs
+			row.Mid1s, row.MarkoutBps1s, row.Lag1sMs, row.Stale1s = p.Mid, bps, p.LagMs, p.Stale
 		case "5s":
-			row.Mid5s, row.MarkoutBps5s, row.Lag5sMs = p.Mid, p.Bps, p.LagMs
+			row.Mid5s, row.MarkoutBps5s, row.Lag5sMs, row.Stale5s = p.Mid, bps, p.LagMs, p.Stale
 		case "30s":
-			row.Mid30s, row.MarkoutBps30s, row.Lag30sMs = p.Mid, p.Bps, p.LagMs
+			row.Mid30s, row.MarkoutBps30s, row.Lag30sMs, row.Stale30s = p.Mid, bps, p.LagMs, p.Stale
 		}
 	}
 	return s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error

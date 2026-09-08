@@ -265,19 +265,14 @@ func TestIncompleteMarkoutIsStillRecorded(t *testing.T) {
 	}
 }
 
-// TestStaleSampleResolvesCompleteWithBigLag 记录一个【既有】行为,顺带说明
-// 为什么 lag 必须逐条落库。
+// TestStaleSampleKeepsEvidenceWithoutMarkout —— 断流恢复后的第一个中价,
+// 曾经会把 1s/5s/30s 用【同一个 5 分钟后的价】一次性结算掉:三个数完全相同、
+// 却分别叫 1s/5s/30s markout,在 Stats() 和表里都和真样本分不出来。
+// (旧测试 TestStaleSampleResolvesCompleteWithBigLag 把这个行为当"既有行为"钉住了。)
 //
-// resolveLocked 取的是"target 之后的第一个样本",对样本有多晚【不设上限】。
-// 于是行情断流 5 分钟后恢复的第一个中价,会同时把 1s/5s/30s 三个 horizon 全结算掉:
-// 这笔成交在 Stats() 里和一笔真的 30s 样本一模一样,分不出来。
-// (markout_test.go 里 TestStaleFillsAreDropped 的名字有误导:那笔并没有被丢弃,
-// 是被【用 5 分钟后的价】结算了,PendingCount 归零是因为它完成了。)
-//
-// 本轮不改这个判定 —— 那是测量口径变更,该由所有者拍板。这里做的是让它
-// 【可见】:每个 horizon 的 lag_*_ms 都落库,复核方加一句
-// `WHERE lag_30s_ms < 2000` 就能把这类样本剔掉。落库之前,这件事在事后完全不可查。
-func TestStaleSampleResolvesCompleteWithBigLag(t *testing.T) {
+// 现在的口径:超过 maxSampleLag 的 horizon 不产出 markout,但证据全部保留 ——
+// 这条测试同时锁住"不静默丢"和"不混着写"两头。
+func TestStaleSampleKeepsEvidenceWithoutMarkout(t *testing.T) {
 	sink := &captureSink{}
 	SetMarkoutSink(sink, 16)
 	defer SetMarkoutSink(nil, 0)
@@ -289,14 +284,69 @@ func TestStaleSampleResolvesCompleteWithBigLag(t *testing.T) {
 
 	waitFor(t, 2*time.Second, "记录落到 sink", func() bool { return len(sink.snapshot()) == 1 })
 	rec := sink.snapshot()[0]
-	if !rec.Complete || len(rec.Points) != 3 {
-		t.Fatalf("既有行为是三个 horizon 一次性结算,得到 complete=%v points=%d", rec.Complete, len(rec.Points))
+
+	// 【不静默丢】:这一笔仍然落库,三个 horizon 的证据一条不少。
+	if len(rec.Points) != 3 {
+		t.Fatalf("三个 horizon 的证据都要留下(不然事后数不出扔了多少),得到 %d 个点", len(rec.Points))
+	}
+	// 【不混着写】:全部标记为陈旧,且这一行不算完整样本。
+	if rec.Complete {
+		t.Fatal("没有一个 horizon 产出可用 markout,complete 必须为 false")
 	}
 	for _, p := range rec.Points {
-		if p.LagMs < 4*60*1000 {
-			t.Fatalf("%s 的采样滞后应有数分钟,得到 %dms —— lag 落不下来这类样本就无法剔除",
-				p.Horizon, p.LagMs)
+		if !p.Stale {
+			t.Fatalf("%s 的样本晚了 %dms,必须标 Stale", p.Horizon, p.LagMs)
 		}
+		if p.LagMs < 4*60*1000 {
+			t.Fatalf("%s 的采样滞后应有数分钟,得到 %dms", p.Horizon, p.LagMs)
+		}
+		if p.Mid != 100.05 {
+			t.Fatalf("%s 用到的中价必须原样留下,得到 %v", p.Horizon, p.Mid)
+		}
+	}
+	// 陈旧点自身仍要自洽,否则 Verify 会把整行否掉、连证据一起丢。
+	if err := rec.Verify(1e-9); err != nil {
+		t.Fatalf("陈旧点的 Bps 与它自己的原始量必须仍然对得上: %v", err)
+	}
+}
+
+// TestMixedFreshAndStaleHorizonsOnOneRow:同一笔成交里,好的 horizon 照常产出,
+// 坏的只留证据。按【列】取用而不是按【行】一刀切,能多留下大量可用样本 ——
+// 这也是主查询不再写 `WHERE complete = 1` 的原因。
+func TestMixedFreshAndStaleHorizonsOnOneRow(t *testing.T) {
+	sink := &captureSink{}
+	SetMarkoutSink(sink, 16)
+	defer SetMarkoutSink(nil, 0)
+
+	tr := NewMarkoutTracker()
+	t0 := time.Now()
+	tr.RecordFill("gate", "ONG_USDT", "f-mixed", "buy", 100, 1, 20, t0)
+	tr.Observe("ONG_USDT", 100.01, t0.Add(1*time.Second))  // 1s: lag 0,好
+	tr.Observe("ONG_USDT", 100.02, t0.Add(5*time.Second))  // 5s: lag 0,好
+	tr.Observe("ONG_USDT", 100.03, t0.Add(50*time.Second)) // 30s: lag 20s > 7.5s,陈旧
+
+	waitFor(t, 2*time.Second, "记录落到 sink", func() bool { return len(sink.snapshot()) == 1 })
+	rec := sink.snapshot()[0]
+	if rec.Complete {
+		t.Fatal("30s 那档不可用,整行不算完整")
+	}
+	byHz := map[string]MarkoutPoint{}
+	for _, p := range rec.Points {
+		byHz[p.Horizon] = p
+	}
+	if byHz["1s"].Stale || byHz["5s"].Stale {
+		t.Fatalf("1s/5s 样本准时,不该被标陈旧: %+v", rec.Points)
+	}
+	if !byHz["30s"].Stale {
+		t.Fatalf("30s 样本晚了 %dms(上限 7500ms),必须标陈旧", byHz["30s"].LagMs)
+	}
+	// 内存统计侧的对应结果:1s/5s 各有一个可用样本,30s 一个都没有。
+	st := tr.Stats()
+	if st[0].FillsByHz["1s"] != 1 || st[0].FillsByHz["5s"] != 1 {
+		t.Fatalf("1s/5s 应各有 1 个可用样本,得到 %+v", st[0].FillsByHz)
+	}
+	if _, ok := st[0].FillsByHz["30s"]; ok {
+		t.Fatalf("30s 不该有可用样本,得到 %+v", st[0].FillsByHz)
 	}
 }
 

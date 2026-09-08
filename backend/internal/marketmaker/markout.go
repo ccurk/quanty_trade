@@ -32,6 +32,40 @@ import (
 //   30s —— 抓真实持仓成本;超过这个尺度就更像方向性风险而非做市质量
 var MarkoutHorizons = []time.Duration{time.Second, 5 * time.Second, 30 * time.Second}
 
+// maxSampleLag 是一个 horizon 能容忍的【采样滞后上限】。
+//
+// 为什么必须有上限:resolveLocked 取的是"target 时刻之后的第一个样本",原来对这个
+// 样本有多晚不设任何限制。于是行情断流 5 分钟后恢复的第一个中价,同时 ≥ 1s/5s/30s
+// 三个 target,会把三个 horizon【用同一个 5 分钟后的价】一次性结算掉 —— 三个数完全
+// 相同,却分别叫 1s/5s/30s markout,和真样本躺在同一张表的同一个字段里,事后分不出来。
+// 数字本身没算错,错在没有标出它是在什么条件下产生的。
+//
+// 取值 max(2s, h/4),两段各有各的理由:
+//
+//   - 下限 2s —— 样本由报价循环喂(engine.go 每轮一次 Observe),节奏是 refresh_ms
+//     (config.go:120,默认 1000)。健康时"target 之后的第一个样本"必落在一个 tick 内,
+//     lag ∈ [0,1s)。2s = 两个 tick,即【容忍恰好一次漏采】——
+//     FetchBookTicker 报错会 continue 掉一整轮 Observe,那是常态,不该判样本作废。
+//     连续漏两轮就说明行情真的断了,那个 horizon 的数不能再信。
+//
+//   - 上限 h/4 —— 长 horizon 按比例放宽:30s 允许滞后 7.5s,即实际测量窗口最长 37.5s,
+//     比名义尺度长 25%。若不按比例、一律卡 2s,断续行情下 30s 这档会被大量误杀,
+//     而它其实只被拉长了个位数百分比,是可用的。
+//
+// 1s / 5s 两档被下限盖住(0.25s / 1.25s 都 < 2s):那是 1s 采样栅格的物理下限,
+// 不是选择。想要更严的样本,用落库的 lag_*_ms 在查询期再切一刀
+// (`WHERE lag_1s_ms < 500`)—— 代码里这条线是"可信的底线",不是最终口径。
+//
+// ⚠️ 下限 2s 与 refresh_ms=1000 绑定。若把 refresh_ms 调到 2000 以上,1s/5s 会大面积
+// 判陈旧。这不会静默发生:每一笔都落 stale_* 标记,
+// scripts/markout_persistence.sql §5.1 的 stale_*_rows 会立刻鼓起来。
+func maxSampleLag(h time.Duration) time.Duration {
+	if lag := h / 4; lag > 2*time.Second {
+		return lag
+	}
+	return 2 * time.Second
+}
+
 // markoutBps 计算单笔成交在某个时点的 markout(bps)。
 //
 // 正 = 成交后价格朝对我们有利的方向走(买完涨了 / 卖完跌了)= 这笔成交是好的。
@@ -75,12 +109,17 @@ type midSample struct {
 
 type pendingFill struct {
 	row  MarkoutRow
-	left map[time.Duration]bool // 还没采到的 horizon
+	left map[time.Duration]bool // 还没了结的 horizon;了结即 delete,len==0 表示这笔可以出库
 	// at 记下【每个 horizon 实际用掉的那个中价样本】(值 + 它自己的时刻)。
 	// 只留 ByHorizon 的 bps 是不可复核的:第二个人拿到一个 -7.7bps 没法判断它是
 	// 真的价格走了,还是采到的样本晚了 20 秒。存下 mid 和样本时刻之后,落库那行
 	// 就能被独立重算(见 MarkoutRecord.Verify)。
 	at map[time.Duration]midSample
+	// stale 标记【采到了样本、但样本太晚】的 horizon(lag > maxSampleLag)。
+	// 这类 horizon 不进 ByHorizon —— 它算出来的数测的是另一个时间尺度,
+	// 叫它 "1s markout" 就是在撒谎。但样本本身留在 at 里照常落库:
+	// 静默丢弃会让"扔了多少"事后不可数,而那正是最该数的东西。
+	stale map[time.Duration]bool
 	// midAtFill 是【成交时刻】的执行所中价(取 FillTs 之前最后一个样本)。
 	// markout 本身用不到它,但少了它就无法把"成交价本身好不好"和"成交之后价格
 	// 往哪走"分开:(midAtFill − fillPx) 是这笔拿到的边,后面三个 horizon 是它
@@ -161,6 +200,7 @@ func (t *MarkoutTracker) RecordFill(exchange, symbol, fillID, side string, px, a
 		},
 		left:      left,
 		at:        map[time.Duration]midSample{},
+		stale:     map[time.Duration]bool{},
 		midAtFill: t.sampleAtOrBeforeLocked(symbol, ts),
 	})
 }
@@ -200,26 +240,45 @@ func (t *MarkoutTracker) resolveLocked(symbol string, now time.Time) {
 			if idx >= len(samples) {
 				continue // 还没有覆盖到该时点的样本,下轮再说
 			}
-			pf.row.ByHorizon[horizonKey(h)] = markoutBps(pf.row.Side, pf.row.FillPx, samples[idx].mid)
+			// 这个 horizon 到此为止,无论样本好坏:后面只会来更晚的样本,再等一定更差。
 			pf.at[h] = samples[idx]
-			pf.left[h] = false
+			delete(pf.left, h)
+			if samples[idx].ts.Sub(target) > maxSampleLag(h) {
+				// 样本太晚。证据(mid + 时刻 + lag)照样带走落库,好让"扔了多少"
+				// 数得出来;但【不产出 markout】—— 拿一个更长尺度的数冒充这个
+				// horizon,会让这一列再也无法被信任(见 maxSampleLag 注释)。
+				pf.stale[h] = true
+				continue
+			}
+			pf.row.ByHorizon[horizonKey(h)] = markoutBps(pf.row.Side, pf.row.FillPx, samples[idx].mid)
 		}
-		if len(pf.row.ByHorizon) == len(MarkoutHorizons) {
+		if len(pf.left) == 0 {
 			t.done = append(t.done, pf.row)
 			if len(t.done) > t.maxDone {
 				t.done = t.done[len(t.done)-t.maxDone:]
 			}
+			// Complete 现在的含义是【三个 horizon 都拿到了可用的 markout】,
+			// 而不只是"都碰到过样本"。全陈旧的那一笔照样落库(证据在,markout 为空),
+			// 只是 complete=0 —— 于是 SQL 里一句 WHERE complete=1 就是干净样本。
+			//
 			// 落库(异步、非阻塞、失败即丢)。内存里的 t.done 是滚动窗口,重启即失 ——
 			// 这条 enqueue 才是"能事后回溯"的那份。绝不能在这里阻塞:调用链是
 			// engine.go 的报价循环 → Observe → resolveLocked,且此刻还持着 t.mu。
-			emitMarkoutRecord(pf, now, true)
-			continue // 已完成,不再 keep
+			emitMarkoutRecord(pf, now, len(pf.row.ByHorizon) == len(MarkoutHorizons))
+			continue // 已了结,不再 keep
 		}
-		// 超过最长 horizon 还没采齐(行情断流),丢弃避免堆积
+		// 超时兜底:清出 pending,避免行情长期不来时无限堆积。
+		//
+		// 加了 maxSampleLag 之后,这条分支的含义变得很窄也很明确:只要有【任何】样本
+		// 落在 target 之后,上面那段就会当场了结该 horizon(好样本给 markout,坏样本
+		// 标 stale)。所以走到这里 = 那个 horizon 至今【一个样本都没有】,
+		// 即行情从成交后就没再回来过。这和"样本来了但太晚"是两种不同的缺口,
+		// 落库后分别是 mid_*=0(从没采到)和 stale_*=1(采到了但太晚)。
+		//
+		// 两种都要落一条(Complete=false)。原来这里是静默丢弃,于是"行情断流吃掉了
+		// 多少笔成交"事后完全不可见 —— 而那正好是最该看见的一类缺口:样本少到底是
+		// 没成交,还是我们没记上,两者结论相反。
 		if now.Sub(pf.row.FillTs) > MarkoutHorizons[len(MarkoutHorizons)-1]+2*time.Minute {
-			// 采不齐的也要落一条(Complete=false)。原来这里是静默丢弃,于是
-			// "行情断流吃掉了多少笔成交"在事后完全不可见 —— 而那正好是最该看见的
-			// 一类缺口:样本少到底是没成交,还是我们没记上,两者结论相反。
 			emitMarkoutRecord(pf, now, false)
 			continue
 		}
@@ -242,9 +301,14 @@ func horizonKey(h time.Duration) string {
 
 // MarkoutStat 是一个品种的汇总 —— 判断"要不要继续做这个品种"就看这张表。
 type MarkoutStat struct {
-	Exchange   string             `json:"exchange"`
-	Symbol     string             `json:"symbol"`
-	Fills      int                `json:"fills"`
+	Exchange string `json:"exchange"`
+	Symbol   string `json:"symbol"`
+	Fills    int    `json:"fills"` // 了结的成交笔数(含 horizon 被判陈旧的)
+	// FillsByHz 是每个 horizon【实际可用】的样本数,可以小于 Fills:
+	// 采样滞后超过 maxSampleLag 的 horizon 不产出 markout。
+	// 没有它,均值的分母就是错的 —— 那是"陈旧样本混进来分不出"的同一个病的另一面。
+	// Fills 与 FillsByHz 的差值 = 这个尺度上被剔掉了多少笔。
+	FillsByHz  map[string]int     `json:"fills_by_horizon"`
 	AvgByHz    map[string]float64 `json:"avg_by_horizon"`     // 毛 markout
 	AvgNetByHz map[string]float64 `json:"avg_net_by_horizon"` // 扣单腿手续费
 }
@@ -256,6 +320,7 @@ func (t *MarkoutTracker) Stats() []MarkoutStat {
 
 	type acc struct {
 		n      int
+		cnt    map[string]int // 每个 horizon 有多少笔真的产出了 markout
 		sum    map[string]float64
 		sumNet map[string]float64
 		ex     string
@@ -264,11 +329,13 @@ func (t *MarkoutTracker) Stats() []MarkoutStat {
 	for _, r := range t.done {
 		a := byKey[r.Symbol]
 		if a == nil {
-			a = &acc{sum: map[string]float64{}, sumNet: map[string]float64{}, ex: r.Exchange}
+			a = &acc{cnt: map[string]int{}, sum: map[string]float64{},
+				sumNet: map[string]float64{}, ex: r.Exchange}
 			byKey[r.Symbol] = a
 		}
 		a.n++
 		for k, v := range r.ByHorizon {
+			a.cnt[k]++
 			a.sum[k] += v
 			a.sumNet[k] += v - r.FeeBps
 		}
@@ -277,12 +344,14 @@ func (t *MarkoutTracker) Stats() []MarkoutStat {
 	out := make([]MarkoutStat, 0, len(byKey))
 	for sym, a := range byKey {
 		st := MarkoutStat{Exchange: a.ex, Symbol: sym, Fills: a.n,
-			AvgByHz: map[string]float64{}, AvgNetByHz: map[string]float64{}}
-		for k, v := range a.sum {
-			st.AvgByHz[k] = v / float64(a.n)
-		}
-		for k, v := range a.sumNet {
-			st.AvgNetByHz[k] = v / float64(a.n)
+			FillsByHz: map[string]int{},
+			AvgByHz:   map[string]float64{}, AvgNetByHz: map[string]float64{}}
+		// 分母是【该 horizon 的可用样本数】,不是成交笔数:陈旧样本已经不进
+		// ByHorizon,再拿总笔数去除就等于把它们当 0bps 掺进均值。
+		for k, c := range a.cnt {
+			st.FillsByHz[k] = c
+			st.AvgByHz[k] = a.sum[k] / float64(c)
+			st.AvgNetByHz[k] = a.sumNet[k] / float64(c)
 		}
 		out = append(out, st)
 	}

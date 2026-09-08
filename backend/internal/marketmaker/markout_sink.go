@@ -46,7 +46,18 @@ type MarkoutPoint struct {
 	LagMs    int64     `json:"lag_ms"`
 	// Bps 是落盘时算好的 markout,= markoutBps(Side, FillPx, Mid)。存它是为了让
 	// SQL 侧不用重算就能聚合;它与上面三个原始量的一致性由 Verify() 守住。
+	// Stale=true 时它仍然自洽(所以 Verify 照常能查),但【不该被当作这个 horizon
+	// 的 markout 用】—— 落库时那一列写 NULL,见 Stale。
 	Bps float64 `json:"bps"`
+	// Stale=true:样本来得太晚(LagMs > maxSampleLag(horizon)),Bps 实际测的是一个
+	// 更长的时间尺度。这类点【保留证据、不产出数】:落库时 mid/sample_ts/lag 照写、
+	// markout_bps_* 写 NULL、stale_* 写 1。
+	//
+	// 为什么不静默丢:丢了就没人知道丢了多少,而"这个品种 30s 样本少"和
+	// "这个品种 30s 大半被断流吃掉了"是两个相反的结论。
+	// 为什么不混着写:AVG(markout_bps_5s) 是所有人都会打的第一条查询,
+	// 它必须默认就是对的 —— NULL 天然被 AVG 跳过,而计数仍可由 SUM(stale_5s) 得到。
+	Stale bool `json:"stale"`
 }
 
 // MarkoutRecord 是一笔成交的 markout 全画像,一次成交一条,不可变。
@@ -71,7 +82,11 @@ type MarkoutRecord struct {
 	MidAtFillLagMs int64     `json:"mid_at_fill_lag_ms"` // FillTs − MidAtFillTs,≥0
 	// Points 按 MarkoutHorizons 的顺序;Complete=false 时可能缺项。
 	Points []MarkoutPoint `json:"points"`
-	// Complete=false 表示行情断流,这笔在超时前没采齐所有 horizon。
+	// Complete=true 表示三个 horizon 【全都产出了可用的 markout】。
+	// false 有两种成因,落库后可以分开数:
+	//   * 某个 horizon 从头到尾没有样本(行情断流不回来)→ mid_*=0;
+	//   * 有样本但太晚(lag > maxSampleLag)          → mid_*>0 且 stale_*=1。
+	// 两者结论相反(前者是没数据,后者是数据不能用这个名字),所以不能混成一个。
 	// 保留而不是丢弃:缺口本身是数据,统计时可以剔,但必须看得见。
 	Complete bool `json:"complete"`
 	// ResolvedAt 是最后一个 horizon 结算(或超时判定)的时刻,用于排查落库延迟。
@@ -203,7 +218,11 @@ func emitMarkoutRecord(pf *pendingFill, now time.Time, complete bool) {
 			Mid:      s.mid,
 			SampleTs: s.ts,
 			LagMs:    s.ts.Sub(pf.row.FillTs.Add(h)).Milliseconds(),
-			Bps:      pf.row.ByHorizon[horizonKey(h)],
+			// 直接由样本重算,而不是读 pf.row.ByHorizon:陈旧的 horizon 不进
+			// ByHorizon(那是有意的),但它的点仍要自洽,否则 Verify 会把整行否掉、
+			// 连证据一起丢。调的是同一个 markoutBps,不存在第二份公式。
+			Bps:   markoutBps(pf.row.Side, pf.row.FillPx, s.mid),
+			Stale: pf.stale[h],
 		})
 	}
 	markoutEnqueued.Add(1)
