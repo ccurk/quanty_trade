@@ -84,6 +84,36 @@ func findStrategyInstanceForSymbol(instRows []models.StrategyInstance, sym strin
 	return nil
 }
 
+// findStrategyInstanceByID looks up an owner's instance row by id.
+func findStrategyInstanceByID(instRows []models.StrategyInstance, id string) *models.StrategyInstance {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	for i := range instRows {
+		if instRows[i].ID == id {
+			return &instRows[i]
+		}
+	}
+	return nil
+}
+
+// instanceRowMayAdopt reports whether an instance is live enough to be handed
+// ownership of an exchange net position that no open DB row claims. Mirrors
+// strategy.mayAdoptUnclaimedPosition, which guards the reconcile-loop copy of
+// this adoption. nil (instance deleted) never adopts.
+func instanceRowMayAdopt(si *models.StrategyInstance) bool {
+	if si == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(si.Status)) {
+	case "running", "starting":
+		return true
+	default:
+		return false
+	}
+}
+
 func findStrategyForSymbol(instRows []models.StrategyInstance, sym string) (string, string) {
 	if si := findStrategyInstanceForSymbol(instRows, sym); si != nil {
 		return si.ID, si.Name
@@ -247,16 +277,25 @@ func ListPositions(c *gin.Context) {
 					}
 				} else {
 					si := findStrategyInstanceForSymbol(instRows, p.Symbol)
-					if si != nil || orderMeta[key].StrategyID != "" {
-						strategyID := ""
-						strategyName := ""
-						if si != nil {
-							strategyID = si.ID
-							strategyName = si.Name
-						} else {
-							strategyID = orderMeta[key].StrategyID
-							strategyName = orderMeta[key].StrategyName
-						}
+					// 收养守卫，与 strategy.mayAdoptUnclaimedPosition 同口径：
+					// 只有 running/starting 的实例能认领无主净仓。少了它，退役策略会
+					// 永久保留它最后交易过的 symbol 的收养权（instRows 按 symbol 配置
+					// 匹配、orderMeta 取最近 500 单，两者都不看状态），在共享交易所账户
+					// 上把别人的净仓写成自己名下的幽灵行。
+					if si != nil && !instanceRowMayAdopt(si) {
+						si = nil
+					}
+					strategyID := ""
+					strategyName := ""
+					if si != nil {
+						strategyID = si.ID
+						strategyName = si.Name
+					} else if meta := orderMeta[key]; meta.StrategyID != "" &&
+						instanceRowMayAdopt(findStrategyInstanceByID(instRows, meta.StrategyID)) {
+						strategyID = meta.StrategyID
+						strategyName = meta.StrategyName
+					}
+					if strategyID != "" {
 						tp, sl := deriveTPSLFromStrategyInstance(si, p.Price, p.Direction)
 						now := time.Now()
 						pos := models.StrategyPosition{

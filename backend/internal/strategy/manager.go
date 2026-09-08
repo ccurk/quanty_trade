@@ -645,6 +645,72 @@ func (m *Manager) fetchStaleRealizedPnL(ex exchange.Exchange, ownerID uint, symK
 	return sum, found
 }
 
+// mayAdoptUnclaimedPosition reports whether inst is live enough to be handed
+// ownership of an exchange net position that no open DB row claims.
+//
+// Only running/starting instances qualify. A stopped/error instance — or one no
+// longer in the in-memory registry (inst == nil, e.g. after RemoveStrategy) —
+// must not adopt: latestOrderBySymbol is built from the owner's last 500 orders
+// with no liveness filter, so a retired strategy otherwise keeps a permanent
+// claim on every symbol it last traded. On a shared exchange account that turns
+// somebody else's net position into a phantom row under the dead strategy
+// (2026-09-08: qt-breakout-follow-v2 / qt-fade-short-v2 kept growing rows for
+// 9-10 days after being stopped).
+func mayAdoptUnclaimedPosition(inst *StrategyInstance) bool {
+	if inst == nil {
+		return false
+	}
+	return inst.Status == StatusRunning || inst.Status == StatusStarting
+}
+
+// adoptUnclaimedExchangePositions records exchange net positions that no open
+// strategy_positions row claims, attributing each to the strategy that last
+// ordered that symbol — provided that strategy is still live.
+//
+// Declining to adopt does not leave a naked position: this loop already skipped
+// symbols with no strategy-tagged recent order, TP/SL live as native exchange
+// conditional orders rather than in the DB row, and the positions API renders
+// exchange positions directly. The decline is logged so the orphan is visible
+// instead of silent.
+func adoptUnclaimedExchangePositions(
+	ownerID uint,
+	now time.Time,
+	activePositions map[string]exchange.Position,
+	latestOrderBySymbol map[string]models.StrategyOrder,
+	instLookup map[string]*StrategyInstance,
+	countedSymbols map[string]struct{},
+	countByStrategy map[string]int64,
+) {
+	for symKey, pos := range activePositions {
+		if _, ok := countedSymbols[symKey]; ok {
+			continue
+		}
+		ord, ok := latestOrderBySymbol[symKey]
+		if !ok || strings.TrimSpace(ord.StrategyID) == "" {
+			continue
+		}
+		if !mayAdoptUnclaimedPosition(instLookup[strings.TrimSpace(ord.StrategyID)]) {
+			logger.Warnf("[REDIS OPEN COUNT] skip adoption: strategy not live owner=%d strategy=%s symbol=%s amount=%v", ownerID, ord.StrategyID, pos.Symbol, pos.Amount)
+			continue
+		}
+		countByStrategy[ord.StrategyID]++
+		countedSymbols[symKey] = struct{}{}
+		_ = database.DB.Create(&models.StrategyPosition{
+			StrategyID:   ord.StrategyID,
+			StrategyName: ord.StrategyName,
+			OwnerID:      ownerID,
+			Exchange:     pos.ExchangeName,
+			Symbol:       pos.Symbol,
+			Direction:    pos.Direction, // 缺 Direction → 收养的空头平仓被当加仓、DB量涨、PnL 记0(CR P1)
+			Amount:       pos.Amount,
+			AvgPrice:     pos.Price,
+			Status:       "open",
+			OpenTime:     pos.OpenTime,
+			UpdatedAt:    now,
+		}).Error
+	}
+}
+
 func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 	if m == nil {
 		return
@@ -838,30 +904,7 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 				}
 			}
 
-			for symKey, pos := range activePositions {
-				if _, ok := countedSymbols[symKey]; ok {
-					continue
-				}
-				ord, ok := latestOrderBySymbol[symKey]
-				if !ok || strings.TrimSpace(ord.StrategyID) == "" {
-					continue
-				}
-				countByStrategy[ord.StrategyID]++
-				countedSymbols[symKey] = struct{}{}
-				_ = database.DB.Create(&models.StrategyPosition{
-					StrategyID:   ord.StrategyID,
-					StrategyName: ord.StrategyName,
-					OwnerID:      ownerID,
-					Exchange:     pos.ExchangeName,
-					Symbol:       pos.Symbol,
-					Direction:    pos.Direction, // 缺 Direction → 收养的空头平仓被当加仓、DB量涨、PnL 记0(CR P1)
-					Amount:       pos.Amount,
-					AvgPrice:     pos.Price,
-					Status:       "open",
-					OpenTime:     pos.OpenTime,
-					UpdatedAt:    now,
-				}).Error
-			}
+			adoptUnclaimedExchangePositions(ownerID, now, activePositions, latestOrderBySymbol, instLookup, countedSymbols, countByStrategy)
 
 			pendingCutoff := now.Add(-2 * time.Minute)
 			for symKey, ord := range latestOrderBySymbol {
