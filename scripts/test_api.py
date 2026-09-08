@@ -1,10 +1,11 @@
+import os
 import requests
 import time
 import json
 
 BASE_URL = "http://localhost:8080/api"
 ADMIN_USER = "admin"
-ADMIN_PASS = "admin123"
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "")  # 不写死口令：export ADMIN_PASS=... 后再跑
 
 def test_flow():
     print("--- 🚀 开始量化交易系统接口自动化测试 ---")

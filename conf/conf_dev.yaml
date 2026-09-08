@@ -1,3 +1,8 @@
+# ⚠️ 本文件入库（git tracked）——严禁写入任何明文凭据。
+# 所有密钥字段一律留空 ""，运行时由环境变量注入；覆盖逻辑见
+# backend/internal/conf/conf.go 的 applyEnvOverrides（env 非空即覆盖 yaml）。
+# 服务器上把真实值放在 600 权限的 env 文件里（默认 /etc/quanty/backend.env），
+# 由 server_deploy_backend.sh 载入。本地开发用 export 或 direnv，别写回这里。
 server:
   host: "0.0.0.0"
   port: 8080
@@ -17,22 +22,22 @@ db:
   host: "127.0.0.1"
   port: "3307"
   user: "quanty"
-  pass: "quantypass"
+  pass: ""  # ← 由环境变量 DB_PASS 注入
   name: "quanty_trade"
 
 admin:
   username: "admin"
-  password: "admin123"
+  password: ""  # ← 由环境变量 ADMIN_PASSWORD 注入
 
 security:
-  jwt_secret: "qt_jwt_secret_change_me_20260320"
-  config_encryption_key: "b3e3c4f1a8d94b3a9c7f2e1d0a6b5c4d3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c"
+  jwt_secret: ""  # ← 由环境变量 JWT_SECRET 注入
+  config_encryption_key: ""  # ← 由环境变量 CONFIG_ENCRYPTION_KEY 注入
 
 exchange:
   name: "binance"
   binance:
-    api_key: "2g60CgD0iZYf1ysqcI5HVXMvZKs7Pv5HnCzyrFMrEvH2NbAORjSwbTH4CQyjlRS9"
-    api_secret: "OSFfTOgErRNRfY5mq17JN5VlQqc4w61CFcx6Y6BNDwVr6PD79SYdCPWlzrZy1yF4"
+    api_key: ""  # ← 由环境变量 BINANCE_API_KEY 注入
+    api_secret: ""  # ← 由环境变量 BINANCE_API_SECRET 注入
     testnet: false
     market: "usdm"
     base_url: "https://fapi.binance.com"
@@ -48,7 +53,7 @@ redis:
 
 telegram:
   enabled: true
-  bot_token: "8531784709:AAF6gmy8CAoBzWTPmOfoLWrlG9Eabwa6Sng"
+  bot_token: ""  # ← 由环境变量 TELEGRAM_BOT_TOKEN 注入
   poll_timeout_seconds: 30
 
 # 飞书/Lark 群机器人 ERROR 告警（详见 conf_pro.yaml 注释）
@@ -64,6 +69,6 @@ ai:
     provider: "openrouter"
     model: "anthropic/claude-opus-4.7"
     api_url: "https://openrouter.ai/api/v1/chat/completions"
-    api_key: "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"
+    api_key: ""  # ← 由环境变量 OPENROUTER_API_KEY 注入
     http_referer: "https://quanty.qxyz.xyz"
     app_name: "QuantyTrade"

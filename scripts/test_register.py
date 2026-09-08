@@ -1,3 +1,4 @@
+import os
 import requests
 import json
 
@@ -11,11 +12,11 @@ def test_registration():
     
     # 1. Register a new user with Binance configs
     username = "trader_new"
-    password = "password123"
+    password = os.environ.get("TEST_PASSWORD", "")  # 不写死口令：export TEST_PASSWORD=... 后再跑
     configs = {
         "binance": {
-            "apiKey": "test-api-key",
-            "apiSecret": "test-api-secret"
+            "apiKey": os.environ.get("TEST_BINANCE_API_KEY", ""),
+            "apiSecret": os.environ.get("TEST_BINANCE_API_SECRET", "")
         }
     }
     

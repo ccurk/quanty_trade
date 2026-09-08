@@ -90,7 +90,7 @@ RCLONE_BUCKET=quanty-backups
 BACKUP_PASSPHRASE=$BACKUP_PASS
 
 # 可选：失败时 TG 告警（强烈推荐）
-TG_TOKEN=8531784709:AAF6gmy8CAoBzWTPmOfoLWrlG9Eabwa6Sng
+TG_TOKEN=<你的 TG bot token，勿写进仓库>
 TG_CHAT=6938657035
 EOF
 

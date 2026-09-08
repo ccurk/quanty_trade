@@ -453,7 +453,7 @@ db:
   host: "127.0.0.1"
   port: "3306"
   user: "quanty"
-  pass: "quantypass"
+  pass: "<从环境变量 DB_PASS 注入，勿写进仓库>"
   name: "quanty_trade"
 ```
 

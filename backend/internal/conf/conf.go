@@ -558,6 +558,16 @@ func applyEnvOverrides(c *Config) {
 		}
 	}
 
+	if v := strings.TrimSpace(os.Getenv("LARK_ENABLED")); v != "" {
+		c.Lark.Enabled = strings.ToLower(v) == "true"
+	}
+	if v := strings.TrimSpace(os.Getenv("LARK_WEBHOOK_URL")); v != "" {
+		c.Lark.WebhookURL = v
+	}
+	if v := os.Getenv("LARK_SECRET"); v != "" {
+		c.Lark.Secret = v
+	}
+
 	if v := strings.TrimSpace(os.Getenv("AI_OPTIMIZER_PROVIDER")); v != "" {
 		c.AI.Optimizer.Provider = v
 	}
