@@ -385,11 +385,12 @@ docker run -d --name quanty-redis -p 6379:6379 redis:7
 ### 2. 启动 MySQL
 
 ```bash
+# 下面两个口令自己现取，别照抄本文档；MYSQL_PASSWORD 要和后端的 DB_PASS 一致。
 docker run -d --name quanty-mysql \
-  -e MYSQL_ROOT_PASSWORD=rootpass \
+  -e MYSQL_ROOT_PASSWORD='<YOUR_MYSQL_ROOT_PASSWORD>' \
   -e MYSQL_DATABASE=quanty_trade \
   -e MYSQL_USER=quanty \
-  -e MYSQL_PASSWORD=quantypass \
+  -e MYSQL_PASSWORD='<YOUR_MYSQL_PASSWORD>' \
   -p 3306:3306 \
   mysql:8.0
 ```

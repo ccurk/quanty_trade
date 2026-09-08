@@ -49,7 +49,9 @@ def test_flow():
     print(f"[4] 管理员创建新用户 ({trader_name})...", end=" ")
     user_res = session.post(f"{BASE_URL}/admin/users", headers=headers, json={
         "username": trader_name,
-        "password": "password123",
+        # 不写死口令：这个脚本会在被测系统上真的建出账号，写死等于公开它的口令。
+        # export TEST_PASSWORD=... 后再跑（和 test_register.py 用同一个变量）。
+        "password": os.environ.get("TEST_PASSWORD", ""),
         "role": "user"
     })
 
