@@ -163,6 +163,51 @@ echo "后端部署完成"
 echo "Backend: http://<server-ip>:${HOST_PORT}"
 
 # ---------------------------------------------------------------------------
+# 记录"线上真正在跑的是什么"（台账 #59）。
+# 全部字段从 docker inspect 实读，不用 ${BACKEND_VERSION} 这个"意图"变量——
+# 意图和现实不一致正是 #59 的根因：以前只有 deploy.sh（构建机）写这个文件，
+# 真正起容器的本脚本一个字都不写，于是服务器上的记录停在最后一次"在服务器上
+# 跑过完整部署"的那天，实际镜像却早换了好几轮。事故时按它回滚 = 回错版本。
+RECORD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+running_tag_full="$(docker inspect "${CONTAINER_NAME}" --format '{{.Config.Image}}')"
+running_tag="${running_tag_full##*:}"
+running_image_id="$(docker inspect "${CONTAINER_NAME}" --format '{{.Image}}')"
+image_created="$(docker image inspect "${running_image_id}" --format '{{.Created}}')"
+container_id="$(docker inspect "${CONTAINER_NAME}" --format '{{.Id}}')"
+container_started="$(docker inspect "${CONTAINER_NAME}" --format '{{.State.StartedAt}}')"
+
+# 构建时的 commit 编码在 tag 中段（deploy.sh:generate_version 产出
+# "<时间戳>-<short sha>-<随机>-backend"）。绝不能用服务器 checkout 的 HEAD 顶替：
+# 服务器 git 常年落后于线上镜像，用它会把错误的 commit 记成"线上版本"。
+built_from_commit="$(printf '%s' "$running_tag" | awk -F- '{print $2}')"
+server_checkout_commit="$(git -C "$RECORD_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+# 兼容既有部署仪式：这个文件必须保持"只有一行裸 tag"，
+# 因为调用方是 export BACKEND_VERSION=$(cat .deploy_version_backend)。
+printf '%s\n' "$running_tag" > "${RECORD_DIR}/.deploy_version_backend"
+
+# 细节放旁边的 sidecar，供事故时定位回滚点。时间一律 UTC，
+# 避免 tag 里那种"构建机本地时区"导致的跨时区误读。
+cat > "${RECORD_DIR}/.deploy_state_backend" <<EOF
+tag=${running_tag}
+image_id=${running_image_id}
+image_created=${image_created}
+container_id=${container_id}
+container_started=${container_started}
+built_from_commit=${built_from_commit}
+server_checkout_commit=${server_checkout_commit}
+recorded_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+recorded_by=server_deploy_backend.sh
+EOF
+
+echo "已记录线上版本: ${running_tag} (image ${running_image_id})"
+
+if [ "$built_from_commit" != "$server_checkout_commit" ]; then
+  echo "警告: 线上镜像构建自 commit ${built_from_commit}，但本机 checkout 停在 ${server_checkout_commit}。" >&2
+  echo "      服务器上的代码不等于线上跑的代码，排查问题时以 ${built_from_commit} 为准。" >&2
+fi
+
+# ---------------------------------------------------------------------------
 # $QUANTY_ENV_FILE 示例（默认 /etc/quanty/backend.env，权限必须 600）：
 #
 #   sudo mkdir -p /etc/quanty

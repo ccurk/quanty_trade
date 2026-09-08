@@ -81,12 +81,12 @@ BACKEND_VERSION=""
 FRONTEND_VERSION=""
 if [ "$COMPONENT" = "backend" ] || [ "$COMPONENT" = "all" ]; then
     BACKEND_VERSION="$(generate_version backend "$BACKEND_VERSION_FILE")"
-    echo "$BACKEND_VERSION" > "$BACKEND_VERSION_FILE"
 fi
 if [ "$COMPONENT" = "frontend" ] || [ "$COMPONENT" = "all" ]; then
     FRONTEND_VERSION="$(generate_version frontend "$FRONTEND_VERSION_FILE")"
-    echo "$FRONTEND_VERSION" > "$FRONTEND_VERSION_FILE"
 fi
+# 版本文件在 build+push 成功之后才写（见下）。以前是在这里先写的，
+# 结果构建失败时文件里已经躺着一个从未推上去的 tag，回滚会指向不存在的镜像。
 
 echo "🚀 开始构建并推送: $COMPONENT"
 if [ -n "$BACKEND_VERSION" ]; then
@@ -111,6 +111,7 @@ if [ "$COMPONENT" = "backend" ] || [ "$COMPONENT" = "all" ]; then
       -f backend/Dockerfile \
       --push \
       .
+    echo "$BACKEND_VERSION" > "$BACKEND_VERSION_FILE"
 fi
 
 if [ "$COMPONENT" = "frontend" ] || [ "$COMPONENT" = "all" ]; then
@@ -122,6 +123,7 @@ if [ "$COMPONENT" = "frontend" ] || [ "$COMPONENT" = "all" ]; then
       -f frontend/Dockerfile \
       --push \
       .
+    echo "$FRONTEND_VERSION" > "$FRONTEND_VERSION_FILE"
 fi
 
 echo "✅ 镜像发布成功！"
