@@ -182,6 +182,10 @@ func main() {
 		protected.GET("/strategies/:id/symbols", api.GetRunningSymbols)                      // 运行中币种(动态选币)
 		protected.POST("/strategies/:id/symbols/rotate", api.RotateRunningSymbols)           // 热轮换币种(cron 驱动)
 
+		// 参数版本(收益归因用):读历史 + 给某一版起名/写备注。版本行本身由平台写。
+		protected.GET("/strategies/:id/param-versions", api.ListStrategyParamVersions)
+		protected.PATCH("/strategies/:id/param-versions/:vid", api.AnnotateStrategyParamVersion)
+
 		// 三角套利检测器状态(只读)
 		protected.GET("/triarb/status", api.GetTriArbStatus)
 
@@ -197,6 +201,7 @@ func main() {
 		protected.GET("/stats/dashboard", api.GetDashboard)
 		protected.GET("/stats/modules-pnl", api.GetModulesPnL)
 		protected.GET("/stats/mm-observe", api.GetMMObserve)
+		protected.GET("/stats/strategy-attribution", api.GetStrategyAttribution) // 按策略+参数版本的收益归因
 
 		// 跨所再平衡提现白名单(读=登录即可;写=管理员,动钱配置需最高权限)
 		protected.GET("/rebalance/status", api.GetRebalanceStatus)

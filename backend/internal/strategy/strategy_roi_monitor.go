@@ -204,6 +204,23 @@ func (m *Manager) scanROILimits(stopLossOnly bool) {
 				side = "sell"
 			}
 			tp, sl := resolveTPSLFromROI(inst, side, p.Price, 0, 0)
+			// 收养行故意不盖 ParamVersionID —— 别顺手加上。
+			//
+			// 这一行不是本策略下单开的:它是扫到交易所上一个无主净仓后补录的,
+			// 开仓时刻、开仓参数、甚至是不是本策略干的,这里都不知道
+			// (共享账户下同一个净仓可能来自另一个 owner、手工单、或平台前的旧引擎)。
+			// 盖上 currentParamVersionID(inst.ID) 只是把"扫到它的那一刻碰巧是哪一版"
+			// 写进去,和这笔仓位真正在什么参数下建立没有因果关系。
+			//
+			// 判断依据是可查性,不是准确性:留 NULL 时归因查询会退化到按 open_time
+			// 落 [effective_from, effective_to) 窗口,落不进就进 unversioned 桶 ——
+			// 两种结果都在报表上看得见、可以被质疑。盖了错章之后,这笔仓位在报表上
+			// 和真正在那一版下开的仓位长得一模一样,没有任何字段能把它分辨出来,
+			// 也就没人会去查。**盖错章比不盖章更难查**,所以宁可不盖。
+			//
+			// 真要给收养行归因,正确做法是先补一个显式的来源标记(例如 is_adopted /
+			// origin='reconcile'),让归因查询能主动排除或单独成桶,而不是在这里
+			// 盖一个看起来有值、其实无法证伪的章。
 			synthetic := models.StrategyPosition{
 				StrategyID:   inst.ID,
 				StrategyName: inst.Name,

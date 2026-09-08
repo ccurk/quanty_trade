@@ -259,13 +259,14 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 
 	clientOrderID := models.GenerateUUID()
 	database.DB.Create(&models.StrategyOrder{
-		StrategyID:   inst.ID,
-		StrategyName: inst.Name,
-		OwnerID:      inst.OwnerID,
-		Exchange:     inst.exchange.GetName(),
-		Symbol:       symbol,
-		Side:         normalizedSide,
-		Purpose:      "entry",
+		StrategyID:     inst.ID,
+		StrategyName:   inst.Name,
+		ParamVersionID: currentParamVersionID(inst.ID),
+		OwnerID:        inst.OwnerID,
+		Exchange:       inst.exchange.GetName(),
+		Symbol:         symbol,
+		Side:           normalizedSide,
+		Purpose:        "entry",
 		OrderType: func() string {
 			if price > 0 {
 				return "limit"

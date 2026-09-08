@@ -153,6 +153,12 @@ func (m *Manager) startStrategyNow(id string) error {
 	if proc == nil {
 		return nil
 	}
+	// Open (or confirm) the parameter version this run trades under, so orders
+	// and positions have something to be stamped with. Bootstraps v1 for
+	// strategies that predate the attribution table; never fatal to a start.
+	if _, err := EnsureParamVersion(inst.ID, "bootstrap", ""); err != nil {
+		emitStrategyLog(inst, "error", fmt.Sprintf("记录参数版本失败(不影响运行)：%v", err))
+	}
 	m.activateStartedStrategy(inst, plan, proc)
 	m.attachRedisIO(inst, plan.redisBus, plan.logTrace)
 	m.syncStrategyDebugConfig(inst)

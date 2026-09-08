@@ -1265,6 +1265,7 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 		pos = models.StrategyPosition{
 			StrategyID:       strategyID,
 			StrategyName:     strategyName,
+			ParamVersionID:   currentParamVersionID(strategyID),
 			OwnerID:          ownerID,
 			Exchange:         exchangeName,
 			Symbol:           symbol,

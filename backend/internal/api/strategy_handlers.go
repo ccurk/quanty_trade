@@ -202,7 +202,7 @@ func UpdateStrategyConfig(c *gin.Context) {
 	instance.Config = configJSON
 	database.DB.Save(&instance)
 
-	c.JSON(http.StatusOK, gin.H{"status": "updated"})
+	c.JSON(http.StatusOK, gin.H{"status": "updated", "param_version": recordParamVersion(c, id, "put_config")})
 }
 
 // PatchStrategyConfig 只更新传入的字段，其余字段保持不变（JSON merge patch 语义）。
@@ -310,8 +310,9 @@ func PatchStrategyConfig(c *gin.Context) {
 	}, true, http.StatusOK, "")
 
 	c.JSON(http.StatusOK, gin.H{
-		"status":  "patched",
-		"changed": changed,
+		"status":        "patched",
+		"changed":       changed,
+		"param_version": recordParamVersion(c, id, "patch_config"),
 	})
 }
 

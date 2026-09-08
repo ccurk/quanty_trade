@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -286,6 +287,11 @@ func computeBinanceDailyBuckets(uid uint, start, end time.Time, throttle time.Du
 			if len(fills) == 0 {
 				break
 			}
+			// 手续费落库:必须在下面 RealizedPnL==0 的 continue 之前做。
+			// 开仓腿的 realizedPnl 恒为 0 但一样收手续费,放到 continue 之后
+			// 就只会存到平仓腿,往返费用凭空少一半 —— 这是本次改动最容易踩反的一处。
+			persistExchangeFills(bx.GetName(), uid, fills)
+
 			var lastTime int64
 			for _, t := range fills {
 				if t.Time > lastTime {
@@ -415,6 +421,65 @@ func upsertDailyPnLRow(uid uint, day string, start, end time.Time, agg *binanceD
 			"updated_at":        now,
 		}),
 	}).Create(&record).Error
+}
+
+// exchangeFillsDisabled reports whether fill persistence is switched off.
+// Kill switch on purpose: this is the only part of this job that WRITES a new
+// table, and it runs inside a 400-day backfill. If it ever misbehaves in
+// production the operator can stop it with EXCHANGE_FILLS_PERSIST=0 + restart,
+// without rolling back code or touching the table. Default is on.
+func exchangeFillsDisabled() bool {
+	return strings.TrimSpace(os.Getenv("EXCHANGE_FILLS_PERSIST")) == "0"
+}
+
+// persistExchangeFills mirrors raw exchange fills into ExchangeFill.
+//
+// Append-only and idempotent: ON CONFLICT DO NOTHING on (exchange, symbol,
+// trade_id) means re-running the backfill, or two owners pulling the same shared
+// account, converge on one row instead of double counting. Existing rows are
+// never updated — a fill is a historical fact, and letting a re-pull rewrite one
+// would defeat the point of keeping a raw ledger.
+//
+// Failures are logged and swallowed: the caller's job is the daily PnL cache,
+// and that must not start failing because a bookkeeping insert did.
+func persistExchangeFills(exchangeName string, uid uint, fills []exchange.USDMUserTrade) {
+	if database.DB == nil || len(fills) == 0 || exchangeFillsDisabled() {
+		return
+	}
+	now := time.Now()
+	rows := make([]models.ExchangeFill, 0, len(fills))
+	for _, t := range fills {
+		if t.ID == 0 {
+			continue // no trade id -> no dedup key; skip rather than write a row that re-inserts forever
+		}
+		rows = append(rows, models.ExchangeFill{
+			Exchange:         exchangeName,
+			Symbol:           t.Symbol,
+			TradeID:          strconv.FormatInt(t.ID, 10),
+			OrderID:          strconv.FormatInt(t.OrderID, 10),
+			Side:             strings.ToLower(t.Side),
+			PositionSide:     strings.ToLower(t.PositionSide),
+			Qty:              t.Qty,
+			Price:            t.Price,
+			QuoteQty:         t.QuoteQty,
+			RealizedPnL:      t.RealizedPnL,
+			Commission:       t.Commission,
+			CommissionAsset:  strings.ToUpper(strings.TrimSpace(t.CommissionAsset)),
+			IsMaker:          t.Maker,
+			TradeTime:        time.UnixMilli(t.Time),
+			FetchedByOwnerID: uid,
+			CreatedAt:        now,
+		})
+	}
+	if len(rows) == 0 {
+		return
+	}
+	if err := database.DB.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "exchange"}, {Name: "symbol"}, {Name: "trade_id"}},
+		DoNothing: true,
+	}).CreateInBatches(rows, 200).Error; err != nil {
+		logger.Errorf("exchange fills: persist failed uid=%d n=%d err=%v", uid, len(rows), err)
+	}
 }
 
 // ===========================================================================

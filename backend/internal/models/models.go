@@ -232,6 +232,12 @@ type StrategyOrder struct {
 	StrategyID string `gorm:"type:varchar(64);index" json:"strategy_id"`
 	// StrategyName is denormalized for UI display and debugging.
 	StrategyName string `gorm:"type:varchar(128)" json:"strategy_name"`
+	// ParamVersionID pins the StrategyParamVersion that was live when this order
+	// was requested. NULL is a first-class value: rows written before this column
+	// existed, and rows created by adoption/reconcile paths that have no
+	// StrategyInstance in hand, stay NULL — the attribution query then falls back
+	// to matching RequestedAt into the version's [EffectiveFrom, EffectiveTo) window.
+	ParamVersionID *uint `gorm:"index" json:"param_version_id,omitempty"`
 	// OwnerID identifies the user who owns the strategy/exchange account.
 	OwnerID uint `gorm:"index" json:"owner_id"`
 	// Exchange is the exchange name, e.g. "Binance".
@@ -275,6 +281,11 @@ type StrategyPosition struct {
 	StrategyID string `gorm:"type:varchar(64);index" json:"strategy_id"`
 	// StrategyName is denormalized for UI display.
 	StrategyName string `gorm:"type:varchar(128)" json:"strategy_name"`
+	// ParamVersionID pins the StrategyParamVersion that was live when this
+	// position was opened. NULL means "not stamped" (pre-existing rows, or the
+	// exchange-adoption/reconcile paths); the attribution query falls back to
+	// matching OpenTime into the version's [EffectiveFrom, EffectiveTo) window.
+	ParamVersionID *uint `gorm:"index" json:"param_version_id,omitempty"`
 	// OwnerID identifies the user who owns the strategy/exchange account.
 	OwnerID uint `gorm:"index" json:"owner_id"`
 	// Exchange is the exchange name, e.g. "Binance".
@@ -407,6 +418,58 @@ type StrategyVersion struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// StrategyParamVersion is an append-only registry of one strategy instance's
+// PARAMETER set (StrategyInstance.Config), as opposed to StrategyVersion which
+// versions the Python CODE.
+//
+// Why it exists: Config is overwritten in place on every PUT/PATCH, so a filled
+// order could only ever be traced back to strategy_name. There was no way to ask
+// "did the change I made on 2026-09-01 actually raise expectancy?". One row per
+// distinct config hash; [EffectiveFrom, EffectiveTo) is the wall-clock window
+// those params were live, which is what lets the attribution query bucket
+// positions that were opened before the ParamVersionID column existed.
+type StrategyParamVersion struct {
+	ID uint `gorm:"primaryKey" json:"id"`
+
+	StrategyID   string `gorm:"type:varchar(64);index:idx_param_ver_sid_from,priority:1" json:"strategy_id"`
+	StrategyName string `gorm:"type:varchar(128)" json:"strategy_name"`
+	OwnerID      uint   `gorm:"index" json:"owner_id"`
+
+	// Seq is the per-strategy monotonic counter (1,2,3...) behind the default Label.
+	Seq int `json:"seq"`
+	// Label is the human handle shown in the attribution table. Defaults to
+	// "v{Seq}"; the owner renames it to something meaningful ("v3-atr2.5").
+	Label string `gorm:"type:varchar(64)" json:"label"`
+	// Note is the free-form "what did I change and why" line, owner-supplied.
+	Note string `gorm:"type:varchar(512)" json:"note"`
+
+	// ConfigHash is sha256 over the canonicalized config (sorted keys, secrets
+	// stripped). It is the dedup key: re-saving an unchanged config does NOT open
+	// a new version, otherwise one strategy's trades would be split across
+	// duplicate buckets and every per-version average would be meaningless.
+	ConfigHash string `gorm:"type:varchar(64);index" json:"config_hash"`
+	ConfigJSON string `gorm:"type:text" json:"config_json"`
+	// ChangedJSON is the field-level diff against the previous version, so the
+	// row is self-describing without diffing two config blobs by hand.
+	ChangedJSON string `gorm:"type:text" json:"changed_json"`
+
+	// Source is how the row was born: bootstrap (first sight of an existing
+	// strategy) | put_config | patch_config.
+	Source string `gorm:"type:varchar(32);index" json:"source"`
+	// Actor is the username that made the change ("" for bootstrap).
+	Actor string `gorm:"type:varchar(64)" json:"actor"`
+
+	EffectiveFrom time.Time `gorm:"index:idx_param_ver_sid_from,priority:2" json:"effective_from"`
+	// EffectiveTo is NULL while the version is live. Pointer (not time.Time) so
+	// GORM writes a real NULL — strict-mode MySQL (NO_ZERO_DATE) rejects the
+	// '0000-00-00' a zero time.Time produces, same trap as StrategyPosition.CloseTime.
+	EffectiveTo *time.Time `json:"effective_to,omitempty"`
+	IsCurrent   bool       `gorm:"index" json:"is_current"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // StrategyPublishRecord records a version switch applied to a strategy.
 type StrategyPublishRecord struct {
 	ID uint `gorm:"primaryKey" json:"id"`
@@ -449,6 +512,77 @@ type DailyPnL struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// ExchangeFill is the raw per-trade fill ledger pulled from the exchange
+// (Binance USDM /fapi/v1/userTrades). It exists because commission is the one
+// number the platform can never reconstruct later: it is not in the order
+// placement response (exchange.Order carries no fee field) and, for USDM, no
+// execution-report stream runs at all — EnsureUserDataStream returns early when
+// market == "usdm", so handleExecutionReport never fires for futures. userTrades
+// is therefore the ONLY place fee/maker data enters this system.
+//
+// Deliberately a raw mirror, not a derived table:
+//   - append-only; rows are never updated once written, so a re-pull is a no-op;
+//   - no net/derived columns — net PnL stays a query-time expression so a later
+//     fee-rate correction cannot create a second source of truth;
+//   - Commission is stored in its ORIGINAL asset (BNB/USDT/coin-margined) with
+//     CommissionAsset alongside. Do NOT convert on write: the conversion rate is
+//     a query-time decision, and baking it in makes historical rows unrepairable.
+//
+// Uniqueness is (Exchange, Symbol, TradeID). Binance trade ids are unique per
+// symbol per ACCOUNT, and this platform currently points every owner at one
+// shared account (both owners' daily_pn_ls rows are byte-identical copies of the
+// same account), so the same fill fetched under two owner ids collapses to one
+// row here instead of being double counted — the exact bug daily_pn_ls has.
+// LIMITATION: if a genuinely second exchange account is ever added, two accounts
+// could each own trade id N on the same symbol and this key would merge them.
+// Writes use ON CONFLICT DO NOTHING so the older row wins rather than being
+// corrupted, but before adding a second account this table MUST gain an
+// account_id column and include it in the unique key. See
+// scripts/param_version_attribution.sql for that migration note.
+type ExchangeFill struct {
+	ID uint `gorm:"primaryKey" json:"id"`
+
+	Exchange string `gorm:"type:varchar(32);index:idx_exchange_fill_uniq,unique" json:"exchange"`
+	// Symbol is the exchange-native symbol (BTCUSDT), not the display form.
+	Symbol string `gorm:"type:varchar(64);index:idx_exchange_fill_uniq,unique" json:"symbol"`
+	// TradeID is the exchange trade id, stored as text so no integer-format
+	// ambiguity can break the dedup key.
+	TradeID string `gorm:"type:varchar(64);index:idx_exchange_fill_uniq,unique" json:"trade_id"`
+
+	// OrderID is the exchange order id and is stored as VARCHAR *specifically*
+	// to match StrategyOrder.ExchangeOrderID's type. Attribution joins these two
+	// columns directly; a CAST on either side would silently drop the index.
+	OrderID string `gorm:"type:varchar(64);index" json:"order_id"`
+
+	Side         string  `gorm:"type:varchar(8)" json:"side"`
+	PositionSide string  `gorm:"type:varchar(16)" json:"position_side"`
+	Qty          float64 `json:"qty"`
+	Price        float64 `json:"price"`
+	QuoteQty     float64 `json:"quote_qty"`
+	// RealizedPnL is non-zero only on closing fills. Opening fills are stored
+	// too — they carry commission, and dropping them would hide half of every
+	// round trip's cost.
+	RealizedPnL float64 `gorm:"column:realized_pn_l" json:"realized_pnl"`
+
+	// Commission is the fee in CommissionAsset units. Always positive on Binance.
+	Commission      float64 `json:"commission"`
+	CommissionAsset string  `gorm:"type:varchar(16);index" json:"commission_asset"`
+	// IsMaker is the liquidity side. Every fill to date is a market order and so
+	// taker; the column exists now so that the first limit order does not create
+	// an unrecoverable gap — maker/taker cannot be reconstructed after the fact.
+	IsMaker bool `gorm:"index" json:"is_maker"`
+
+	TradeTime time.Time `gorm:"index" json:"trade_time"`
+
+	// FetchedByOwnerID records WHICH owner's credentials pulled the row. It is
+	// provenance only. Never GROUP BY or SUM across it: the account is shared, so
+	// this is not an ownership dimension and treating it as one reproduces the
+	// double-counting bug this table was built to avoid.
+	FetchedByOwnerID uint `gorm:"index" json:"fetched_by_owner_id"`
+
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type TelegramSubscriber struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	ChatID    int64     `gorm:"uniqueIndex" json:"chat_id"`
@@ -474,12 +608,12 @@ type TelegramBotState struct {
 // (Asset, Network); a wrong chain permanently loses funds, so Network is required.
 type RebalanceWhitelist struct {
 	ID       uint   `gorm:"primaryKey" json:"id"`
-	Exchange string `gorm:"size:32;not null;index:uniq_rebalance_wl,unique" json:"exchange"`  // 目标所: gate/binance
-	Asset    string `gorm:"size:32;not null;index:uniq_rebalance_wl,unique" json:"asset"`     // 币种: USDT...
-	Network  string `gorm:"size:32;not null;index:uniq_rebalance_wl,unique" json:"network"`   // 链: TRC20...
-	Address  string `gorm:"size:128;not null;index:uniq_rebalance_wl,unique" json:"address"`  // 目标所的充值地址
-	Memo     string `gorm:"size:128" json:"memo"`  // tag/memo, 需要的链才填
-	Label    string `gorm:"size:128" json:"label"` // 人工备注
+	Exchange string `gorm:"size:32;not null;index:uniq_rebalance_wl,unique" json:"exchange"` // 目标所: gate/binance
+	Asset    string `gorm:"size:32;not null;index:uniq_rebalance_wl,unique" json:"asset"`    // 币种: USDT...
+	Network  string `gorm:"size:32;not null;index:uniq_rebalance_wl,unique" json:"network"`  // 链: TRC20...
+	Address  string `gorm:"size:128;not null;index:uniq_rebalance_wl,unique" json:"address"` // 目标所的充值地址
+	Memo     string `gorm:"size:128" json:"memo"`                                            // tag/memo, 需要的链才填
+	Label    string `gorm:"size:128" json:"label"`                                           // 人工备注
 	Enabled  bool   `gorm:"default:true" json:"enabled"`
 	// CreatedBy records which user added the row — a fund-movement audit trail.
 	CreatedBy uint           `json:"created_by"`
