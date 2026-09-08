@@ -241,11 +241,11 @@ func TestObserveRecordIsOfflineVerifiable(t *testing.T) {
 	for i := 0; i < n; i++ {
 		b := 45.2 + float64(i-50)*0.1
 		s := 23.0 + float64(i-50)*0.2
-		logObserve(p.observeRow("gate", "binance", refBook, bookFromBasis(refMid, b, s), feeBps, true, time.Now()))
+		logObserve(p.observeRow("gate", "binance", refBook, bookFromBasis(refMid, b, s), feeBps, true, 0, time.Now()))
 	}
 
 	// 无效盘口不得落记录 —— 否则 Inf/NaN 会让 json.Marshal 失败,记录无声消失。
-	logObserve(p.observeRow("gate", "binance", BookTicker{}, bookFromBasis(refMid, 45.2, 23.0), feeBps, true, time.Now()))
+	logObserve(p.observeRow("gate", "binance", BookTicker{}, bookFromBasis(refMid, 45.2, 23.0), feeBps, true, 0, time.Now()))
 
 	var rows []ObserveRow
 	for _, line := range strings.Split(buf.String(), "\n") {

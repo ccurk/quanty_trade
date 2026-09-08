@@ -103,6 +103,9 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 		logger.Infof("[mm] %s@%s 启动清残留挂单", p.ExecSymbol, ex.Name())
 	}
 	var devSince time.Time // exec-vs-ref 中价持续偏离的起始时刻(长时间偏移撤单用)
+	// 每 symbol 的基差估计(台账 #7)。未配 basis_half_life_s 时为 nil = 关闭,
+	// 下面所有取值都退化成 0,行为与改动前完全一致。
+	basis := newBasisEWMA(p.BasisHalfLifeS, p.BasisCapBps)
 
 	// 成交/PnL 追踪 + 单日止损(仅 gate live;账户是用户自己的 gate key,my_trades=本引擎成交)。
 	var tracker *pnlTracker
@@ -139,7 +142,11 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 		feeBps, feeLive := MakerFeeBps(ex.Name(), p.ExecSymbol)
 		// 一条记录同时供三处消费:面板(内存)、离线复核(server.log 里的单行 JSON)、
 		// 单测。三者共用 observeRow 这一份口径,不再各算各的。
-		row := p.observeRow(ex.Name(), e.feed.Name(), ref, eb, feeBps, feeLive, time.Now())
+		// 先取修正、再推进估计:本轮报价只用【本轮之前】的样本。这样线上口径与
+		// 离线回放(basis.go 顶部那组数字)是同一个,A/B 时两边能对上账。
+		corrBps := basis.correctionBps()
+		row := p.observeRow(ex.Name(), e.feed.Name(), ref, eb, feeBps, feeLive, corrBps, time.Now())
+		basis.update(row.MidDiffBps, time.Now())
 		logObserve(row)
 		recordObserve(row)
 		// 喂 markout:上面那两个 edge 测的是【报价时刻】的边,可以永远为正而 PnL 永远为负。
@@ -165,7 +172,10 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 			}
 			// 长时间偏移:exec 与 ref 中价持续偏离超阈值 → 撤单暂停(可能真错价/数据问题,
 			// 按错价裸挂会被逆向吃穿);回到阈值内才恢复报价。
-			midDiffBps := math.Abs(eb.Mid()-refMid) / refMid * 10000
+			// 用【残差】而不是原始基差:开了修正之后,持续水位差已经被平移掉,
+			// 再拿原始 |b| 卡门会让 ONG 这类品种常年顶在阈值上被撤单,修正等于空转。
+			// 未开修正时 corrBps=0,本式与改动前逐位相同。见 liveDivergenceBps。
+			midDiffBps := liveDivergenceBps(refMid, eb.Mid(), corrBps)
 			if midDiffBps > maxLiveDivergenceBps {
 				if devSince.IsZero() {
 					devSince = time.Now()
@@ -200,7 +210,7 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 					}
 				}
 			}
-			e.quote(p, ex, ref, eb)
+			e.quote(p, ex, ref, eb, corrBps)
 		}
 	}
 }
@@ -234,7 +244,7 @@ func staleAfter(p PairConfig) time.Duration {
 // fail-safe: any read error (filters/balances/open-orders) aborts this cycle rather
 // than quoting blind. Cancel-replace only when the target moved more than the requote
 // band (a fraction of the half-spread), to avoid thrashing.
-func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker) {
+func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBps float64) {
 	filt, err := ex.SymbolFilter(p.ExecSymbol)
 	if err != nil {
 		logger.Warnf("[mm] %s@%s filter 读取失败,本轮不报价: %v", p.ExecSymbol, ex.Name(), err)
@@ -280,9 +290,10 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker) {
 	if p.MaxPosition > 0 {
 		invRatio = baseHeld / p.MaxPosition
 	}
-	// 报价中心:默认锚参考所中价(历史行为);配了 quote_anchor:"exec" 就锚执行所自身中价。
-	// 基差大于半价差的品种,锚参考所会让两条腿同时挂在执行所盘口的错误一侧 —— 见 config.go 注释。
-	anchor := p.anchorMid(refMid, eb.Mid())
+	// 报价中心:默认锚参考所中价(历史行为);配了 quote_anchor:"exec" 就锚执行所自身中价;
+	// 配了 basis_half_life_s 则在参考所中价上叠加基差修正 corrBps(台账 #7 的修复形态)。
+	// 基差大于半价差的品种,不修正会让两条腿同时挂在执行所盘口的错误一侧 —— 见 basis.go 注释。
+	anchor := p.basisAdjustedMid(refMid, eb.Mid(), corrBps)
 	bidPx, askPx := skewedQuote(anchor, half, invRatio, inventorySkewFrac, filt.TickSize)
 	// 吃满执行所盘口价差:执行所卖一比"公允+spread"更贵时,把卖单顶到其卖一下方 1 tick
 	// (捕获整段溢价,而不是按固定 spread 自己砍价贱卖);买一更便宜时同理下探。同时严格

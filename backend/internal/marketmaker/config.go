@@ -53,14 +53,34 @@ type PairConfig struct {
 	// 单所做市。哪个更好不该拍脑袋 —— markout 度量已上线,逐品种切换后用
 	// 成交后 1s/5s/30s 的 markout 对比,让数据判。所以默认不变,显式配置才切。
 	QuoteAnchor string `yaml:"quote_anchor" json:"quote_anchor"`
+
+	// BasisHalfLifeS 打开【每 symbol 基差修正】(台账 #7 的修复形态,秒;0=关闭,默认):
+	// 报价中心 = 参考所中价 ×(1 + b̂/1e4),b̂ 是 exec-vs-ref 基差的 EWMA。
+	//
+	// 它是 quote_anchor 的连续推广:半衰期→0 等价于锚执行所、→∞ 等价于锚参考所。
+	// 好处是只抹掉基差里【持续】的那部分(gate 的价格水位),把零均值的那部分
+	// 留给参考所解释 —— 即保住跨所价格发现。实测依据与回放结果见 basis.go 顶部。
+	//
+	// quote_anchor:"exec" 时本项被忽略(锚在执行所,基差按定义已是 0)。
+	// 推荐起步值 60;档位最终该由 markout A/B 定,不该由这行注释定。
+	BasisHalfLifeS float64 `yaml:"basis_half_life_s" json:"basis_half_life_s"`
+	// BasisCapBps 限制修正项绝对值(bps),0 = 用默认 200。见 defaultBasisCapBps。
+	BasisCapBps float64 `yaml:"basis_cap_bps" json:"basis_cap_bps"`
 }
 
 // anchorMid 按配置选报价中心。参考所中价用于方向与风控,不一定用于定价。
 func (p PairConfig) anchorMid(refMid, execMid float64) float64 {
+	return p.basisAdjustedMid(refMid, execMid, 0)
+}
+
+// basisAdjustedMid 在 anchorMid 之上叠加基差修正 corrBps(bps)。
+// corrBps=0 时与 anchorMid 逐位相同,所以未开启修正的路径行为完全不变。
+func (p PairConfig) basisAdjustedMid(refMid, execMid, corrBps float64) float64 {
 	if p.QuoteAnchor == "exec" && execMid > 0 {
+		// 锚执行所时基差按定义为 0;再叠加修正等于把同一个量减两次。
 		return execMid
 	}
-	return refMid
+	return refMid * (1 + corrBps/10000)
 }
 
 func (p PairConfig) refresh() int {

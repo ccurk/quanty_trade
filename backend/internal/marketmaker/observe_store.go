@@ -33,8 +33,12 @@ type ObserveRow struct {
 	MidDiffBps float64 `json:"mid_diff_bps"`
 	// 报价中心锚:锚在哪个所、当时值多少。切锚是策略变更,其效果必须能被离线分辨,
 	// 所以逐条记下来 —— 否则 A/B 之后没人说得清对比的是哪两组样本。
-	QuoteAnchor    string  `json:"quote_anchor"` // "ref"=参考所(默认) | "exec"=执行所
-	AnchorMid      float64 `json:"anchor_mid"`
+	QuoteAnchor string  `json:"quote_anchor"` // "ref"=参考所(默认) | "exec"=执行所
+	AnchorMid   float64 `json:"anchor_mid"`
+	// BasisCorrBps 是本轮实际叠加到锚上的基差修正(bps,basis.go)。0=未开启。
+	// 必须逐条落盘:离线复核时 mid_diff_bps − basis_corr_bps 就是残差,
+	// 没有它就没法判断修正是跟上了还是在追噪声,A/B 也就无从谈起。
+	BasisCorrBps   float64 `json:"basis_corr_bps"`
 	BuyEdgeBps     float64 `json:"buy_edge_bps"`
 	SellEdgeBps    float64 `json:"sell_edge_bps"`
 	FeeBps         float64 `json:"fee_bps"`           // one-leg maker fee (bps)
@@ -72,7 +76,7 @@ func (r ObserveRow) BestEdgeBps() float64 {
 // 前置条件:ref/exec 两个盘口都必须有效(Mid()>0)。无效时返回零值行,由
 // logObserve/recordObserve 丢弃 —— 不能让 Inf/NaN 流进 JSON(json.Marshal 会
 // 直接报错,那条记录就无声消失了,这比少一条记录更糟)。
-func (p PairConfig) observeRow(exchange, feed string, ref, exec BookTicker, feeBps float64, feeLive bool, ts time.Time) ObserveRow {
+func (p PairConfig) observeRow(exchange, feed string, ref, exec BookTicker, feeBps float64, feeLive bool, corrBps float64, ts time.Time) ObserveRow {
 	refMid, execMid := ref.Mid(), exec.Mid()
 	if refMid <= 0 || execMid <= 0 {
 		return ObserveRow{}
@@ -93,8 +97,10 @@ func (p PairConfig) observeRow(exchange, feed string, ref, exec BookTicker, feeB
 		RefMid: refMid, ExecMid: execMid,
 		ExecSpreadBps: exec.SpreadBps(),
 		MidDiffBps:    (execMid - refMid) / refMid * 10000,
-		QuoteAnchor:   anchor, AnchorMid: p.anchorMid(refMid, execMid),
-		BuyEdgeBps: buyEdge, SellEdgeBps: sellEdge,
+		QuoteAnchor:   anchor,
+		AnchorMid:     p.basisAdjustedMid(refMid, execMid, corrBps),
+		BasisCorrBps:  corrBps,
+		BuyEdgeBps:    buyEdge, SellEdgeBps: sellEdge,
 		FeeBps: feeBps, FeeLive: feeLive,
 		NetBestEdgeBps:  best - 2*feeBps,
 		RoundTripNetBps: exec.SpreadBps() - 2*feeBps,
