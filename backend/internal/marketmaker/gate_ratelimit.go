@@ -92,6 +92,16 @@ type gateLimiter struct {
 	consecutive429 int
 	// banUntil 是熔断打开到期时刻。语义与 binance 的 requestBanUntil 一致。
 	banUntil time.Time
+	// openSince 是当前这一【段】连续熔断的起点,只被 onSuccess() 清零。
+	//
+	// 它和 banUntil 问的不是同一个问题:
+	//   banUntil  —— "这一刻请求会不会被本地快拒"(逐次冷却,到点自动失效);
+	//   openSince —— "这段限流已经持续了多久没有真正恢复"。
+	// 差别全在冷却到点、探针尚未成功的那段空窗:banUntil 已失效,但我们对
+	// "交易所是否肯收我们的请求"仍然一无所知。用 banUntil 判"恢复"会让引擎在
+	// 每个冷却边界上宣布一次恢复、又被下一发 429 立刻打回来 —— 熔断边缘横跳。
+	// 所以只认【真实成功】这一个恢复证据。engine.go 的站下状态机读的就是它。
+	openSince time.Time
 
 	// now/sleep 只为单测注入假时钟;生产走 time.Now / time.Sleep。
 	now   func() time.Time
@@ -188,7 +198,16 @@ func (l *gateLimiter) onSuccess() {
 	l.mu.Lock()
 	l.consecutive429 = 0
 	l.banUntil = time.Time{}
+	l.openSince = time.Time{}
 	l.mu.Unlock()
+}
+
+// breakerOpenSince 返回当前这一段连续熔断的起点;零值 = 不在熔断里。
+// 引擎经 GateExchange.RateLimitStatus() 读它,用来决定是否撤单站下。
+func (l *gateLimiter) breakerOpenSince() time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.openSince
 }
 
 // on429 记一次被限流拒单。连续次数达到 BreakerFails 即打开熔断,
@@ -206,6 +225,11 @@ func (l *gateLimiter) on429(retryAfter time.Duration) {
 		cool = time.Duration(l.cfg.BreakerCoolMs) * time.Millisecond
 	}
 	l.banUntil = l.now().Add(cool)
+	// 只在【本段】第一次打开时打点。后面每次 429 都会把 banUntil 往后推,
+	// 但这一段的起点不动 —— 站下判据要的是"持续了多久",不是"上次何时被推后"。
+	if l.openSince.IsZero() {
+		l.openSince = l.now()
+	}
 }
 
 // backoffFor 返回第 attempt 次重试(从 0 起)前该睡多久:200ms 起翻倍,MaxBackoffMs 封顶。

@@ -317,8 +317,30 @@ func (e *GateExchange) CancelOrder(symbol, orderID string) error {
 	return err
 }
 
+// RateLimitStatus 把限流器状态交给引擎(types.go RateLimitReporter)。
+// 引擎据此决定熔断持续打开时是否撤单站下 —— 那是唯一一个"引擎必须知道
+// 限流器内部状态"的决策:它问的是"我还能不能移动报价",而不是"这一发能不能发"。
+func (e *GateExchange) RateLimitStatus() RateLimitStatus {
+	return RateLimitStatus{
+		BreakerOpenSince: e.limiter.breakerOpenSince(),
+		WindowMs:         e.limiter.cfg.WindowMs,
+	}
+}
+
+// OpenOrdersForCancel 是 cancelAll 专用的读挂单口(types.go CancelPathReader)。
+// 与 CancelOrder 同走 gateClassCritical:可等名额、绕过熔断。
+// 普通 OpenOrders 走 gateClassQuote,熔断打开时本地直接被拒 —— 那会让 cancelAll
+// 在最该撤单的时刻读不到列表、一张也撤不掉。
+func (e *GateExchange) OpenOrdersForCancel(symbol string) ([]OpenOrder, error) {
+	return e.openOrders(gateClassCritical, symbol)
+}
+
 func (e *GateExchange) OpenOrders(symbol string) ([]OpenOrder, error) {
-	resp, err := e.signed(gateClassQuote, http.MethodGet, "/spot/orders", url.Values{"currency_pair": {gateSym(symbol)}, "status": {"open"}}, nil)
+	return e.openOrders(gateClassQuote, symbol)
+}
+
+func (e *GateExchange) openOrders(class gateReqClass, symbol string) ([]OpenOrder, error) {
+	resp, err := e.signed(class, http.MethodGet, "/spot/orders", url.Values{"currency_pair": {gateSym(symbol)}, "status": {"open"}}, nil)
 	if err != nil {
 		return nil, err
 	}

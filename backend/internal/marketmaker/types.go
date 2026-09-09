@@ -123,3 +123,40 @@ type PerpRiskControls interface {
 	// FundingPaidUSD 返回累计已付/已收资金费(USD,付出为正),用于计入 PnL。
 	FundingPaidUSD(symbol string) (float64, error)
 }
+
+// RateLimitStatus 是适配器交给引擎的限流器快照。引擎拿它决定"还能不能做市"。
+type RateLimitStatus struct {
+	// BreakerOpenSince 是当前这一段【连续】熔断的起点;零值 = 此刻不在熔断里。
+	//
+	// 它只被一次【真实成功】清零,不被"冷却到点"清零(gate_ratelimit.go openSince)。
+	// 冷却到点而探针尚未成功的那段空窗仍算"没恢复" —— 否则引擎会在每个冷却边界上
+	// 宣布一次恢复、又立刻被下一发 429 打回来,正是要防的横跳。
+	BreakerOpenSince time.Time
+	// WindowMs 是限流窗口本身的时间尺度(rate_limit.window_ms)。
+	// 引擎用它做恢复防抖的单位:短于一个窗口的"安静"可能整个落在上一个窗口的
+	// 尾巴里,不构成任何证据。
+	WindowMs int
+}
+
+// RateLimitReporter 是"这个适配器能报告自己的限流/熔断状态"这一可选能力。
+//
+// 和 PerpRiskControls 一样走运行时类型断言,而不是塞进 ExecExchange:今天只有
+// gate 这条腿有 UID 级限流器(台账 #109),其余适配器不该被迫实现一个假的。
+// 断言失败 = 引擎完全不做站下判断,行为与改动前逐位相同。
+type RateLimitReporter interface {
+	RateLimitStatus() RateLimitStatus
+}
+
+// CancelPathReader 是"撤单前那一步读挂单"的专用读口。
+//
+// 【为什么必须单开一个方法】cancelAll 要先 OpenOrders 才知道撤什么。普通
+// OpenOrders 走 gateClassQuote —— 熔断打开时它在本地【直接被拒】,于是 cancelAll
+// 拿不到列表、一张单也撤不掉,而熔断打开正是最需要它工作的时刻。也就是说:
+// 不分这一档,所有以 cancelAll 为动作的避险路径(参考流过期/持续偏离/单日止损/
+// 优雅关闭/本轮新加的熔断站下)在最该生效时全是空转 —— 和台账 #117 同一个病。
+//
+// 实现方(gate)把它映射到 gateClassCritical:可等名额、可退避重试、绕过熔断,
+// 与 CancelOrder 同档。不实现的适配器自动退回 OpenOrders,行为不变。
+type CancelPathReader interface {
+	OpenOrdersForCancel(symbol string) ([]OpenOrder, error)
+}

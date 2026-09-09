@@ -168,6 +168,7 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 		baseAsset = strings.SplitN(p.ExecSymbol, "_", 2)[0]
 	}
 	var lastPoll, haltUntil time.Time
+	var sdGate standDownGate // 限流熔断站下状态机(每个 pair 一份),见 standdown.go
 
 	tk := time.NewTicker(time.Duration(p.refresh()) * time.Millisecond)
 	defer tk.Stop()
@@ -216,6 +217,15 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 		if !e.cfg.ObserveOnly {
 			// 单日止损熔断中:停报价至次日 UTC。
 			if !haltUntil.IsZero() && time.Now().Before(haltUntil) {
+				continue
+			}
+			// 限流熔断持续打开 → 撤单站下(standdown.go)。
+			//
+			// 【位置】必须排在所有报价类 IO 之前。判据只来自限流器自身的状态,
+			// 不依赖任何会被熔断挡住的请求;要是像原来的余额避险那样排在
+			// quote() 内部 OpenOrders 之后,熔断一开第一发就被本地拒、整段永远
+			// 走不到 —— 那就成了第二条死代码(台账 #117 同病)。
+			if e.stepStandDown(&sdGate, ex, p, time.Now()) {
 				continue
 			}
 			// 参考盘口过期就撤掉两边报价,绝不按陈旧参考挂单(防参考断流时裸报价)。
@@ -268,6 +278,56 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 	}
 }
 
+// stepStandDown 跑一轮站下状态机并执行对应动作。返回 true = 本轮不报价。
+//
+// 适配器不实现 RateLimitReporter(coinsph/mexc/kucoin 等)时恒返回 false,
+// 整条路径不参与,行为与改动前逐位相同。
+func (e *Engine) stepStandDown(g *standDownGate, ex ExecExchange, p PairConfig, now time.Time) bool {
+	rep, ok := ex.(RateLimitReporter)
+	if !ok {
+		return false
+	}
+	st := rep.RateLimitStatus()
+	window := time.Duration(st.WindowMs) * time.Millisecond
+	if window <= 0 {
+		// 适配器没报窗口就按内置默认(config.go defaults() 的 10s)算,
+		// 绝不退化成 0 —— 那会让恢复条件变成"立刻恢复",防抖直接失效。
+		window = 10 * time.Second
+	}
+	downAfter := standDownAfter(p)
+
+	switch g.decide(st.BreakerOpenSince, window, downAfter, now) {
+	case standDownEnter:
+		e.cancelAll(ex, p.ExecSymbol)
+		logger.Errorf("[mm-standdown] %s@%s 限流熔断已持续打开 %s(阈值 %s):撤单站下 —— 报价移不动时不再挂单",
+			p.ExecSymbol, ex.Name(), now.Sub(st.BreakerOpenSince).Truncate(time.Millisecond), downAfter)
+		return true
+	case standDownHold:
+		// 站下期间每轮打一发报价类探针。
+		//
+		// 【它是必需品,不是装饰】熔断未到点时这发请求在本地就被拒(零配额、
+		// 不出网);banUntil 到点后它就是限流器头注里说的那发半开探针 —— 成功
+		// 即 onSuccess() → openSince 清零 → 状态机的"健康"开始计时。
+		// 没有它,站下之后引擎不再发任何报价类请求,onSuccess() 永远不会被调用,
+		// openSince 永远不清零,于是永久卡在站下 —— 活锁。
+		//
+		// 顺带:探针通了却还读到挂单,说明站下那一刻的撤单没撤干净(当时多半正被
+		// 限流)。站下的全部意义就是盘口上不留单,所以补撤。
+		if !g.shouldProbe(now, window) {
+			return true
+		}
+		if orders, err := ex.OpenOrders(p.ExecSymbol); err == nil && len(orders) > 0 {
+			logger.Warnf("[mm-standdown] %s@%s 站下中仍有 %d 张残留挂单,补撤", p.ExecSymbol, ex.Name(), len(orders))
+			e.cancelAll(ex, p.ExecSymbol)
+		}
+		return true
+	case standDownExit:
+		logger.Infof("[mm-standdown] %s@%s 限流已连续 %s(%d×窗口)未再熔断:恢复报价",
+			p.ExecSymbol, ex.Name(), time.Duration(standUpHealthyWindows)*window, standUpHealthyWindows)
+	}
+	return false
+}
+
 const (
 	// maxLiveDivergenceBps: exec 与 ref 中价偏离超过此值(1%)视为异常。
 	maxLiveDivergenceBps = 100
@@ -311,7 +371,22 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBp
 	refMid := ref.Mid()
 	half := p.SpreadBps / 10000.0
 
-	// 先读挂单:卖单里锁着的 SOL 仍是你的持仓,必须先拿到它。否则"挂卖→可用余额变少→
+	// 【顺序:余额在挂单之前】两个读都是 gateClassQuote,持续限流下会一起失败,
+	// 所以谁排前面谁的失败分支才会被执行。原来 OpenOrders 排在前面,它的分支是
+	// 「本轮不动单 → return」,于是下面那条「余额读失败就 cancelAll 避险」永远走不到 ——
+	// 一条写了却从没执行过的安全路径(和台账 #117「优雅撤单是死代码」同一个病)。
+	// 把避险的那条排到前面,限流时才真的会撤单。
+	//
+	// 两个读之间没有数据依赖:baseHeld 需要余额和卖单量【都】拿到才算得出,
+	// 先读哪个都不影响结果,只影响快照的时间偏斜方向(可忽略,原来也偏)。
+	bals, err := ex.Balances()
+	if err != nil {
+		logger.Warnf("[mm] %s@%s 余额读取失败,撤单避险: %v", p.ExecSymbol, ex.Name(), err)
+		e.cancelAll(ex, p.ExecSymbol)
+		return
+	}
+
+	// 挂单必须读到:卖单里锁着的 SOL 仍是你的持仓。否则"挂卖→可用余额变少→
 	// 下轮卖量算小→判定量不符→撤挂重下"会每秒死循环(thrash)。
 	orders, err := ex.OpenOrders(p.ExecSymbol)
 	if err != nil {
@@ -330,12 +405,6 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBp
 		}
 	}
 
-	bals, err := ex.Balances()
-	if err != nil {
-		logger.Warnf("[mm] %s@%s 余额读取失败,撤单避险: %v", p.ExecSymbol, ex.Name(), err)
-		e.cancelAll(ex, p.ExecSymbol)
-		return
-	}
 	// 现货持仓 = 可用余额 + 自己卖单里锁着的量(去掉这一项就会 thrash)。
 	//
 	// 放开做空后这一项必须【不加】:永续的 Balances() 返回的是清算所里的有符号持仓
@@ -423,14 +492,25 @@ func (e *Engine) reconcileSide(ex ExecExchange, symbol, side string, px, qty flo
 	}
 }
 
+// cancelAll 撤掉该 symbol 的全部挂单。它是本模块【所有】避险路径的共同动作
+// (参考流过期/持续偏离/单日止损/优雅关闭/熔断站下),所以它的第一步——读挂单——
+// 必须和撤单同档,不能走会被熔断挡住的报价档。见 types.go CancelPathReader。
 func (e *Engine) cancelAll(ex ExecExchange, symbol string) {
-	orders, err := ex.OpenOrders(symbol)
+	orders, err := cancelPathOpenOrders(ex, symbol)
 	if err != nil {
 		return
 	}
 	for _, o := range orders {
 		_ = ex.CancelOrder(symbol, o.ID)
 	}
+}
+
+// cancelPathOpenOrders 用撤单档读挂单;适配器没实现这一档就退回普通读(行为不变)。
+func cancelPathOpenOrders(ex ExecExchange, symbol string) ([]OpenOrder, error) {
+	if r, ok := ex.(CancelPathReader); ok {
+		return r.OpenOrdersForCancel(symbol)
+	}
+	return ex.OpenOrders(symbol)
 }
 
 // rideToBook widens post-only quotes out to the exec venue's own book so we capture
