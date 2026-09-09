@@ -19,9 +19,10 @@ paths:
 
 db:
   type: "mysql"
+  # 3306 = quanty-mysql（本业务）。别写 3307——那是 tg-jobs-mysql，另一个业务的生产库。
   host: "137.220.219.172"
-  port: "3307"
-  user: "root"
+  port: "3306"
+  user: "quanty"
   pass: ""  # ← 由环境变量 DB_PASS 注入
   name: "quanty_trade"
 

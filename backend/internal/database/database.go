@@ -62,6 +62,42 @@ func generateRandomPassword(n int) string {
 
 var DB *gorm.DB
 
+// signatureTables 是只有本业务才有的表(名字够特异,不会和别的业务撞)。
+// 用多张而不是一张:将来某张表被改名或废弃,不至于让整个校验误判成"陌生库"。
+var signatureTables = []string{"strategy_templates", "strategy_instances", "strategy_positions"}
+
+// verifyOwnSchema 确认已经连上的这个库确实是本业务的库。
+//
+// 判定规则(故意只有三条,多了会在正常场景误杀):
+//   - 一张表都没有 → 全新安装,放行,交给 AutoMigrate 建表;
+//   - 含任意一张 signatureTables → 是本业务的库,放行;
+//   - 有表、但一张签名表都没有 → 连到别人的库了,报错。
+//
+// 只看表名、不看数据,所以对全新部署和老库都成立;也不依赖 MySQL 特有语法,
+// sqlite 同样适用(测试即用 sqlite 覆盖)。
+func verifyOwnSchema(db *gorm.DB) error {
+	tables, err := db.Migrator().GetTables()
+	if err != nil {
+		return fmt.Errorf("读取表清单失败: %w", err)
+	}
+	if len(tables) == 0 {
+		return nil
+	}
+	for _, t := range tables {
+		for _, sig := range signatureTables {
+			if t == sig {
+				return nil
+			}
+		}
+	}
+	sample := tables
+	if len(sample) > 8 {
+		sample = sample[:8]
+	}
+	return fmt.Errorf("库里有 %d 张表,却没有任何一张本业务的表(%s);实际表如: %s",
+		len(tables), strings.Join(signatureTables, "/"), strings.Join(sample, ", "))
+}
+
 // InitDB initializes the global GORM database connection and runs migrations.
 //
 // Environment variables:
@@ -119,6 +155,15 @@ func InitDB() {
 		sqlDB.SetConnMaxLifetime(30 * time.Minute)
 		// 空闲回收: DB 侧重启/断连后残留的半死连接不超过 5min 就被淘汰。
 		sqlDB.SetConnMaxIdleTime(5 * time.Minute)
+	}
+
+	// 连错库防呆:必须在任何 AutoMigrate 之前。配置指错端口/库名时(conf_*.yaml 的
+	// db.port 曾长期写成 3307,那是另一个业务 tg-jobs 的 MySQL),下面的 AutoMigrate
+	// 会把本业务 20 张表建进别人的生产库,而且全程不报错。连上之后、动 schema 之前
+	// 先验一次身份,不符直接拒启——数字改对了还会再错,这道校验才是长期防线。
+	if err := verifyOwnSchema(DB); err != nil {
+		fatalAlert("数据库身份校验失败,拒绝在陌生库上建表: %v (当前连接 %s:%s/%s user=%s)",
+			err, c.DB.Host, c.DB.Port, c.DB.Name, c.DB.User)
 	}
 
 	// Migrate user table first so we can bootstrap admin user safely.
