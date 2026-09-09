@@ -1286,7 +1286,11 @@ func (m *Manager) prepareBacktestStrategyFile(inst *StrategyInstance, backtestID
 	return tmp, func() { _ = os.Remove(tmp) }, nil
 }
 
-func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, executedQty float64, avgPrice float64, takeProfit float64, stopLoss float64, eventTime time.Time) {
+// purpose 取 "open" / "close",与写 strategy_orders 时的 Purpose 同义。它是调用方
+// 已经知道、过去却没传进来的那一位信息:没有它,本函数在找不到 open 行时只能拿
+// side 猜 —— buy 一律猜成开多,买入平空于是被写成 direction=long / realized_pn_l=0
+// 的假仓(台账 #91)。
+func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, executedQty float64, avgPrice float64, takeProfit float64, stopLoss float64, eventTime time.Time, purpose string) {
 	if database.DB == nil || executedQty <= 0 || strategyID == "" {
 		return
 	}
@@ -1296,10 +1300,22 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 	var pos models.StrategyPosition
 	err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", ownerID, strategyID, symbol, "open").First(&pos).Error
 	if err != nil {
+		if purpose == "close" {
+			// 平仓成交却找不到持仓行 = 账本缺口(台账 #92),不是新开仓。过去这里
+			// 按 side 猜方向建行:买入平空被写成 direction=long、realized_pn_l=0
+			// 的假仓,既污染多空归属又把真盈亏吞成 0,而且从库里看不出来。宁可留
+			// 一条可数的孤儿日志,也不写一个骗人的 0。
+			logger.Errorf("[POSITION] 平仓成交找不到对应持仓,不建仓 owner=%d strategy=%s symbol=%s side=%s qty=%v price=%v", ownerID, strategyID, symbol, side, executedQty, avgPrice)
+			return
+		}
+		// 开仓成交:side 直接决定方向。过去 sell 还额外要求带 tp/sl 才认空头,于是
+		// resolveTPSLFromROI 在拿不到成交价(entryPrice<=0)时返回 0/0 的那些开空
+		// 单一行都不落 —— 缺失的开仓腿又反过来喂大了上面那个分支。
 		openDirection := ""
-		if side == "buy" {
+		switch side {
+		case "buy":
 			openDirection = "long"
-		} else if side == "sell" && (takeProfit > 0 || stopLoss > 0) {
+		case "sell":
 			openDirection = "short"
 		}
 		if openDirection == "" {
@@ -1333,6 +1349,18 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 	}
 
 	direction := strings.ToLower(strings.TrimSpace(pos.Direction))
+	if direction == "" && purpose == "close" {
+		// 平仓单的 side 唯一确定持仓方向:买入只能平空,卖出只能平多。比下面的
+		// TP/SL 几何推断和"兜底 long"都硬 —— 兜底 long 会把买入平空判成加仓,
+		// 仓位量反涨、盈亏记 0(manager.go adoptUnclaimedExchangePositions 的
+		// CR P1 注释说的就是这个)。
+		switch side {
+		case "buy":
+			direction = "short"
+		case "sell":
+			direction = "long"
+		}
+	}
 	if direction == "" {
 		if pos.TakeProfit > 0 && pos.StopLoss > 0 {
 			if pos.TakeProfit < pos.AvgPrice && pos.StopLoss > pos.AvgPrice {

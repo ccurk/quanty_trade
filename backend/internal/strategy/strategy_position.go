@@ -371,7 +371,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	}
 
 	if strings.ToLower(order.Status) == "filled" {
-		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, effectiveTakeProfit, effectiveStopLoss, order.Timestamp)
+		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, effectiveTakeProfit, effectiveStopLoss, order.Timestamp, "open")
 	}
 
 	if effectiveTakeProfit > 0 || effectiveStopLoss > 0 {

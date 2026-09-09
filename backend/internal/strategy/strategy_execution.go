@@ -443,7 +443,7 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
 	var closeMetrics *TradeCloseMetrics
 	if strings.ToLower(order.Status) == "filled" {
-		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, 0, 0, order.Timestamp)
+		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, strings.ToLower(order.Side), order.Amount, order.Price, 0, 0, order.Timestamp, "close")
 		fallbackMetrics = BuildTradeCloseMetricsFromPosition(&pos, order.Amount, order.Price, order.Timestamp)
 		closeMetrics = MergeTradeCloseMetrics(loadTradeCloseMetrics(inst.OwnerID, inst.ID, sym), fallbackMetrics)
 	}
@@ -539,7 +539,7 @@ func (m *Manager) closeSpotPosition(inst *StrategyInstance, sym string) error {
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
 	var closeMetrics *TradeCloseMetrics
 	if strings.ToLower(order.Status) == "filled" {
-		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, "sell", order.Amount, order.Price, 0, 0, order.Timestamp)
+		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), sym, "sell", order.Amount, order.Price, 0, 0, order.Timestamp, "close")
 		fallbackMetrics = BuildTradeCloseMetricsFromPosition(&pos, order.Amount, order.Price, order.Timestamp)
 		closeMetrics = MergeTradeCloseMetrics(loadTradeCloseMetrics(inst.OwnerID, inst.ID, sym), fallbackMetrics)
 	}
