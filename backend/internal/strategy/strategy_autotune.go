@@ -97,7 +97,14 @@ type optimizationWindowSummary struct {
 	RejectedOrders        int     `json:"rejected_orders"`
 	FailedOrders          int     `json:"failed_orders"`
 	ActiveSymbols         int     `json:"active_symbols"`
-	TotalRealizedPnL      float64 `json:"total_realized_pnl"`
+	// UnaccountedClosedPositions counts rows that reached status=closed with no
+	// close leg recorded (ClosedQty == 0): the exchange closed the position and
+	// the REALIZED_PNL lookup came back empty, so the row's realized_pn_l is a
+	// missing value, not a zero (台账 #91/#122). They are excluded from every
+	// number above; this counter is what stops that exclusion from silently
+	// shrinking the sample the optimizer thinks it saw.
+	UnaccountedClosedPositions int     `json:"unaccounted_closed_positions"`
+	TotalRealizedPnL           float64 `json:"total_realized_pnl"`
 	TotalRealizedNotional float64 `json:"total_realized_notional"`
 	RealizedReturnPct     float64 `json:"realized_return_pct"`
 	WinRatePct            float64 `json:"win_rate_pct"`
@@ -373,7 +380,24 @@ func (m *Manager) prepareOptimizationInput(inst *StrategyInstance, start, end ti
 		symbolScore[p.Symbol] += 3
 		windowSummary.PositionCount++
 		ss := ensureOptimizationSymbolSummary(symbolSummaryMap, p.Symbol)
-		if p.Status == "closed" {
+		if p.Status == "closed" && p.ClosedQty <= 0 {
+			// 已平仓但没有平仓腿 = 空壳行:交易所侧平仓(TP/SL 触发、强平、手工平)
+			// 拉不到 REALIZED_PNL 时,manager.go 只写 status/amount/close_time,
+			// closed_qty 与 realized_pn_l 一个字不写(台账 #91/#122)。它的 0 是
+			// "没查到",不是"打平"。
+			//
+			// 过去它被计进 closed_positions,而 total_realized_pn_l 里它只加 0,
+			// 于是喂给优化器的画像是"成交了 N 笔、总盈亏只有这么点"——每笔均值被
+			// 压扁。生产库实测 2,830 行已平仓里 2,006 行是这种空壳;按 30 天窗口
+			// 算,qt-trend-long 的 closed_positions 从 100 掉到 45、qt-fade-short
+			// 从 25 掉到 3。
+			//
+			// 注意口径:胜负比【不】受这批行影响 —— 下面 Wins 要 pnl>0、Losses 要
+			// pnl<0,pnl 恰为 0 的空壳两边都不进,WinRatePct = Wins/(Wins+Losses)
+			// 从来没被它们稀释过(同一 30 天窗口下 wins/losses 改前改后逐条相等)。
+			// 被它们污染的是笔数、每笔均值和平均持仓时长的分母。
+			windowSummary.UnaccountedClosedPositions++
+		} else if p.Status == "closed" {
 			windowSummary.ClosedPositions++
 			ss.ClosedPositions++
 			ss.RealizedPnL += p.RealizedPnL
