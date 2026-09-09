@@ -1,0 +1,26 @@
+{
+ "FLOCK": {
+  "open_time": "2026-09-08T00:13:34",
+  "pnl": -1.297,
+  "type": "穿刺3.6m",
+  "taker_buy_ratio_pre15m": 0.529,
+  "taker_buy_ratio_pre60m": 0.494,
+  "n_bars": 155
+ },
+ "UAI": {
+  "open_time": "2026-09-08T05:24:34",
+  "pnl": -0.304,
+  "type": "硬超时60m RSI19.7接刀",
+  "taker_buy_ratio_pre15m": 0.506,
+  "taker_buy_ratio_pre60m": 0.559,
+  "n_bars": 212
+ },
+ "SOPH": {
+  "open_time": "2026-09-08T07:32:35",
+  "pnl": -1.724,
+  "type": "穿刺3.4m conf0.90",
+  "taker_buy_ratio_pre15m": 0.5,
+  "taker_buy_ratio_pre60m": 0.512,
+  "n_bars": 155
+ }
+}
