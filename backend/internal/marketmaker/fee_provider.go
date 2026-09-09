@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"quanty_trade/internal/logger"
 )
 
 // fee_provider.go supplies the maker fee (bps) used to turn the observed GROSS edge
@@ -23,6 +25,37 @@ import (
 // back to a clearly labeled default (live=false) so the UI shows it's an assumption.
 
 var feeHTTP = &http.Client{Timeout: 10 * time.Second}
+
+// noteLiveFee 把【交易所返回的账户级 maker 费】打进日志,每个 (交易所, 费率) 只打一次。
+//
+// 为什么值得单独加这一句:台账 #15 的整条结论都卡在"我们账号真实的 maker 档位是多少"
+// 上 —— gate-futures-mm-assessment-2026-09-08.md §1.4 当时写的补齐方式是"所有者去
+// Profile > My Fees 看一眼"或"再写一个带凭据的调用"。两条都不必要:这个数**每轮
+// universe 扫描都已经被真实拉回来了**(MakerFeeBps / PrefetchGateMakerFees 各一处
+// 写缓存),只是从来没有落到任何进程外能看见的地方 —— 它只进了 feeCache,再经
+// /stats/mm-observe 这个**需要鉴权**的接口出去。于是一个已经在手里的数,被当成了
+// 需要人去查的未知数。
+//
+// 去重是必需的:universe 扫描每 10 秒一轮、每轮几千对,不去重就是刷屏。
+// 不打 symbol 是有意的 —— 要回答的是"账户在哪一档",不是每个对各自多少;
+// per-pair 的促销费率仪表盘那一行本来就有。
+var loggedFee = map[string]bool{}
+
+// 返回值 = 这次真的打了日志。生产代码不看它,存在的理由只有一个:
+// 让"去重生效"这条断言直接测【日志有没有发出去】,而不是绕道测那张 map 的长度 ——
+// 后者在把去重整条删掉之后仍然会通过,等于没测。
+func noteLiveFee(exchange string, bps float64) bool {
+	k := fmt.Sprintf("%s|%.4f", strings.ToLower(exchange), bps)
+	feeMu.Lock()
+	seen := loggedFee[k]
+	loggedFee[k] = true
+	feeMu.Unlock()
+	if seen {
+		return false
+	}
+	logger.Infof("[mm-fee] %s 账户级 maker 费(交易所实测返回)= %.4f bps", exchange, bps)
+	return true
+}
 
 const feeTTL = 5 * time.Minute
 
@@ -63,6 +96,7 @@ func MakerFeeBps(exchange, symbol string) (float64, bool) {
 			feeMu.Lock()
 			feeCache[k] = feeEntry{bps: bps, live: true, at: time.Now()}
 			feeMu.Unlock()
+			_ = noteLiveFee(exchange, bps)
 			return bps, true
 		}
 	}
@@ -178,6 +212,7 @@ func fetchGateBatchFees(pairs []string, key, secret string) {
 		return
 	}
 	now := time.Now()
+	seen := map[float64]bool{}
 	feeMu.Lock()
 	for pair, v := range m {
 		f, err := strconv.ParseFloat(v.MakerFee, 64)
@@ -185,8 +220,12 @@ func fetchGateBatchFees(pairs []string, key, secret string) {
 			continue
 		}
 		feeCache["gate|"+pair] = feeEntry{bps: f * 10000, live: true, at: now}
+		seen[f*10000] = true
 	}
 	feeMu.Unlock()
+	for bps := range seen { // 批量路径同样要留痕,否则只有单对路径的 BTC_USDT 会被记下来
+		_ = noteLiveFee("gate", bps)
+	}
 }
 
 // CachedMakerFeeBps returns the cached maker fee (no HTTP). Fresh cache → (fee, live);
