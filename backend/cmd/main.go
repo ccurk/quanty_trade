@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"io"
 	"log"
 	"net/http"
@@ -127,9 +126,13 @@ func main() {
 	hub := ws.NewHub()
 	go hub.Run()
 
-	runtimeCtx := context.Background()
+	// 优雅关闭的总闸(台账 #117):这个 ctx 收到 SIGTERM/SIGINT 才会 Done。
+	// 原来这里是 context.Background() —— 永不 Done,于是所有挂在它上面的收尾动作
+	// (尤其是做市引擎的撤单)生产里从没执行过。详见 shutdown.go。
+	runtimeCtx, stopSignals := shutdownContext()
+	defer stopSignals()
 	mgr := app.BuildStrategyManager(runtimeCtx, hub)
-	app.StartBackgroundJobs(runtimeCtx, mgr)
+	shutdownMM := app.StartBackgroundJobs(runtimeCtx, mgr)
 
 	// Health（免认证）: DB 层活性探针,挂死事故时给监控一个确定信号(2s 内 200/503)。
 	r.GET("/api/health/db", api.DBHealth)
@@ -283,5 +286,10 @@ func main() {
 
 	log.Println("Backend starting on :8080")
 	addr := ":" + strconv.Itoa(conf.C().Server.Port)
-	r.Run(addr)
+	// 不再用 r.Run(addr):它没有关闭入口,进程只能被信号硬打断,
+	// 于是"撤光挂单再退出"这条路径永远走不到(台账 #117)。
+	srv := &http.Server{Addr: addr, Handler: r}
+	if err := serveUntilShutdown(runtimeCtx, srv, shutdownMM); err != nil {
+		log.Printf("HTTP server exited with error: %v", err)
+	}
 }

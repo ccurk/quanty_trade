@@ -118,11 +118,17 @@ var (
 //
 // 断言的是"撤单档的读被调用过" —— 即 cancelAll 确实进入了工作状态,
 // 而不是只看有没有撤成功(限流下本来就可能撤不成,那是另一回事)。
+//
+// 【2026-09-09 更新】触发条件按所有者的裁决收窄了:本地限流拒绝(请求没出网)
+// 不再算"读不到余额",所以这里用一个【真的出网了却失败】的错误来触发 ——
+// 那才是"我不知道自己的余额"。两个读的先后顺序仍然是这条路径可达的前提,
+// 也仍然是这个测试锁的东西。豁免那一侧由 balance_blind_test.go 锁。
 func TestQuoteBalanceHedgePathIsReachable(t *testing.T) {
-	limited := fmt.Errorf("%w: 熔断打开(连续 429),报价类暂停出网", ErrGateRateLimited)
+	// 请求发出去了、超时了 —— 不是 ErrGateRateLimited,是真答不上来。
+	readFailed := fmt.Errorf("gate GET /spot/accounts: dial tcp 1.2.3.4:443: i/o timeout")
 	ex := &hedgeExec{
-		balErr:  limited,
-		openErr: limited,
+		balErr:  readFailed,
+		openErr: readFailed,
 		resting: []OpenOrder{{ID: "resting-bid", Side: "BUY", Price: 99.5, Qty: 1}},
 	}
 	e := &Engine{cfg: Config{}}
@@ -131,7 +137,7 @@ func TestQuoteBalanceHedgePathIsReachable(t *testing.T) {
 	ref := BookTicker{BidPx: 99.95, AskPx: 100.05, Ts: time.Now()}
 	eb := BookTicker{BidPx: 99.9, AskPx: 100.1, Ts: time.Now()}
 
-	e.quote(p, ex, ref, eb, 0)
+	e.quote(p, ex, ref, eb, 0, &blindClock{lastOK: time.Now()})
 
 	ex.mu.Lock()
 	reads, cancels := ex.cancelReads, len(ex.cancelled)
@@ -413,6 +419,8 @@ func TestStandDownEndToEnd(t *testing.T) {
 	eb := BookTicker{BidPx: 99.90, AskPx: 100.10, Ts: clk.now()}
 
 	var g standDownGate
+	// 余额盲区时钟,与 runPair 里一样每个 pair 一份(engine.go blindClock)。
+	blind := &blindClock{lastOK: time.Now()}
 	var trace []string
 	// tick 复刻 runPair 每个 refresh 周期里与本轮相关的那两步:先跑站下状态机,
 	// 没被拦下才进 quote()。顺序与 engine.go 里一致。
@@ -421,7 +429,7 @@ func TestStandDownEndToEnd(t *testing.T) {
 		if e.stepStandDown(&g, ex, p, clk.now()) {
 			return
 		}
-		e.quote(p, ex, ref, eb, 0)
+		e.quote(p, ex, ref, eb, 0, blind)
 	}
 	note := func(phase string) {
 		st := ex.RateLimitStatus()
@@ -513,12 +521,15 @@ func TestStandDownEndToEnd(t *testing.T) {
 		t.Fatal("恢复之后必须重新挂单")
 	}
 
-	// ── 阶段 F:恢复后的稳态,只观测不断言 ──
+	// ── 阶段 F:恢复后的稳态 ──
 	// 报价周期的报价类需求(Balances+OpenOrders,再加改价时的挂单)本来就高于
-	// 惩罚档预算(7 个名额/10 秒),所以恢复后仍会周期性撞上"本地名额耗尽"
-	// → 触发余额避险 → 撤单走平 → 名额滑出窗口后再挂回来。这不是站下逻辑的
-	// 抖动(g.down 全程为 false),是台账 #84 那条"需求 > 预算"的直接表现,
-	// 根治办法是压需求(限制在管 symbol 数),不在本轮范围内。把它量出来备查。
+	// 惩罚档预算(7 个名额/10 秒),所以恢复后仍会周期性撞上"本地名额耗尽"。
+	//
+	// 【本轮改动的量化闸门】改动前:名额耗尽被当成"余额读失败" → 撤单避险 →
+	// 走平 → 名额滑出窗口再挂回来,实测 20 个周期里 19 个盘口是空的 ——
+	// 惩罚档下等于做市停业,而惩罚档是常态(台账 #84)。
+	// 改动后:名额耗尽只是"这一轮没去问",不撤单,挂单原地留着等下一个能报价的周期。
+	// 所以这里从"只观测"升级成断言:空窗周期必须是少数。
 	flatCycles := 0
 	for i := 0; i < 20; i++ {
 		tick()
@@ -530,6 +541,10 @@ func TestStandDownEndToEnd(t *testing.T) {
 		}
 	}
 	note("F 恢复后稳态")
+	if flatCycles > 5 {
+		t.Fatalf("恢复后 20 个周期里有 %d 个周期盘口是空的 —— 本地名额耗尽又被当成余额读失败在撤单了,"+
+			"惩罚档下这就是做市停业(改动前的实测值是 19/20)", flatCycles)
+	}
 
 	t.Log("──── 限流 → 站下 → 恢复 全过程(假 gate,假时钟)────")
 	for _, line := range trace {
@@ -537,7 +552,7 @@ func TestStandDownEndToEnd(t *testing.T) {
 	}
 	t.Logf("站下发生在限流开始后第 %d 个 refresh 周期;恢复发生在交易所解除限流后第 %d 个周期", downAt+1, upAt+1)
 	t.Logf("恢复后重新挂出 %d 张单;站下期间是否真的走平: %v", quotedAfterRecovery, flatDuringStandDown)
-	t.Logf("恢复后 20 个周期里有 %d 个周期盘口是空的(需求 > 惩罚档预算的直接表现,非站下抖动)", flatCycles)
+	t.Logf("恢复后 20 个周期里有 %d 个周期盘口是空的(改动前是 19/20:名额耗尽被误判成余额读失败→常态走平)", flatCycles)
 	t.Logf("参数:站下阈值=%s(5×refresh) 恢复防抖=%s(%d×限流窗口 %dms)",
 		standDownAfter(p), time.Duration(standUpHealthyWindows)*time.Duration(ex.RateLimitStatus().WindowMs)*time.Millisecond,
 		standUpHealthyWindows, ex.RateLimitStatus().WindowMs)

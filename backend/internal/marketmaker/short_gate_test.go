@@ -201,7 +201,7 @@ func TestShortGateClosedKeepsSpotBehavior(t *testing.T) {
 	// rideToBook 不动(exec 卖一 100.02 比 100.20 便宜、买一 99.98 比 99.80 贵);
 	// askQty=min(1, baseHeld=0)=0 → wantAsk=false。
 	spotFlat := newFake(fakeSpotName, false, 0)
-	e.quote(testPair(false), spotFlat, refBook(), spotFlat.book, 0)
+	e.quote(testPair(false), spotFlat, refBook(), spotFlat.book, 0, nil)
 	got := sides(spotFlat.snapshot())
 	wantOrder(t, got, "BUY", 99.80, 1)
 	mustNoSide(t, got, "SELL", "现货空仓")
@@ -211,7 +211,7 @@ func TestShortGateClosedKeepsSpotBehavior(t *testing.T) {
 	// 就是这条路径。手算:invRatio=0.5 → center=100*(1-0.002*0.5)=99.9 →
 	// bid=floor(99.7002)=99.70、ask=ceil(100.0998)=100.10;askQty=min(1,5)=1。
 	spotHeld := newFake(fakeSpotName, false, 5)
-	e.quote(testPair(false), spotHeld, refBook(), spotHeld.book, 0)
+	e.quote(testPair(false), spotHeld, refBook(), spotHeld.book, 0, nil)
 	got = sides(spotHeld.snapshot())
 	wantOrder(t, got, "BUY", 99.70, 1)
 	wantOrder(t, got, "SELL", 100.10, 1)
@@ -219,7 +219,7 @@ func TestShortGateClosedKeepsSpotBehavior(t *testing.T) {
 	// (c) 关键用例:场馆【完全有能力】做空(SupportsShort=true)且风控四件套齐全,
 	// 但 allow_short 没开 → 行为必须和 (a) 一模一样。闸关着 = 什么都没变。
 	perpFlat := newSafePerp(0)
-	e.quote(testPair(false), perpFlat, refBook(), perpFlat.book, 0)
+	e.quote(testPair(false), perpFlat, refBook(), perpFlat.book, 0, nil)
 	got = sides(perpFlat.snapshot())
 	wantOrder(t, got, "BUY", 99.80, 1)
 	mustNoSide(t, got, "SELL", "闸关着的永续空仓")
@@ -228,7 +228,7 @@ func TestShortGateClosedKeepsSpotBehavior(t *testing.T) {
 	// 永续持空仓(baseHeld=-5)时 askQty 为负 → 仍然只挂买单,而且 invRatio 被
 	// 钳回 0 → 报价与空仓时逐位相同(空头方向的库存偏移完全失效)。
 	perpShort := newSafePerp(-5)
-	e.quote(testPair(false), perpShort, refBook(), perpShort.book, 0)
+	e.quote(testPair(false), perpShort, refBook(), perpShort.book, 0, nil)
 	got = sides(perpShort.snapshot())
 	wantOrder(t, got, "BUY", 99.80, 1) // 与 (a)(c) 同价 = 负持仓被当成 0
 	mustNoSide(t, got, "SELL", "闸关着的永续空头仓")
@@ -240,7 +240,7 @@ func TestShortGateClosedKeepsSpotBehavior(t *testing.T) {
 func TestShortGateClosedStillLocksInventoryFromRestingAsk(t *testing.T) {
 	ex := newFake(fakeSpotName, false, 3)
 	ex.open = []OpenOrder{{ID: "old-ask", Side: "SELL", Price: 100.10, Qty: 1}}
-	(&Engine{}).quote(testPair(false), ex, refBook(), ex.book, 0)
+	(&Engine{}).quote(testPair(false), ex, refBook(), ex.book, 0, nil)
 
 	// baseHeld = 可用 3 + 卖单锁着的 1 = 4 → invRatio=0.4 → center=99.92 →
 	// bid=floor(99.72016)=99.72。若漏加那 1,baseHeld=3 → invRatio=0.3 → 买价会是 99.74。
@@ -293,7 +293,7 @@ func TestShortGateOpenWithoutRiskControlsRefusesToStart(t *testing.T) {
 	if shortSideEnabled(p, ex) {
 		t.Fatal("风控缺失时 shortSideEnabled 必须为 false")
 	}
-	(&Engine{}).quote(p, ex, refBook(), ex.book, 0)
+	(&Engine{}).quote(p, ex, refBook(), ex.book, 0, nil)
 	mustNoSide(t, sides(ex.snapshot()), "SELL", "风控缺失、绕过 Start")
 }
 
@@ -350,7 +350,7 @@ func TestShortGateOpenQuotesBothSides(t *testing.T) {
 	// (a) 空仓的永续:双边都挂。这正是 (c) 用例挂不出来的那张卖单。
 	// 手算与现货空仓同价(invRatio=0),差别只在 askCap:0 → MaxPosition+0=10。
 	flat := newSafePerp(0)
-	e.quote(testPair(true), flat, refBook(), flat.book, 0)
+	e.quote(testPair(true), flat, refBook(), flat.book, 0, nil)
 	got := sides(flat.snapshot())
 	wantOrder(t, got, "BUY", 99.80, 1)
 	wantOrder(t, got, "SELL", 100.20, 1)
@@ -359,7 +359,7 @@ func TestShortGateOpenQuotesBothSides(t *testing.T) {
 	// 卖价推远(少继续做空)。手算:invRatio=-0.5 → center=100*(1+0.001)=100.1 →
 	// bid=floor(99.8998)=99.89、ask=ceil(100.3002)=100.31。
 	short := newSafePerp(-5)
-	e.quote(testPair(true), short, refBook(), short.book, 0)
+	e.quote(testPair(true), short, refBook(), short.book, 0, nil)
 	got = sides(short.snapshot())
 	wantOrder(t, got, "BUY", 99.89, 1)
 	wantOrder(t, got, "SELL", 100.31, 1)
@@ -367,7 +367,7 @@ func TestShortGateOpenQuotesBothSides(t *testing.T) {
 	// (c) 空到上限 -10:卖侧关闭(不再加空),买侧仍开(往回买)。这就是 −MaxPosition
 	// 那道对称的库存闸。
 	capped := newSafePerp(-10)
-	e.quote(testPair(true), capped, refBook(), capped.book, 0)
+	e.quote(testPair(true), capped, refBook(), capped.book, 0, nil)
 	got = sides(capped.snapshot())
 	mustNoSide(t, got, "SELL", "已空到 −MaxPosition")
 	if _, ok := got["BUY"]; !ok {
@@ -379,7 +379,7 @@ func TestShortGateOpenQuotesBothSides(t *testing.T) {
 	// 把已有卖单放在一个明显偏离的价上,逼它撤挂重下,再看新价是 -5 的还是 -4 的。
 	withAsk := newSafePerp(-5)
 	withAsk.open = []OpenOrder{{ID: "stale", Side: "SELL", Price: 105, Qty: 1}}
-	e.quote(testPair(true), withAsk, refBook(), withAsk.book, 0)
+	e.quote(testPair(true), withAsk, refBook(), withAsk.book, 0, nil)
 	got = sides(withAsk.snapshot())
 	wantOrder(t, got, "SELL", 100.31, 1) // -5 的价;若误加成 -4 会是 100.29
 	wantOrder(t, got, "BUY", 99.89, 1)   // 同理,-4 会是 99.87

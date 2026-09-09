@@ -49,7 +49,14 @@ func BuildStrategyManager(ctx context.Context, hub *ws.Hub) *strategy.Manager {
 	return mgr
 }
 
-func StartBackgroundJobs(ctx context.Context, mgr *strategy.Manager) {
+// StartBackgroundJobs 拉起所有后台模块,并把【做市引擎的优雅关闭】交回给调用方。
+//
+// 返回值必须由 main 在退出前【同步】调一次:撤单要花时间(关闭时大概率正被限流),
+// 挂在 ctx.Done 的 goroutine 里做等于没做 —— main 早就 return 了,进程一没,
+// 撤单跑到一半就断。台账 #117 的一半就是这个形状。另一半是根本没人 cancel 这个 ctx
+// (原来是 context.Background),见 cmd/main.go 的信号接线。
+func StartBackgroundJobs(ctx context.Context, mgr *strategy.Manager) (shutdownMM func()) {
+	shutdownMM = func() {}
 	api.SetManager(mgr)
 	// 跨所做市模块(独立于策略引擎)。默认禁用:仅当 $MARKETMAKER_CONFIG 指向配置文件
 	// 且其中 enabled=true 才启动;observe_only 模式只测价差不下单。
@@ -67,7 +74,9 @@ func StartBackgroundJobs(ctx context.Context, mgr *strategy.Manager) {
 	if mm, err := marketmaker.Start(mmCfg); err != nil {
 		logger.Errorf("[mm] start failed: %v", err)
 	} else if mm != nil {
-		go func() { <-ctx.Done(); mm.Stop() }()
+		// Stop() 自带两段硬上限(marketmaker/engine.go shutdownDrainBudget /
+		// shutdownCancelBudget),所以这里不再叠第二个超时 —— 一件事一个主人。
+		shutdownMM = mm.Stop
 	}
 	// Lark 群机器人 ERROR 告警：注册 logger error sink，ERROR 日志实时推送。
 	if ln := lark.Start(lark.Config{
@@ -104,4 +113,5 @@ func StartBackgroundJobs(ctx context.Context, mgr *strategy.Manager) {
 		mmLogDir = conf.Path("logs")
 	}
 	marketmaker.StartGateFuturesScanner(mmLogDir, 0)
+	return shutdownMM
 }

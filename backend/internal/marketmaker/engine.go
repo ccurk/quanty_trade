@@ -2,6 +2,7 @@ package marketmaker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -16,6 +17,10 @@ type Engine struct {
 	feed  FeedSource
 	execs map[string]ExecExchange
 	stop  context.CancelFunc
+	// workers 只数【报价 worker】(runPair),因为只有它们会挂新单。
+	// Stop() 要先等它们退干净再撤单,否则撤单扫一遍的同时还有 worker 在
+	// reconcileSide 里挂新的 —— 优雅关闭结束后盘口上仍留着一张裸单。
+	workers sync.WaitGroup
 }
 
 // Start builds the feed + exec adapters from config and launches one worker per
@@ -84,7 +89,11 @@ func Start(cfg Config) (*Engine, error) {
 		if ex.SupportsShort() && !p.AllowShort {
 			logger.Infof("[mm] pair %s@%s:场馆支持做空但 allow_short 未开,卖侧仍按现货规则钳在已持有量上(空仓=只挂买单)", p.ExecSymbol, p.Exec)
 		}
-		go e.runPair(ctx, p, ex)
+		e.workers.Add(1)
+		go func() {
+			defer e.workers.Done()
+			e.runPair(ctx, p, ex)
+		}()
 	}
 	if !cfg.ObserveOnly {
 		go e.runDeadMansSwitch(ctx) // 交易所侧死人开关(唯一能扛进程崩溃的兜底)
@@ -92,22 +101,83 @@ func Start(cfg Config) (*Engine, error) {
 	return e, nil
 }
 
+// shutdownDrainBudget / shutdownCancelBudget 是优雅关闭的两段硬上限。
+//
+// 【为什么必须有上限】关闭时大概率正被限流:撤单走 gateClassCritical,单发就可能
+// 等名额 MaxWaitMs(默认 3s)+ 退避重试 MaxRetries(3)×MaxBackoffMs(2s)。
+// 不封顶的话"撤干净"会把关闭拖到十几秒,而外面还有一把更硬的刀在等着。
+//
+// 【上限从哪来的:外面那把刀】容器收到 SIGTERM 后只有一个宽限期,到点就是 SIGKILL,
+// 那时撤到哪算哪。docker 的默认宽限期是 10s,而 docker-compose.prod.yml 里没有配
+// stop_grace_period(已 grep 确认),所以生产上就是这个 10s。预算必须整个装进去。
+//
+//	drain  2s:worker 的阻塞点是 refresh ticker(默认 1s)和一发在途 HTTP
+//	          (gate.go 的 http.Client Timeout=10s)。2s 覆盖常见的 ticker 情形并留 1s 余量;
+//	          卡在在途请求上就超时放行 —— 最坏是扫完之后又被挂上一张单,
+//	          仍然远好于"为了等 worker 而根本没扫"。
+//	cancel 5s:恰好等于 MaxWaitMs(3s)+MaxBackoffMs(2s),即【一发】撤单在最坏情况下
+//	          走完"等名额+一次退避"所需的时间 —— 预算再小就等于保证第一发都撤不完。
+//	          同时它只占 10s 宽限期的一半,把另一半留给 HTTP 服务收尾和进程自身退出。
+//
+// 两段加起来最坏 7s < 10s。超时【必须出声】:这是"没撤干净"的唯一线索,
+// 台账 #125(软链断了静默 exit 0)/#115(Redis 认证失败不会挂)就是没出声的代价。
+const (
+	shutdownDrainBudget  = 2 * time.Second
+	shutdownCancelBudget = 5 * time.Second
+)
+
+// Stop 是【唯一】的优雅关闭路径:停报价 → 撤光挂单 → 让 worker 退出。
+// 在台账 #117 修好之前它从没被执行过(后端零信号处理,ctx 是永不 Done 的
+// context.Background),接上 SIGTERM/SIGINT 之后它才真的会跑,见 cmd/main.go。
 func (e *Engine) Stop() {
 	setRunning(false)
 	if e == nil {
 		return
 	}
-	// 优雅关闭:撤掉所有残留挂单,绝不把裸单留在交易所(否则重启/崩溃后被人慢慢吃)。
+	// 【顺序:先停 worker,再撤单】反过来的话,撤单扫一遍的同时 worker 还在按
+	// 上一轮的目标价挂新单,扫完之后盘口上照样留着一张裸单 —— 优雅撤单等于白撤。
+	if e.stop != nil {
+		e.stop()
+	}
+	e.drainWorkers(shutdownDrainBudget)
+	// 撤掉所有残留挂单,绝不把裸单留在交易所(否则重启/崩溃后被人慢慢吃)。
 	if !e.cfg.ObserveOnly {
+		e.sweepCancel(shutdownCancelBudget)
+	}
+}
+
+// drainWorkers 等报价 worker 退出,最多等 budget。超时不是致命的,但必须出声。
+func (e *Engine) drainWorkers(budget time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		e.workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(budget):
+		logger.Warnf("[mm] Stop: 报价 worker 在 %s 内没退干净(多半卡在一发在途请求上),仍继续撤单", budget)
+	}
+}
+
+// sweepCancel 把每个 pair 的挂单撤掉,整体最多花 budget。
+// 超时时【明说没撤干净】—— 静默放弃就是给自己留一个查不出来的裸单。
+func (e *Engine) sweepCancel(budget time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
 		for _, p := range e.cfg.Pairs {
 			if ex, ok := e.execs[p.Exec]; ok {
 				e.cancelAll(ex, p.ExecSymbol)
 			}
 		}
+	}()
+	select {
+	case <-done:
 		logger.Infof("[mm] Stop: 已撤所有挂单")
-	}
-	if e.stop != nil {
-		e.stop()
+	case <-time.After(budget):
+		logger.Errorf("[mm] Stop: 撤单没能在 %s 预算内跑完,放弃剩余部分继续退出 —— "+
+			"交易所上可能仍有残留挂单,下次启动时 runPair 的开机清理会补撤,期间请人工核对", budget)
 	}
 }
 
@@ -169,6 +239,10 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 	}
 	var lastPoll, haltUntil time.Time
 	var sdGate standDownGate // 限流熔断站下状态机(每个 pair 一份),见 standdown.go
+	// 余额盲区时钟(每个 pair 一份),见 blindClock。从启动这一刻开始计时:
+	// 上面刚做过一次开机清残留,盘口是空的,"此刻我们知道自己的状态"是成立的。
+	// 不能留零值 —— 零值的语义是"从来没读到过",第一轮读失败就会立刻走避险撤一次空单。
+	blind := &blindClock{lastOK: time.Now()}
 
 	tk := time.NewTicker(time.Duration(p.refresh()) * time.Millisecond)
 	defer tk.Stop()
@@ -273,7 +347,7 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 					}
 				}
 			}
-			e.quote(p, ex, ref, eb, corrBps)
+			e.quote(p, ex, ref, eb, corrBps, blind)
 		}
 	}
 }
@@ -351,13 +425,115 @@ func staleAfter(p PairConfig) time.Duration {
 	return d
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 【「本地名额耗尽」≠「余额真读不到」】—— 所有者拍板,理由与边界记在这里
+//
+// 余额避险(读不到余额就 cancelAll)这条路径的语义是:【我不知道自己的仓位/余额,
+// 所以不敢再挂单】。而 gate 的本地限流拒绝(ErrGateRateLimited,两种形态:报价类
+// 名额耗尽 / 熔断打开时报价类快拒)根本不是"不知道"—— 那一发请求【压根没出网】,
+// 是我们自己选择了这一轮不去问。把"没问"当成"问了但答不上来",是把一个我们主动
+// 做的节流决策误读成了外部故障。
+//
+// 代价是实测出来的(standdown_test.go TestStandDownEndToEnd):恢复后 20 个周期里
+// 19 个周期盘口是空的 —— 链路是 本地名额耗尽 → 触发余额避险 → 撤单走平 → 名额滑出
+// 窗口再挂回来。惩罚档下几乎常态走平,而惩罚档恰恰是常态(台账 #84),等于做市停业。
+//
+// 而"持续限流"这个情况【已经有专门的主人】:上一轮做的站下状态机(standdown.go)
+// 显式接管了它,熔断持续 5s 就撤单站下。一件事一个主人,余额避险不该再兼职处理它。
+//
+// 所以判据改成:只有【真的问了、而答不上来】才算读失败(请求发出去了但失败/超时/
+// 返回异常,含交易所回的 429 —— 那是它拒绝回答,不是我们没问)。本地挡下来的那种
+// 交给站下判断。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// blindClock 记住"上一次真的读到余额"的时刻,每个 pair 一份,由 runPair 持有。
+//
+// 它存在的唯一理由是给上面那条豁免加一个【时间边界】:本地名额如果耗尽得【够久】,
+// 久到我们其实已经不知道自己的余额了,那"不算故障"就会变成一个永远不会响的静默洞
+// (台账 #125 软链断了静默 exit 0、#115 Redis 认证失败不会挂,都是这个病)。
+type blindClock struct {
+	lastOK time.Time
+}
+
+// balanceBlindWindows 是那条时间边界,以【限流窗口】为单位:连续这么久没有一次
+// 成功的余额读,就不再豁免,退回撤单避险。
+//
+// 【下界:为什么不能更短】惩罚档下报价类需求本来就高于预算,名额耗尽是常态,
+// 两次成功读余额之间【本来就会】隔一段。这个间隔是量出来的,不是拍的
+// (standdown_test.go TestBalanceBlindLimitExceedsRoutineGap,默认档 10 请求/10s):
+//
+//	refresh=500ms  → 最长间隔 8.5s
+//	refresh=1000ms → 最长间隔 7s
+//	refresh=2000ms → 最长间隔 4s
+//
+// 边界取 1 个窗口(10s)就贴着常态上界了,抖一下就误判,等于这一轮白改。取 2 个窗口
+// (默认 20s)才对常态最坏值留出 2 倍以上余量。
+//
+// 【上界:为什么不能更长/为什么它一定会响】滑动窗口每过一个窗口必然放出
+// Requests−ReservedCancel(默认 7)个报价名额,所以"连续 2 个窗口一次都没轮到"
+// 在正常节流下【不可能发生】。越过这条边界,原因只可能是别的:熔断长期打开(那是
+// 站下的场景,而站下阈值 5s 远早于此,轮不到这里)、限流器状态被写坏、或者时钟/
+// 协程卡死。那些都是真故障,该撤单。也就是说这条边界不是拍脑袋的超时,是"节流
+// 在物理上解释不了了"的那个点。
+//
+// 单位跟着窗口走(和 standUpHealthyWindows 同一套口径):调档改 window_ms 时它自动
+// 跟着变,不用改代码。
+const balanceBlindWindows = 2
+
+// balanceBlindLimit 返回这个适配器上的盲区上限。
+// 适配器不报告窗口就按内置默认 10s 算(config.go defaults()),绝不退化成 0 ——
+// 那会让边界变成"立刻超时",豁免直接失效。
+func balanceBlindLimit(ex ExecExchange) time.Duration {
+	window := 10 * time.Second
+	if rep, ok := ex.(RateLimitReporter); ok {
+		if w := time.Duration(rep.RateLimitStatus().WindowMs) * time.Millisecond; w > 0 {
+			window = w
+		}
+	}
+	return balanceBlindWindows * window
+}
+
+// tolerate 回答:这一次余额读失败,要不要豁免(本轮什么都不做,不撤单)。
+//
+// 返回 false 的三种情况,都必须落到撤单避险上:
+//   - 不是本地拒绝 → 请求真出网了却没拿到答案 → 我们确实不知道余额;
+//   - 没有记忆(nil / 零值)→ fail-safe:不知道自己盲了多久,就当作盲了;
+//   - 盲得超过边界 → 见 balanceBlindWindows。
+//
+// 超边界那一次会把时钟【重新计时】:否则之后每一个周期都会再撤一遍,
+// 把一次性的避险变成每秒一次的撤单风暴。重新计时后它每隔一个 limit 响一次,
+// 既有界又不会静默。
+func (b *blindClock) tolerate(err error, limit time.Duration, now time.Time) (bool, time.Duration) {
+	if b == nil || b.lastOK.IsZero() {
+		return false, 0
+	}
+	blindFor := now.Sub(b.lastOK)
+	if !errors.Is(err, ErrGateRateLimited) {
+		return false, blindFor
+	}
+	if blindFor >= limit {
+		b.lastOK = now
+		return false, blindFor
+	}
+	return true, blindFor
+}
+
+func (b *blindClock) ok(now time.Time) {
+	if b != nil {
+		b.lastOK = now
+	}
+}
+
 // quote maintains one post-only bid + one post-only ask around an inventory-skewed
 // reservation center (the more base held, the lower the center → lean to sell down),
 // clamped to never cross the exec book (post-only would reject), inventory-capped and
 // fail-safe: any read error (filters/balances/open-orders) aborts this cycle rather
 // than quoting blind. Cancel-replace only when the target moved more than the requote
 // band (a fraction of the half-spread), to avoid thrashing.
-func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBps float64) {
+//
+// blind 是余额盲区时钟(见 blindClock),nil = 调用方没有记忆 → 任何余额读失败都
+// 按"真读不到"处理(fail-safe 那一侧)。
+func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBps float64, blind *blindClock) {
 	// 卖侧是"只能卖已持有"(现货)还是"可以卖到 −MaxPosition"(永续)。
 	// 全函数只在这里判一次,下面三处(持仓口径/卖量上限/库存偏移下界)共用同一个结论,
 	// 免得三处各判各的、将来漂成不一致。
@@ -381,10 +557,24 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBp
 	// 先读哪个都不影响结果,只影响快照的时间偏斜方向(可忽略,原来也偏)。
 	bals, err := ex.Balances()
 	if err != nil {
-		logger.Warnf("[mm] %s@%s 余额读取失败,撤单避险: %v", p.ExecSymbol, ex.Name(), err)
+		// 「本地名额耗尽」≠「余额真读不到」,见 blindClock 上方那段。
+		limit := balanceBlindLimit(ex)
+		if ok, blindFor := blind.tolerate(err, limit, time.Now()); ok {
+			logger.Debugf("[mm] %s@%s 本轮没去读余额(本地限流,已 %s 未读到,边界 %s):不报价、不撤单,持续限流交给站下: %v",
+				p.ExecSymbol, ex.Name(), blindFor.Truncate(time.Millisecond), limit, err)
+			return
+		} else if blindFor >= limit {
+			// 越过边界:本地名额把余额读挡了这么久,已经不能再叫"我们没问"了。
+			// 这条必须是 ERROR —— 它是那个静默洞唯一会响的地方。
+			logger.Errorf("[mm] %s@%s 已连续 %s 读不到余额(边界 %s,%d×限流窗口),不再当作节流:撤单避险: %v",
+				p.ExecSymbol, ex.Name(), blindFor.Truncate(time.Millisecond), limit, balanceBlindWindows, err)
+		} else {
+			logger.Warnf("[mm] %s@%s 余额读取失败,撤单避险: %v", p.ExecSymbol, ex.Name(), err)
+		}
 		e.cancelAll(ex, p.ExecSymbol)
 		return
 	}
+	blind.ok(time.Now())
 
 	// 挂单必须读到:卖单里锁着的 SOL 仍是你的持仓。否则"挂卖→可用余额变少→
 	// 下轮卖量算小→判定量不符→撤挂重下"会每秒死循环(thrash)。
