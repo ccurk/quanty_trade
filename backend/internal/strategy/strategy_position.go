@@ -371,7 +371,14 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	}
 
 	if strings.ToLower(order.Status) == "filled" {
-		applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, effectiveTakeProfit, effectiveStopLoss, order.Timestamp, "open")
+		// 把开仓单和它建出来的仓位行焊在一起。此前这个返回值被丢掉,于是库里
+		// 8,781 行 entry 单 position_id 全是 0(平仓单反而有),归属只能靠
+		// "同 owner+策略+symbol,开仓时刻 ±60s"去猜 —— 台账 #92 说的"仓位无法
+		// 归属"有一半是这里丢的,不是账本没记。
+		if posID := applyOrderFillToPosition(inst.hub, inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, normalizedSide, order.Amount, order.Price, effectiveTakeProfit, effectiveStopLoss, order.Timestamp, "open"); posID != 0 {
+			_ = database.DB.Model(&models.StrategyOrder{}).Where("client_order_id = ?", clientOrderID).
+				Update("position_id", posID).Error
+		}
 	}
 
 	if effectiveTakeProfit > 0 || effectiveStopLoss > 0 {

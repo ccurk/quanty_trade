@@ -304,3 +304,39 @@ func TestListenKeyEndpointIsMarketAware(t *testing.T) {
 		t.Errorf("spot listenKey query = %q, want \"?listenKey=KEY123\"", got)
 	}
 }
+
+// 台账 #92:开仓单和它建出来的仓位行之间从来没有硬链接 —— 生产库 8,781 行
+// entry 单 position_id 全是 0,归属只能按 "owner+策略+symbol,开仓时刻 ±60s"
+// 去猜。账本回调本来就把 position_id 还回来了(下面的 4242),之前只写进了
+// exchange_order_events,订单行一个字没落。
+func TestFillWritesPositionIDBackOntoStrategyOrder(t *testing.T) {
+	db := newStreamTestDB(t)
+	if err := db.Create(&models.StrategyOrder{
+		ClientOrderID: "qt-test-client-1",
+		StrategyID:    "qt-breakout-follow",
+		StrategyName:  "qt-breakout-follow",
+		Symbol:        "APE/USDT",
+		Purpose:       "close",
+	}).Error; err != nil {
+		t.Fatalf("seed strategy order: %v", err)
+	}
+
+	b := &BinanceExchange{
+		name:       "Binance",
+		market:     "usdm",
+		httpClient: &http.Client{Timeout: time.Second},
+	}
+	b.SetOrderFillHandler(func(f OrderFill) uint { return 4242 })
+	s := &binanceUserStream{ownerID: 7, hub: ws.NewHub(), stop: make(chan struct{}), done: make(chan struct{})}
+
+	b.readUserStream(serveOneFrame(t, usdmOrderTradeUpdateFrame), s)
+
+	var got models.StrategyOrder
+	if err := db.Where("client_order_id = ?", "qt-test-client-1").First(&got).Error; err != nil {
+		t.Fatalf("load strategy order: %v", err)
+	}
+	if got.PositionID != 4242 {
+		t.Errorf("strategy_orders.position_id = %d, want 4242 —— 成交入账拿到了持仓 id 却没写回订单行,"+
+			"归属只能继续靠时间窗猜(台账 #92)", got.PositionID)
+	}
+}

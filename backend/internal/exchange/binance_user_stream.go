@@ -460,6 +460,10 @@ func (b *BinanceExchange) handleOrderTradeUpdate(s *binanceUserStream, raw map[s
 				if posID != 0 {
 					database.DB.Model(&models.ExchangeOrderEvent{}).Where("id = ?", ev.ID).
 						Update("position_id", posID)
+					// 同一个 posID 也要落回订单行,否则订单账本仍然只能靠时间窗
+					// 反推归属(台账 #92)。
+					database.DB.Model(&models.StrategyOrder{}).Where("id = ?", stratOrder.ID).
+						Update("position_id", posID)
 				}
 			}
 		}
@@ -559,7 +563,7 @@ func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[st
 					if fillOwner == 0 {
 						fillOwner = s.ownerID
 					}
-					_ = onFill(OrderFill{
+					if posID := onFill(OrderFill{
 						OwnerID:      fillOwner,
 						StrategyID:   stratOrder.StrategyID,
 						StrategyName: stratOrder.StrategyName,
@@ -570,7 +574,10 @@ func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[st
 						ExecutedQty:  execQty,
 						AvgPrice:     avgPrice,
 						EventTime:    eventTime,
-					})
+					}); posID != 0 {
+						database.DB.Model(&models.StrategyOrder{}).Where("id = ?", stratOrder.ID).
+							Update("position_id", posID)
+					}
 				} else {
 					logger.Errorf("[USER STREAM] 成交无法入账:没有注册 ledger 回调 owner=%d symbol=%s client_order_id=%s",
 						s.ownerID, symbol, clientOrderID)
