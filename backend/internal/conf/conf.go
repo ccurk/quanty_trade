@@ -456,7 +456,10 @@ func applyEnvOverrides(c *Config) {
 	if v := strings.TrimSpace(os.Getenv("DB_USER")); v != "" {
 		c.DB.User = v
 	}
-	if v := strings.TrimSpace(os.Getenv("DB_PASS")); v != "" {
+	// 口令不 TrimSpace：首尾空白是口令的合法组成部分，剪掉就和 MySQL 里存的那份对不上，
+	// 表现为"env 明明写了却鉴权失败"。同文件的 REDIS_PASSWORD / ADMIN_PASSWORD /
+	// JWT_SECRET 本来就是裸 Getenv，DB_PASS 是唯一的例外，这里改回一致。
+	if v := os.Getenv("DB_PASS"); v != "" {
 		c.DB.Pass = v
 	}
 	if v := strings.TrimSpace(os.Getenv("DB_HOST")); v != "" {

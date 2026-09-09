@@ -27,7 +27,9 @@ HOST_PORT="8080"
 DB_TYPE="mysql"
 DB_HOST="137.220.219.172"
 DB_PORT="3306"
-DB_USER="quanty"
+# DB_USER 走 env 是为了轮换日能只改 $QUANTY_ENV_FILE 就换业务账号，不必改这个脚本。
+# 这里只能是业务账号，**不要填 root** —— root 的口令只给运维/备份用，见脚本末尾说明。
+DB_USER="${DB_USER:-quanty}"
 DB_PASS="${DB_PASS:-}"
 DB_NAME="quanty_trade"
 
@@ -79,6 +81,13 @@ fi
 if [ "$DB_TYPE" = "mysql" ]; then
   if [ "$DB_HOST" = "REPLACE_DB_HOST" ] || [ "$DB_USER" = "REPLACE_DB_USER" ]; then
     echo "请先在脚本顶部填写数据库配置：DB_HOST DB_USER（DB_PASS 走 env 文件）"
+    exit 1
+  fi
+  # 应用进程拿到 root = 泄漏一处就同时丢掉整台 MySQL。业务账号只对 quanty_trade 库有权，
+  # 这道拦截保证「口令拆成三把」不会在某次手忙脚乱的部署里被悄悄合回一把。
+  if [ "$DB_USER" = "root" ]; then
+    echo "错误: DB_USER=root。后端必须用业务账号连库，root 只留给运维/备份。" >&2
+    echo "      改 $QUANTY_ENV_FILE 里的 DB_USER（默认 quanty），不要把 root 口令给应用。" >&2
     exit 1
   fi
 fi
@@ -214,8 +223,9 @@ fi
 #   sudo install -m 600 /dev/null /etc/quanty/backend.env
 #   sudo vi /etc/quanty/backend.env
 #
-#   DB_PASS=...
-#   REDIS_PASSWORD=...
+#   DB_USER=quanty                # 业务账号，**不要写 root**（脚本会拦）
+#   DB_PASS=...                   # 【口令 B】业务账号口令，只对 quanty_trade 库有权
+#   REDIS_PASSWORD=...            # 【口令 C】Redis
 #   BINANCE_API_KEY=...
 #   BINANCE_API_SECRET=...
 #   JWT_SECRET=...                # 换掉会让所有已登录用户被踢下线，需重新登录
@@ -229,4 +239,14 @@ fi
 # 值含空格或特殊字符时要加引号（本文件是被 shell source 的）。
 # 做市侧的 MM_GATE_* / MM_HL_* 走的是另一个文件：/root/work/quanty_trade/.env
 # （已被 .gitignore 忽略，通过 --env-file 注入容器）。
+#
+# 三把口令、三个 env 文件，故意不放在一起（台账 #10）：
+#   /etc/quanty/backend.env    ← 本文件。给应用：DB_USER/DB_PASS(口令 B)、REDIS_PASSWORD(口令 C)。
+#                                 **不含 MySQL root 口令** —— 后端拿不到 root，就丢不掉 root。
+#   /etc/quanty/datastore.env  ← 给 server_deploy_mysql.sh / server_deploy_redis.sh：
+#                                 MYSQL_ROOT_PASSWORD(口令 A)、MYSQL_PASSWORD(口令 B)、
+#                                 REDIS_PASSWORD(口令 C)。只在建/重建容器时用。
+#   /etc/quanty-backup.env     ← 给 scripts/db-backup.sh / db-restore.sh：
+#                                 DB_USER=root + DB_PASS=口令 A，以及 BACKUP_PASSPHRASE 等。
+# 三个文件都必须 600；本脚本会校验自己那份的权限，权限不对直接退出。
 # ---------------------------------------------------------------------------

@@ -37,9 +37,17 @@ fi
 # 简易 YAML 解析：找 db: block 后面 4 行
 DB_HOST=$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /host:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")
 DB_PORT=$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /port:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")
-DB_USER=$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /user:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")
-DB_PASS=$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /pass:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")
 DB_NAME=$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /name:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")
+
+# 凭据不从 yaml 读：db.pass 恒为 ""（口令一律不入库），读出来是空口令，
+# 会在下面 Step 1 的全量 mysqldump 处失败。本脚本导出整库，用 root（口令 A）。
+DB_USER="${DB_USER:-}"
+DB_PASS="${DB_PASS:-}"
+if [ -z "$DB_USER" ] || [ -z "$DB_PASS" ]; then
+  echo "❌ 请先 export DB_USER / DB_PASS（MySQL root，口令 A）再跑本脚本。"
+  echo "   例：set -a; . /etc/quanty-backup.env; set +a; bash scripts/migrate-export.sh"
+  exit 1
+fi
 
 echo "📊 DB: ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 echo ""

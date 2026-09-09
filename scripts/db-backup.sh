@@ -11,7 +11,9 @@
 #   RCLONE_REMOTE      — rclone remote 名（如 r2、b2、s3）
 #   RCLONE_BUCKET      — 桶名（如 quanty-backups）
 #   TG_TOKEN / TG_CHAT — TG 通知（可选；不配就不发）
-#   DB_HOST/PORT/USER/PASS/NAME — DB 连接，默认从 conf/conf_pro.yaml 读
+#   DB_USER / DB_PASS  — **必填**，备份用 MySQL root（口令 A）。不从 yaml 兜底：
+#                        conf_pro.yaml 里的口令字段恒为空，兜底只会安静地失败。
+#   DB_HOST/PORT/NAME  — 可留空，缺省从 conf/conf_pro.yaml 读（这几个不是凭据）
 #
 # 用法：
 #   bash scripts/db-backup.sh hourly   # 每小时（保留 7 天）
@@ -33,10 +35,13 @@ CONF="${QUANTY_CONF:-conf/conf_pro.yaml}"
 if [ -f "$CONF" ]; then
   DB_HOST="${DB_HOST:-$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /host:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")}"
   DB_PORT="${DB_PORT:-$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /port:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")}"
-  DB_USER="${DB_USER:-$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /user:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")}"
-  DB_PASS="${DB_PASS:-$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /pass:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")}"
   DB_NAME="${DB_NAME:-$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /name:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")}"
 fi
+# DB_USER / DB_PASS **故意不从 yaml 兜底**：conf_pro.yaml 的 db.pass 现在恒为 ""，
+# 兜底只会安静地得到「user=yaml 里那个、pass=空」，一路跑到 mysqldump 才以一句
+# 看不懂的报错失败。备份用的是 root（口令 A），本来也不该出现在入库的 yaml 里。
+DB_USER="${DB_USER:-}"
+DB_PASS="${DB_PASS:-}"
 
 # ─── 必备检查 ───
 fatal() {
@@ -54,6 +59,8 @@ fatal() {
 [ -z "${RCLONE_REMOTE:-}" ]     && fatal "RCLONE_REMOTE 未配置"
 [ -z "${RCLONE_BUCKET:-}" ]     && fatal "RCLONE_BUCKET 未配置"
 [ -z "${DB_HOST:-}" ]           && fatal "DB_HOST 未配置（yaml 读不到，请显式设）"
+[ -z "${DB_USER:-}" ]           && fatal "DB_USER 未配置（$ENV_FILE 里加，备份走 root）"
+[ -z "${DB_PASS:-}" ]           && fatal "DB_PASS 未配置（$ENV_FILE 里加；这里要的是 MySQL root 口令，不是后端那把业务账号口令）"
 
 for cmd in mysqldump gzip gpg rclone curl; do
   command -v "$cmd" > /dev/null 2>&1 || fatal "缺少命令: $cmd（用 apt/brew 装）"

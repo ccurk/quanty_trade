@@ -67,9 +67,19 @@ fi
 
 DB_HOST=$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /host:/{gsub(/[" ]/,"",$2); print $2; exit}' "$USE_CONF")
 DB_PORT=$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /port:/{gsub(/[" ]/,"",$2); print $2; exit}' "$USE_CONF")
-DB_USER=$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /user:/{gsub(/[" ]/,"",$2); print $2; exit}' "$USE_CONF")
-DB_PASS=$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /pass:/{gsub(/[" ]/,"",$2); print $2; exit}' "$USE_CONF")
 DB_NAME=$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /name:/{gsub(/[" ]/,"",$2); print $2; exit}' "$USE_CONF")
+
+# 凭据不从 yaml 读：conf_pro.yaml 的 db.pass 恒为 ""，读出来是空口令，会一路跑到
+# 下面 Step 1 的 mysqldump 才失败——而 Step 1 正是「导入前先备份」那一步，失败还被
+# `|| { 继续 }` 吞掉当成「DB 是空的」，于是无备份直接往下导。必须显式给。
+# 本脚本会 mysqldump + 导入整库，权限对齐备份口径：用 root（口令 A）。
+DB_USER="${DB_USER:-}"
+DB_PASS="${DB_PASS:-}"
+if [ -z "$DB_USER" ] || [ -z "$DB_PASS" ]; then
+  echo "❌ 请先 export DB_USER / DB_PASS（MySQL root，口令 A）再跑本脚本。"
+  echo "   例：set -a; . /etc/quanty-backup.env; set +a; bash scripts/migrate-import.sh ..."
+  exit 1
+fi
 
 echo "📊 目标 DB: ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 echo ""

@@ -26,14 +26,19 @@ CONF="${QUANTY_CONF:-conf/conf_pro.yaml}"
 if [ -f "$CONF" ]; then
   DB_HOST="${DB_HOST:-$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /host:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")}"
   DB_PORT="${DB_PORT:-$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /port:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")}"
-  DB_USER="${DB_USER:-$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /user:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")}"
-  DB_PASS="${DB_PASS:-$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /pass:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")}"
   DB_NAME="${DB_NAME:-$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /name:/{gsub(/[" ]/,"",$2); print $2; exit}' "$CONF")}"
 fi
+# DB_USER / DB_PASS 不从 yaml 兜底，理由同 db-backup.sh：口令字段恒为空，
+# 兜底得到的是「空口令」，会一路跑到 mysql restore 才失败——而这是恢复流程，
+# 那时候通常已经在出事了，不该再多一个看不懂的报错。恢复用 root（口令 A）。
+DB_USER="${DB_USER:-}"
+DB_PASS="${DB_PASS:-}"
 
 [ -z "${BACKUP_PASSPHRASE:-}" ] && { echo "❌ BACKUP_PASSPHRASE 未配置"; exit 1; }
 [ -z "${RCLONE_REMOTE:-}" ]     && { echo "❌ RCLONE_REMOTE 未配置"; exit 1; }
 [ -z "${RCLONE_BUCKET:-}" ]     && { echo "❌ RCLONE_BUCKET 未配置"; exit 1; }
+[ -z "${DB_USER:-}" ]           && { echo "❌ DB_USER 未配置（$ENV_FILE 里加，恢复走 root）"; exit 1; }
+[ -z "${DB_PASS:-}" ]           && { echo "❌ DB_PASS 未配置（$ENV_FILE 里加；要的是 MySQL root 口令）"; exit 1; }
 
 echo "═══════════════════════════════════════"
 echo "QuantyTrade 备份恢复"
