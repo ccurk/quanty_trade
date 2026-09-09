@@ -38,6 +38,10 @@ func newFakeGate(t *testing.T, body string, onCall func()) (*GateExchange, func(
 		secret:  "test-secret",
 		http:    srv.Client(),
 		filters: map[string]SymbolFilter{},
+		// 本文件测的是"落库故障不拖累交易路径",不是限流。给一个够大的预算把
+		// 限流器从被测范围里摘出去,否则下面 200 连打会被限流挡住,测出来的是
+		// 限流器而不是 sink。限流本身另见 gate_ratelimit_test.go。
+		limiter: newGateLimiter(RateLimitConfig{Requests: 1_000_000, WindowMs: 10000}),
 	}
 	return ex, srv.Close
 }

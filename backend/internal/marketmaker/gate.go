@@ -38,6 +38,9 @@ func init() {
 			secret:  cfg.APISecret,
 			http:    &http.Client{Timeout: 10 * time.Second},
 			filters: map[string]SymbolFilter{},
+			// UID 级限流器 + 429 熔断(台账 #109)。零配置 = 台账 #84 实测的
+			// 惩罚档 10 请求/10 秒;调档时改 exec[].rate_limit,不必改代码。
+			limiter: newGateLimiter(cfg.RateLimit),
 		}
 		if cfg.WSTrade {
 			// ws_trade=true: 下单/撤单优先走 WS 长连接(建连+登录惰性发生在首单),
@@ -55,6 +58,13 @@ type GateExchange struct {
 	secret  string
 	http    *http.Client
 	ws      *gateWSTrader // nil = REST only (ws_trade=false, 默认)
+
+	// limiter 是 UID 级限流器 + 429 熔断,见 gate_ratelimit.go。
+	// 它按【逻辑请求】计数,REST 与 WS 两条出口共用同一个池 —— 交易所那 10 个
+	// 名额是一个 UID 池,不因走哪条连接而变多。(WS 是否真的计入这一档我没有
+	// 核实过;按"计入"处理是 fail-closed 的那一侧,若日后证实 WS 免限,
+	// 调大 rate_limit.requests 即可,不必改代码。)
+	limiter *gateLimiter
 
 	filterMu sync.Mutex
 	filters  map[string]SymbolFilter
@@ -90,9 +100,59 @@ func (e *GateExchange) publicGET(path string, q url.Values) ([]byte, error) {
 	return body, nil
 }
 
-func (e *GateExchange) signed(method, path string, q url.Values, body []byte) ([]byte, error) {
+// signed 是签名请求的对外入口:限流 → 发送 → 429 识别 → 退避重试 → 熔断反馈。
+// class 决定这一发请求的待遇,语义见 gate_ratelimit.go 顶部的取舍说明:
+//
+//	gateClassCritical(撤单/救腿):可等名额、可绕过熔断、可退避重试(撤单幂等)。
+//	gateClassQuote   (下单/读挂单/读余额):不等、不重试、熔断打开时本地直接拒。
+//
+// 【为什么下单不重试】不是安全性问题(429 是明确拒绝,订单没进去,重发不会双挂),
+// 是经济性问题:在 1 请求/秒的预算下,一发重试花掉的正是撤单可能要用的名额,
+// 而那时价格已经陈了。引擎下一轮会用新价重新报,那才是正确的"重试"。
+// 这与 gate_ws.go PlaceLimit 里"帧已出站就不 REST 重发"是同一条思路的延续。
+func (e *GateExchange) signed(class gateReqClass, method, path string, q url.Values, body []byte) ([]byte, error) {
+	// 熔断打开时报价类本地直接拒,一发都不出去(对照 binance.go:826 的 RateLimited() 快拒)。
+	// 撤单类【故意】不受熔断阻挡:熔断的目的是别把配额浪费在注定被拒的报价上,
+	// 而不是把已经挂在盘口的单锁死在那里。
+	if class != gateClassCritical && e.limiter.RateLimited() {
+		return nil, fmt.Errorf("%w: 熔断打开(连续 429),报价类暂停出网", ErrGateRateLimited)
+	}
+
+	attempts := 1
+	if class == gateClassCritical {
+		attempts += e.limiter.cfg.MaxRetries
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if err := e.limiter.acquire(class); err != nil {
+			return nil, err
+		}
+		rb, status, retryAfter, err := e.signedOnce(method, path, q, body)
+		if err == nil {
+			e.limiter.onSuccess()
+			return rb, nil
+		}
+		lastErr = err
+		if !gateIsRateLimited(status, rb) {
+			// 非限流错误(4xx 业务错、网络错):不重试。网络错时请求可能已经落地,
+			// 重发下单会双挂;撤单虽幂等,但也没有证据表明重发会更好。
+			return nil, err
+		}
+		e.limiter.on429(retryAfter)
+		if attempt == attempts-1 {
+			break
+		}
+		e.limiter.sleep(e.limiter.backoffFor(attempt, retryAfter))
+	}
+	return nil, lastErr
+}
+
+// signedOnce 发一发签名请求,把 HTTP 状态码和 Retry-After 一并交回给上层判限流。
+// 原来的实现把状态码折进 error 字符串里,导致调用方无法区分"被限流"和"参数错" ——
+// 这正是 gate 这条腿此前没有任何 429 处理的直接原因。
+func (e *GateExchange) signedOnce(method, path string, q url.Values, body []byte) ([]byte, int, time.Duration, error) {
 	if e.apiKey == "" || e.secret == "" {
-		return nil, fmt.Errorf("gate: missing api credentials")
+		return nil, 0, 0, fmt.Errorf("gate: missing api credentials")
 	}
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	bodyHash := sha512.Sum512(body) // SHA512("") is a valid constant for empty bodies
@@ -115,7 +175,7 @@ func (e *GateExchange) signed(method, path string, q url.Values, body []byte) ([
 	}
 	req, err := http.NewRequest(method, u, rdr)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	req.Header.Set("KEY", e.apiKey)
 	req.Header.Set("SIGN", sign)
@@ -126,14 +186,16 @@ func (e *GateExchange) signed(method, path string, q url.Values, body []byte) ([
 	}
 	resp, err := e.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(resp.Body)
+	retryAfter := gateRetryAfter(resp.Header.Get("Retry-After"))
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("gate %s %s -> %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(rb)))
+		return rb, resp.StatusCode, retryAfter,
+			fmt.Errorf("gate %s %s -> %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(rb)))
 	}
-	return rb, nil
+	return rb, resp.StatusCode, retryAfter, nil
 }
 
 func (e *GateExchange) FetchBookTicker(symbol string) (BookTicker, error) {
@@ -206,8 +268,13 @@ func (e *GateExchange) PlaceLimit(symbol, side string, price, qty float64, tif s
 		"time_in_force": t,
 	}
 	if e.ws != nil {
+		// WS 与 REST 共用同一个 UID 名额池,所以走 WS 也要先占名额。
+		if err := e.limiter.acquire(gateClassQuote); err != nil {
+			return "", err
+		}
 		id, sentOut, err := e.ws.PlaceLimit(payload)
 		if err == nil {
+			e.limiter.onSuccess()
 			return id, nil
 		}
 		if sentOut {
@@ -218,7 +285,7 @@ func (e *GateExchange) PlaceLimit(symbol, side string, price, qty float64, tif s
 		logger.Warnf("[mm-gatews] place %s: WS unavailable pre-send, REST fallback: %v", payload["currency_pair"], err)
 	}
 	body, _ := json.Marshal(payload)
-	resp, err := e.signed(http.MethodPost, "/spot/orders", nil, body)
+	resp, err := e.signed(gateClassQuote, http.MethodPost, "/spot/orders", nil, body)
 	if err != nil {
 		return "", err
 	}
@@ -231,21 +298,27 @@ func (e *GateExchange) PlaceLimit(symbol, side string, price, qty float64, tif s
 	return r.ID, nil
 }
 
+// CancelOrder 走 gateClassCritical:撤不掉的单 = 挂在盘口的裸露敞口,
+// 所以它拿得到预留名额、可以等、可以退避重试,且不被熔断挡住。
 func (e *GateExchange) CancelOrder(symbol, orderID string) error {
 	if e.ws != nil {
-		if err := e.ws.CancelOrder(orderID, gateSym(symbol)); err == nil {
+		// WS 也吃同一个 UID 池的名额,同样先占。
+		if err := e.limiter.acquire(gateClassCritical); err != nil {
+			logger.Warnf("[mm-gatews] cancel %s: 限流器未放行 WS,转 REST: %v", orderID, err)
+		} else if err := e.ws.CancelOrder(orderID, gateSym(symbol)); err == nil {
+			e.limiter.onSuccess()
 			return nil
 		} else {
 			// 撤单幂等: WS 任一阶段失败都可安全 REST 兜底(重复撤单最多报"不存在")。
 			logger.Warnf("[mm-gatews] cancel %s: WS failed, REST fallback: %v", orderID, err)
 		}
 	}
-	_, err := e.signed(http.MethodDelete, "/spot/orders/"+orderID, url.Values{"currency_pair": {gateSym(symbol)}}, nil)
+	_, err := e.signed(gateClassCritical, http.MethodDelete, "/spot/orders/"+orderID, url.Values{"currency_pair": {gateSym(symbol)}}, nil)
 	return err
 }
 
 func (e *GateExchange) OpenOrders(symbol string) ([]OpenOrder, error) {
-	resp, err := e.signed(http.MethodGet, "/spot/orders", url.Values{"currency_pair": {gateSym(symbol)}, "status": {"open"}}, nil)
+	resp, err := e.signed(gateClassQuote, http.MethodGet, "/spot/orders", url.Values{"currency_pair": {gateSym(symbol)}, "status": {"open"}}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +348,7 @@ func (e *GateExchange) OpenOrders(symbol string) ([]OpenOrder, error) {
 // snapshot. This call site is the ~4x/second read from 台账 #42 that had never
 // once been written down.
 func (e *GateExchange) Balances() (map[string]float64, error) {
-	resp, err := e.signed(http.MethodGet, "/spot/accounts", nil, nil)
+	resp, err := e.signed(gateClassQuote, http.MethodGet, "/spot/accounts", nil, nil)
 	if err != nil {
 		return nil, err
 	}

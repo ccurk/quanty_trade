@@ -28,6 +28,75 @@ type ExecConfig struct {
 	// where the adapter supports it (today: gate). Default false = REST only —
 	// flipping this back off is the rollback path for the WS channel.
 	WSTrade bool `yaml:"ws_trade" json:"ws_trade"`
+	// RateLimit configures the client-side UID rate limiter + 429 breaker
+	// (today: gate only, see gate_ratelimit.go). All-zero = built-in defaults,
+	// which encode 台账 #84 的实测惩罚档。
+	RateLimit RateLimitConfig `yaml:"rate_limit" json:"rate_limit"`
+}
+
+// RateLimitConfig 是 UID 级限流器 + 429 熔断的参数面。
+//
+// 它【必须可配】而不是写死:限流档位是交易所按成交率(FR)动态调的惩罚档,
+// 台账 #84 实测当前是 10 请求/10 秒,但解限后会回到常规档、FR 再掉又会降回来。
+// 写死就等于每次调档改一次代码、发一次版。零值 = 走 defaults(),即 #84 那一档。
+type RateLimitConfig struct {
+	// Requests/WindowMs 是窗口预算本身:默认 10 请求 / 10000 毫秒(台账 #84 实测)。
+	Requests int `yaml:"requests" json:"requests"`
+	WindowMs int `yaml:"window_ms" json:"window_ms"`
+	// ReservedCancel 从窗口预算里【划给撤单/救腿专用】的名额,报价类请求看不到它们。
+	// 见 gate_ratelimit.go 顶部"为什么撤单不能和下单共用一个池"。默认 3。
+	ReservedCancel int `yaml:"reserved_cancel" json:"reserved_cancel"`
+	// MaxWaitMs 是撤单类请求为了等一个名额最多阻塞多久(默认 3000)。
+	// 报价类【从不等待】,恒为 0:见 gate_ratelimit.go。
+	MaxWaitMs int `yaml:"max_wait_ms" json:"max_wait_ms"`
+	// MaxRetries/MaxBackoffMs 限住撤单类的 429 退避重试。退避必须有上限,
+	// 否则一条撤不掉的撤单会把后面所有撤单堵在队里(默认 3 次 / 封顶 2000ms)。
+	MaxRetries   int `yaml:"max_retries" json:"max_retries"`
+	MaxBackoffMs int `yaml:"max_backoff_ms" json:"max_backoff_ms"`
+	// BreakerFails 连续多少次 429 打开熔断(默认 5);BreakerCoolMs 是交易所没给
+	// Retry-After 时的默认冷却(默认 30000)。
+	//
+	// 为什么不照抄 binance 的 2 分钟(binance.go:888):那是 IP 级封禁的量级,
+	// gate 这里是 10 秒窗口的惩罚档,停 2 分钟等于自己把策略关掉。
+	BreakerFails  int `yaml:"breaker_fails" json:"breaker_fails"`
+	BreakerCoolMs int `yaml:"breaker_cool_ms" json:"breaker_cool_ms"`
+}
+
+// defaults 把零值字段填成台账 #84 那一档。逐字段填(而不是"全零才用默认"),
+// 这样只想改窗口预算的人不必把 7 个字段全抄一遍。
+func (c RateLimitConfig) defaults() RateLimitConfig {
+	if c.Requests <= 0 {
+		c.Requests = 10
+	}
+	if c.WindowMs <= 0 {
+		c.WindowMs = 10000
+	}
+	if c.ReservedCancel < 0 {
+		c.ReservedCancel = 0
+	}
+	if c.ReservedCancel == 0 {
+		c.ReservedCancel = 3
+	}
+	// 预留不能吃光预算,否则报价类恒为 0 名额 = 永远不报价。
+	if c.ReservedCancel >= c.Requests {
+		c.ReservedCancel = c.Requests - 1
+	}
+	if c.MaxWaitMs <= 0 {
+		c.MaxWaitMs = 3000
+	}
+	if c.MaxRetries <= 0 {
+		c.MaxRetries = 3
+	}
+	if c.MaxBackoffMs <= 0 {
+		c.MaxBackoffMs = 2000
+	}
+	if c.BreakerFails <= 0 {
+		c.BreakerFails = 5
+	}
+	if c.BreakerCoolMs <= 0 {
+		c.BreakerCoolMs = 30000
+	}
+	return c
 }
 
 // PairConfig defines one market-making pair: which feed symbol to reference, and
