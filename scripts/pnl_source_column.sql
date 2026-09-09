@@ -39,11 +39,24 @@
 -- ---------------------------------------------------------------------------
 --   1) 写入侧:manager.go 三处 Updates(...) 和 fetchStaleRealizedPnL 的失败分支
 --      要开始写这一列。列建好但没人写 = 一列永远 NULL 的死列。
+--      **[已落地 2026-09-09]** models.StrategyPosition.PnLSource +
+--      manager.go 的成交腿('fill')、stale-close 拉到 income('exchange_income')、
+--      拉不到('unknown')三处。
 --   2) 查询侧:五处对外聚合(api/handlers.go、api/dashboard_builder.go、
 --      api/modules_pnl.go、api/strategy_attribution.go、strategy/strategy_autotune.go)
---      要把 unknown 排除或单列展示。
+--      要把 unknown 排除或单列展示。**[待做]**
 --   在 (1) 落地前不要改 (2) —— 那样会把全部历史行(NULL)一次性排除掉,对外数字
 --   会毫无预告地跳一次。
+--
+-- ---------------------------------------------------------------------------
+-- 这个文件还需要手工执行吗?—— 取决于时机
+-- ---------------------------------------------------------------------------
+-- 模型上了 PnLSource 之后,database.go 的 AutoMigrate 会在【下一次部署启动时】
+-- 自动加上这一列和索引(strategy_positions 就在 AutoMigrate 列表里;线上现在缺
+-- param_version_id,正是因为跑的镜像 d933d91 早于那个字段进 main)。
+-- 所以正常路径下这个文件不必手工跑。它留着是为两种情况:
+--   (a) 想在部署【之前】先把列加好(比如先跑 §6.3 的历史行标注);
+--   (b) 不信任 AutoMigrate、要自己控制 DDL 时机。
 
 -- ---------------------------------------------------------------------------
 -- 1) 加列

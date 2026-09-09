@@ -328,6 +328,25 @@ type StrategyPosition struct {
 	RealizedPnL float64 `json:"realized_pnl"`
 	// RealizedNotional is the accumulated entry notional used for return calculation.
 	RealizedNotional float64 `json:"realized_notional"`
+	// PnLSource says WHERE RealizedPnL came from, so a 0 that means "we never
+	// found out" stops looking exactly like a 0 that means "this trade broke
+	// even" (台账 #122). Values:
+	//
+	//	"fill"             computed from this system's own fills (entry avg vs
+	//	                   close avg × ClosedQty). Trustworthy.
+	//	"exchange_income"  taken from the exchange's own REALIZED_PNL income
+	//	                   events. Most trustworthy — the exchange settled it.
+	//	"unknown"          the lookup failed or never ran. This is a MISSING
+	//	                   value, not an observation: it must be excluded from
+	//	                   (or bucketed separately in) every aggregate, never
+	//	                   averaged in as a zero.
+	//	""                 rows written before this column existed. Treat as
+	//	                   "unknown" unless a backfill says otherwise; see
+	//	                   scripts/realized_pnl_backfill_audit.sql.
+	//
+	// The DDL also exists standalone in scripts/pnl_source_column.sql for
+	// applying it ahead of a deploy; AutoMigrate adds the column either way.
+	PnLSource string `gorm:"column:pnl_source;type:varchar(16);index" json:"pnl_source,omitempty"`
 	// Status is open/closed.
 	Status string `gorm:"type:varchar(16);index" json:"status"`
 	// OpenTime is when the position was first opened.

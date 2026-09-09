@@ -833,6 +833,13 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 						updates["realized_pn_l"] = realizedPnL
 						updates["avg_close_price"] = impliedClose
 						updates["closed_qty"] = qtyClosed
+						updates["pnl_source"] = "exchange_income"
+					} else {
+						// 拉不到 REALIZED_PNL 就一个字都不写盈亏 —— 这是对的,不能编。
+						// 但过去连"没查到"这件事也不写,行以 realized_pn_l=0 收尾,
+						// 和"这笔真的打平"在库里长得一模一样(台账 #122)。标一下,
+						// 让下游能把缺失值排除掉而不是当 0 平均进去。
+						updates["pnl_source"] = "unknown"
 					}
 					_ = database.DB.Model(&models.StrategyPosition{}).Where("id = ?", row.ID).Updates(updates).Error
 					if strings.TrimSpace(row.StrategyID) != "" {
@@ -865,10 +872,12 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 					closeRow.Status = "closed"
 					closeRow.CloseTime = closeTime
 					closeRow.UpdatedAt = now
+					closeRow.PnLSource = "unknown"
 					if closeKnown {
 						closeRow.RealizedPnL = realizedPnL
 						closeRow.AvgClosePrice = impliedClose
 						closeRow.ClosedQty = qtyClosed
+						closeRow.PnLSource = "exchange_income"
 					}
 					if inst != nil && inst.hub != nil {
 						inst.hub.BroadcastJSON(map[string]interface{}{
@@ -1355,16 +1364,37 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 	}
 
 	direction := strings.ToLower(strings.TrimSpace(pos.Direction))
-	if direction == "" && purpose == "close" {
-		// 平仓单的 side 唯一确定持仓方向:买入只能平空,卖出只能平多。比下面的
-		// TP/SL 几何推断和"兜底 long"都硬 —— 兜底 long 会把买入平空判成加仓,
-		// 仓位量反涨、盈亏记 0(manager.go adoptUnclaimedExchangePositions 的
-		// CR P1 注释说的就是这个)。
+	if purpose == "close" {
+		// 平仓单的 side 唯一确定持仓方向:买入只能平空,卖出只能平多。它比行上
+		// 存的 direction 硬,所以这里【不只是补空值,还要覆盖矛盾值】:
+		//
+		// 行上的 direction 可能本来就是错的。共享账户下 owner 自己没下过开仓单、
+		// 仓位行是收养/补录出来的,方向就靠补录那一刻的推断,推错了没人纠。存成
+		// long 的空头再来一笔 buy 平仓,下面 isIncrease=(long && buy) 判真,这笔
+		// 平仓被当成加仓:仓位量反涨、closed_qty 和 realized_pn_l 一个字不写,
+		// 随后被 stale-close 置成 closed,库里留下一行"看起来打平"的空壳。
+		//
+		// 台账 #91 点名的两行就是这么来的(生产库实测):
+		//   id=1897 STAR 存 long,平仓 buy 676@0.08014,建仓价 0.08075
+		//           → 被当加仓后均价变成 (0.08075+0.08014)/2 = 0.080445,与库里
+		//             那行分毫不差;真实盈亏 +0.20618 被吞成 0。
+		//   id=1966 AKE  同一条路径,+1.083498 被吞成 0。
+		// 这两笔加起来 +1.2897,足以把 qt-breakout-follow 从 −1.2208 翻成 +0.069。
+		//
+		// 覆盖时留一条 warn:方向存错是上游写入的病,这里只是不让它继续吃掉盈亏,
+		// 病灶本身要靠日志被看见。
+		inferred := ""
 		switch side {
 		case "buy":
-			direction = "short"
+			inferred = "short"
 		case "sell":
-			direction = "long"
+			inferred = "long"
+		}
+		if inferred != "" && inferred != direction {
+			if direction != "" {
+				logger.Warnf("[POSITION] 平仓单方向与持仓行不符,以平仓单为准 position_id=%d owner=%d strategy=%s symbol=%s stored_direction=%s side=%s corrected=%s", pos.ID, ownerID, strategyID, symbol, direction, side, inferred)
+			}
+			direction = inferred
 		}
 	}
 	if direction == "" {
@@ -1443,6 +1473,7 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 				"avg_close_price":   newAvgClose,
 				"realized_pn_l":     newRealizedPnL,
 				"realized_notional": newRealizedNotional,
+				"pnl_source":        "fill",
 				"status":            "closed",
 				"close_time":        eventTime,
 				"updated_at":        now,
@@ -1454,6 +1485,7 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 			pos.AvgClosePrice = newAvgClose
 			pos.RealizedPnL = newRealizedPnL
 			pos.RealizedNotional = newRealizedNotional
+			pos.PnLSource = "fill"
 			pos.Status = "closed"
 			pos.CloseTime = eventTime
 			hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
@@ -1468,6 +1500,7 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 			"avg_close_price":   newAvgClose,
 			"realized_pn_l":     newRealizedPnL,
 			"realized_notional": newRealizedNotional,
+			"pnl_source":        "fill",
 			"updated_at":        now,
 		})
 	if hub != nil {
@@ -1477,6 +1510,7 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 		pos.AvgClosePrice = newAvgClose
 		pos.RealizedPnL = newRealizedPnL
 		pos.RealizedNotional = newRealizedNotional
+		pos.PnLSource = "fill"
 		hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
 	}
 	return pos.ID

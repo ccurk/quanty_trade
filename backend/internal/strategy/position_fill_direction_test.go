@@ -117,6 +117,59 @@ func TestOrphanCloseFillCreatesNoPhantomLongPosition(t *testing.T) {
 	}
 }
 
+// 生产库实测出来的第三条路(才是 1897/1966 真正走的那条):开仓腿【在】库里,
+// 但那一行的 direction 是错的 —— 共享账户下 owner2 自己没下过开仓单,行是收养/
+// 补录出来的,方向靠补录那一刻的推断,推成了 long。
+//
+// 于是 buy 平仓撞上 direction=long,isIncrease 判真,这笔平仓被当成加仓:
+// 量翻倍、均价变成 (entry+exit)/2、closed_qty 与 realized_pn_l 一个字不写。
+// 生产库里 1897 存着 avg_price=0.080445 = (0.08075+0.08014)/2,分毫不差 ——
+// 那个"腐蚀签名"就是这条路径留下的指纹。
+//
+// 修法:purpose=close 时以平仓单 side 为准【覆盖】矛盾的存量方向,不只是补空值。
+func TestCloseFillOverridesContradictingStoredDirection(t *testing.T) {
+	db := newAdoptTestDB(t)
+	openTime := time.Date(2026, 8, 14, 4, 32, 34, 0, time.UTC)
+	closeTime := openTime.Add(45 * time.Minute)
+
+	// 1897 的原始形状:空头 676 @ 0.08075,但行上 direction 被写成了 long。
+	if err := db.Create(&models.StrategyPosition{
+		StrategyID:   fillTestStrategy,
+		StrategyName: fillTestStrategy,
+		OwnerID:      fillTestOwner,
+		Exchange:     "Binance",
+		Symbol:       "STAR/USDT",
+		Direction:    "long",
+		Amount:       676,
+		AvgPrice:     0.08075,
+		Status:       "open",
+		OpenTime:     openTime,
+		UpdatedAt:    openTime,
+	}).Error; err != nil {
+		t.Fatalf("seed position: %v", err)
+	}
+
+	applyOrderFillToPosition(nil, fillTestOwner, fillTestStrategy, fillTestStrategy, "Binance",
+		"STAR/USDT", "buy", 676, 0.08014, 0, 0, closeTime, "close")
+
+	got := loadOnlyPosition(t, db)
+	if got.Direction != "short" {
+		t.Errorf("direction = %q, want \"short\" (buy 平仓 ⇒ 持仓是空头,存量 long 应被覆盖)", got.Direction)
+	}
+	if got.Status != "closed" {
+		t.Errorf("status = %q, want \"closed\" (旧行为:被当加仓,行还留在 open)", got.Status)
+	}
+	assertMoney(t, "amount", got.Amount, 0)
+	assertMoney(t, "closed_qty", got.ClosedQty, 676)
+	// 旧行为会把 avg_price 改成 (0.08075+0.08014)/2 = 0.080445 —— 生产库 1897 存的
+	// 正是这个数。修好之后开仓均价不许被平仓单动。
+	assertMoney(t, "avg_price", got.AvgPrice, 0.08075)
+	assertMoney(t, "realized_pn_l", got.RealizedPnL, roundMoney8(676*(0.08075-0.08014)))
+	if got.PnLSource != "fill" {
+		t.Errorf("pnl_source = %q, want \"fill\"", got.PnLSource)
+	}
+}
+
 // 守住现在就对的那一半:多头开平不能因为上面的修复而被弄反。
 func TestLongRoundTripUnchanged(t *testing.T) {
 	db := newAdoptTestDB(t)
