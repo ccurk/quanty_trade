@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"quanty_trade/internal/database"
+	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 	"quanty_trade/internal/ws"
 
@@ -27,16 +28,62 @@ type binanceUserStream struct {
 	done chan struct{}
 }
 
-// EnsureUserDataStream starts (once per ownerID) Binance User Data Stream
-// to receive account/order execution events (executionReport).
+// OrderFill is one exchange-confirmed terminal fill, handed to the platform
+// ledger for position accounting.
+type OrderFill struct {
+	OwnerID      uint
+	StrategyID   string
+	StrategyName string
+	Exchange     string
+	Symbol       string // display form, e.g. "APE/USDT"
+	Side         string // buy/sell
+	Purpose      string // open/close, taken from the platform order ledger
+	ExecutedQty  float64
+	AvgPrice     float64
+	EventTime    time.Time
+}
+
+// OrderFillFunc applies a fill to the position ledger and returns the
+// StrategyPosition row id it landed on (0 = not applied).
+//
+// This is a callback rather than a direct call because internal/strategy
+// already imports internal/exchange (manager.go), so the reverse import would
+// be a cycle. The point of routing out instead of accounting locally is that
+// the ledger must have ONE implementation: the one in strategy that derives
+// direction from the stored position (or from side on an opening fill) and
+// refuses to invent a position for an orphan close. See 台账 #91.
+type OrderFillFunc func(OrderFill) uint
+
+// SetOrderFillHandler installs the ledger callback used by the user data
+// stream. Set by the strategy manager before it starts a stream.
+func (b *BinanceExchange) SetOrderFillHandler(fn OrderFillFunc) {
+	b.streamMu.Lock()
+	b.onOrderFill = fn
+	b.streamMu.Unlock()
+}
+
+func (b *BinanceExchange) orderFillHandler() OrderFillFunc {
+	b.streamMu.Lock()
+	defer b.streamMu.Unlock()
+	return b.onOrderFill
+}
+
+// EnsureUserDataStream starts (once per ownerID) Binance User Data Stream to
+// receive order execution events: executionReport on spot, ORDER_TRADE_UPDATE
+// on USDM futures.
+//
+// This used to `return nil` immediately when market == "usdm". Since
+// conf_pro.yaml sets market: "usdm", that meant the stream never started at
+// all: exchange_order_events was created 2026-03-26 and still had
+// auto_increment=1 months later — not one row ever inserted. Server-side fills
+// (exchange TP/SL) were therefore only discoverable by the 2s REST position
+// poll in manager.go, which sees the position vanish but not the fill that
+// closed it, so per-fill price/PnL/attribution were lost.
 //
 // Typical usage:
 //   - Called when a strategy instance starts, so the UI can receive order updates
 //     and the backend can persist execution events.
 func (b *BinanceExchange) EnsureUserDataStream(ownerID uint, hub *ws.Hub) error {
-	if b.market == "usdm" {
-		return nil
-	}
 	if ownerID == 0 || hub == nil {
 		return nil
 	}
@@ -110,9 +157,33 @@ func (b *BinanceExchange) runUserStream(s *binanceUserStream) {
 	}
 }
 
+// listenKeyURL returns the market-correct user data stream endpoint.
+// USDM futures live at /fapi/v1/listenKey, NOT the spot /api/v3/userDataStream
+// (which under baseURL https://fapi.binance.com is simply a 404). Docs:
+// developers.binance.com USDS-M "Start/Keepalive/Close User Data Stream".
+func (b *BinanceExchange) listenKeyURL(cred binanceCred) string {
+	if b.market == "usdm" {
+		return b.apiBaseURL(cred) + "/fapi/v1/listenKey"
+	}
+	return b.apiBaseURL(cred) + "/api/v3/userDataStream"
+}
+
+// listenKeyQuery is the query string for keepalive/close. Spot identifies the
+// stream by an explicit listenKey parameter; USDM identifies it by the API key
+// alone and takes no parameter.
+func (b *BinanceExchange) listenKeyQuery(listenKey string) string {
+	if b.market == "usdm" {
+		return ""
+	}
+	q := url.Values{}
+	q.Set("listenKey", listenKey)
+	return "?" + q.Encode()
+}
+
 func (b *BinanceExchange) createListenKey(cred binanceCred) (string, error) {
-	// createListenKey calls POST /api/v3/userDataStream.
-	u := b.apiBaseURL(cred) + "/api/v3/userDataStream"
+	// createListenKey calls POST /fapi/v1/listenKey (usdm) or
+	// POST /api/v3/userDataStream (spot).
+	u := b.listenKeyURL(cred)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, u, nil)
 	if err != nil {
 		return "", err
@@ -152,11 +223,10 @@ func (b *BinanceExchange) keepaliveListenKey(cred binanceCred, listenKey string,
 }
 
 func (b *BinanceExchange) pingListenKey(cred binanceCred, listenKey string) error {
-	// pingListenKey keeps the listenKey alive (Binance requires periodic keepalive).
-	u := b.apiBaseURL(cred) + "/api/v3/userDataStream"
-	q := url.Values{}
-	q.Set("listenKey", listenKey)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPut, u+"?"+q.Encode(), nil)
+	// pingListenKey keeps the listenKey alive. Binance closes the stream after
+	// 60 minutes without a keepalive; the 30-minute ticker above stays inside that.
+	u := b.listenKeyURL(cred) + b.listenKeyQuery(listenKey)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPut, u, nil)
 	if err != nil {
 		return err
 	}
@@ -174,10 +244,8 @@ func (b *BinanceExchange) pingListenKey(cred binanceCred, listenKey string) erro
 
 func (b *BinanceExchange) closeListenKey(cred binanceCred, listenKey string) error {
 	// closeListenKey releases the listenKey on Binance side (best-effort).
-	u := b.apiBaseURL(cred) + "/api/v3/userDataStream"
-	q := url.Values{}
-	q.Set("listenKey", listenKey)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, u+"?"+q.Encode(), nil)
+	u := b.listenKeyURL(cred) + b.listenKeyQuery(listenKey)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, u, nil)
 	if err != nil {
 		return err
 	}
@@ -214,6 +282,8 @@ func (b *BinanceExchange) readUserStream(conn *websocket.Conn, s *binanceUserStr
 		switch ev {
 		case "executionReport":
 			b.handleExecutionReport(s, raw)
+		case "ORDER_TRADE_UPDATE":
+			b.handleOrderTradeUpdate(s, raw)
 		default:
 			s.hub.BroadcastJSON(map[string]interface{}{
 				"type":     "exchange_event",
@@ -224,6 +294,197 @@ func (b *BinanceExchange) readUserStream(conn *websocket.Conn, s *binanceUserStr
 			})
 		}
 	}
+}
+
+// usdmOrderUpdate is the subset of ORDER_TRADE_UPDATE's nested "o" object that
+// this platform persists.
+//
+// Field letters, per Binance USDS-M user data stream docs (a real frame:
+// {"e":"ORDER_TRADE_UPDATE","E":..,"T":..,"o":{"s":"APEUSDT","S":"SELL",
+// "X":"FILLED","q":"36","ap":"5.5600","l":"6","z":"36","L":"5.5600",
+// "n":"0.00667200","N":"USDT","rp":"0.13200000",...}}):
+//
+//	s  symbol            c  clientOrderId    S  side          o  order type
+//	x  execution type    X  order status     q  orig qty      p  price
+//	ap average price     l  last filled qty  z  cum filled qty
+//	L  last filled price n  commission       N  commission asset
+//	T  trade time        t  trade id         rp realized profit OF THIS FILL
+//
+// Two traps this layout sets:
+//   - the inner object's own "o" key is the ORDER TYPE, while the outer "o" is
+//     the object itself. Read them from the right map or you get "LIMIT" where
+//     you wanted a struct.
+//   - every numeric is a STRING. toFloat already handles that; do not switch to
+//     a typed json.Unmarshal that assumes float64.
+type usdmOrderUpdate struct {
+	Symbol         string
+	OrderID        string
+	ClientOrderID  string
+	Side           string
+	OrderType      string
+	Status         string
+	Price          float64
+	OrigQty        float64
+	ExecutedQty    float64
+	LastQty        float64
+	LastPrice      float64
+	AvgPrice       float64
+	RealizedProfit float64
+	EventTime      time.Time
+}
+
+func parseOrderTradeUpdate(raw map[string]interface{}) (usdmOrderUpdate, bool) {
+	o, ok := raw["o"].(map[string]interface{})
+	if !ok {
+		return usdmOrderUpdate{}, false
+	}
+	// Prefer the order's own transaction time (o.T); fall back to the envelope
+	// event time (E) when absent.
+	ts := toInt64Default(o["T"])
+	if ts == 0 {
+		ts = toInt64Default(raw["E"])
+	}
+	return usdmOrderUpdate{
+		Symbol:         toString(o["s"]),
+		OrderID:        toString(o["i"]),
+		ClientOrderID:  toString(o["c"]),
+		Side:           strings.ToLower(toString(o["S"])),
+		OrderType:      strings.ToLower(toString(o["o"])),
+		Status:         strings.ToLower(toString(o["X"])),
+		Price:          toFloat(o["p"]),
+		OrigQty:        toFloat(o["q"]),
+		ExecutedQty:    toFloat(o["z"]),
+		LastQty:        toFloat(o["l"]),
+		LastPrice:      toFloat(o["L"]),
+		AvgPrice:       toFloat(o["ap"]),
+		RealizedProfit: toFloat(o["rp"]),
+		EventTime:      time.UnixMilli(ts),
+	}, true
+}
+
+// handleOrderTradeUpdate is the USDM counterpart of handleExecutionReport.
+//
+// Position accounting is NOT done here. It is routed to the strategy ledger via
+// b.onOrderFill, which derives direction from the stored position and declines
+// to fabricate one for an orphan close. Re-deriving direction from side at this
+// layer is what wrote 台账 #91's phantom long rows (id=1897/1966: buy-to-close a
+// short recorded as direction=long, realized_pn_l=0).
+func (b *BinanceExchange) handleOrderTradeUpdate(s *binanceUserStream, raw map[string]interface{}) {
+	u, ok := parseOrderTradeUpdate(raw)
+	if !ok || database.DB == nil {
+		return
+	}
+
+	// Audit row first and unconditionally: exchange_order_events is the only
+	// place the raw payload (commission n/N, trade id t, realized profit rp)
+	// ever lands, so it must not be contingent on the ledger step succeeding.
+	ev := models.ExchangeOrderEvent{
+		OwnerID:        s.ownerID,
+		Exchange:       b.name,
+		Symbol:         u.Symbol,
+		OrderID:        u.OrderID,
+		ClientOrderID:  u.ClientOrderID,
+		Side:           u.Side,
+		OrderType:      u.OrderType,
+		Status:         u.Status,
+		Price:          u.Price,
+		OrigQty:        u.OrigQty,
+		ExecutedQty:    u.ExecutedQty,
+		LastQty:        u.LastQty,
+		LastPrice:      u.LastPrice,
+		RealizedProfit: u.RealizedProfit,
+		EventTime:      u.EventTime,
+		Raw:            string(mustJSON(raw)),
+		CreatedAt:      time.Now(),
+	}
+	database.DB.Create(&ev)
+
+	var stratOrder models.StrategyOrder
+	stratOrderFound := false
+	if u.ClientOrderID != "" {
+		if err := database.DB.Where("client_order_id = ?", u.ClientOrderID).First(&stratOrder).Error; err == nil {
+			stratOrderFound = true
+		}
+	}
+
+	if stratOrderFound {
+		// ap is the exchange's own average fill price across the whole order, so
+		// unlike the spot path there is no running average to recompute here.
+		avgPrice := u.AvgPrice
+		if avgPrice <= 0 {
+			avgPrice = u.LastPrice
+		}
+		database.DB.Model(&models.StrategyOrder{}).Where("id = ?", stratOrder.ID).
+			Updates(map[string]interface{}{
+				"exchange_order_id": u.OrderID,
+				"status":            u.Status,
+				"side":              u.Side,
+				"order_type":        u.OrderType,
+				"executed_qty":      u.ExecutedQty,
+				"avg_price":         avgPrice,
+				"updated_at":        time.Now(),
+			})
+
+		// Apply to the position ledger only on the terminal event: z and ap are
+		// cumulative, so applying on each PARTIALLY_FILLED too would count the
+		// same quantity repeatedly.
+		if u.Status == "filled" && u.ExecutedQty > 0 {
+			onFill := b.orderFillHandler()
+			if onFill == nil {
+				logger.Errorf("[USER STREAM] 成交无法入账:没有注册 ledger 回调 owner=%d symbol=%s client_order_id=%s",
+					s.ownerID, u.Symbol, u.ClientOrderID)
+			} else {
+				// Attribute the fill to the owner who PLACED the order, not to
+				// whichever stream delivered it. Every owner here points at the
+				// same Binance account, and POST /fapi/v1/listenKey returns the
+				// same key per API key, so all N owner streams receive all N
+				// owners' fills. Routing by s.ownerID would send owner A's fill
+				// into owner B's ledger, where it finds no matching position and
+				// is discarded as an orphan close.
+				fillOwner := stratOrder.OwnerID
+				if fillOwner == 0 {
+					fillOwner = s.ownerID
+				}
+				posID := onFill(OrderFill{
+					OwnerID:      fillOwner,
+					StrategyID:   stratOrder.StrategyID,
+					StrategyName: stratOrder.StrategyName,
+					Exchange:     b.name,
+					Symbol:       b.displaySymbol(u.Symbol),
+					Side:         u.Side,
+					Purpose:      strings.ToLower(strings.TrimSpace(stratOrder.Purpose)),
+					ExecutedQty:  u.ExecutedQty,
+					AvgPrice:     avgPrice,
+					EventTime:    u.EventTime,
+				})
+				if posID != 0 {
+					database.DB.Model(&models.ExchangeOrderEvent{}).Where("id = ?", ev.ID).
+						Update("position_id", posID)
+				}
+			}
+		}
+	}
+
+	s.hub.BroadcastJSON(map[string]interface{}{
+		"type":     "execution_report",
+		"exchange": b.name,
+		"owner_id": s.ownerID,
+		"data": map[string]interface{}{
+			"symbol":          u.Symbol,
+			"order_id":        u.OrderID,
+			"client_order_id": u.ClientOrderID,
+			"side":            u.Side,
+			"order_type":      u.OrderType,
+			"status":          u.Status,
+			"price":           u.Price,
+			"orig_qty":        u.OrigQty,
+			"executed_qty":    u.ExecutedQty,
+			"last_qty":        u.LastQty,
+			"last_price":      u.LastPrice,
+			"realized_profit": u.RealizedProfit,
+			"event_time":      u.EventTime,
+		},
+	})
 }
 
 func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[string]interface{}) {
@@ -293,7 +554,27 @@ func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[st
 				})
 
 			if statusLower == "filled" {
-				b.applyFillToPosition(s.hub, stratOrder.StrategyID, stratOrder.StrategyName, s.ownerID, b.name, symbol, sideLower, stratOrder.Purpose, execQty, avgPrice, eventTime)
+				if onFill := b.orderFillHandler(); onFill != nil {
+					fillOwner := stratOrder.OwnerID
+					if fillOwner == 0 {
+						fillOwner = s.ownerID
+					}
+					_ = onFill(OrderFill{
+						OwnerID:      fillOwner,
+						StrategyID:   stratOrder.StrategyID,
+						StrategyName: stratOrder.StrategyName,
+						Exchange:     b.name,
+						Symbol:       b.displaySymbol(symbol),
+						Side:         sideLower,
+						Purpose:      strings.ToLower(strings.TrimSpace(stratOrder.Purpose)),
+						ExecutedQty:  execQty,
+						AvgPrice:     avgPrice,
+						EventTime:    eventTime,
+					})
+				} else {
+					logger.Errorf("[USER STREAM] 成交无法入账:没有注册 ledger 回调 owner=%d symbol=%s client_order_id=%s",
+						s.ownerID, symbol, clientOrderID)
+				}
 			} else if statusLower == "canceled" {
 				// After cancellation, ensure no pre-position entry orders remain for this symbol
 				_ = b.CancelPrePositionOpenOrders(s.ownerID, b.displaySymbol(symbol))
@@ -322,147 +603,6 @@ func (b *BinanceExchange) handleExecutionReport(s *binanceUserStream, raw map[st
 	})
 }
 
-func (b *BinanceExchange) applyFillToPosition(hub *ws.Hub, strategyID string, strategyName string, ownerID uint, exchangeName string, symbol string, side string, purpose string, executedQty float64, avgPrice float64, eventTime time.Time) {
-	// applyFillToPosition updates the strategy-scoped position ledger:
-	// - entry buy/sell fills can open/increase long/short positions
-	// - opposite-side fills decrease and eventually close the position
-	if database.DB == nil || strategyID == "" || executedQty <= 0 {
-		return
-	}
-
-	sym := b.displaySymbol(symbol)
-	side = strings.ToLower(strings.TrimSpace(side))
-	purpose = strings.ToLower(strings.TrimSpace(purpose))
-	now := time.Now()
-
-	var pos models.StrategyPosition
-	err := database.DB.Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", ownerID, strategyID, sym, "open").First(&pos).Error
-	if err != nil {
-		openDirection := ""
-		if side == "buy" {
-			openDirection = "long"
-		} else if side == "sell" && purpose == "entry" {
-			openDirection = "short"
-		}
-		if openDirection == "" {
-			return
-		}
-		pos = models.StrategyPosition{
-			StrategyID:   strategyID,
-			StrategyName: strategyName,
-			OwnerID:      ownerID,
-			Exchange:     exchangeName,
-			Symbol:       sym,
-			Direction:    openDirection,
-			Amount:       executedQty,
-			AvgPrice:     avgPrice,
-			Status:       "open",
-			OpenTime:     eventTime,
-			UpdatedAt:    now,
-		}
-		database.DB.Create(&pos)
-		if hub != nil {
-			hub.BroadcastJSON(map[string]interface{}{
-				"type": "position",
-				"data": map[string]interface{}{
-					"symbol":        pos.Symbol,
-					"amount":        pos.Amount,
-					"price":         pos.AvgPrice,
-					"strategy_name": pos.StrategyName,
-					"exchange_name": pos.Exchange,
-					"status":        "active",
-					"owner_id":      pos.OwnerID,
-					"open_time":     pos.OpenTime,
-				},
-			})
-		}
-		return
-	}
-
-	direction := strings.ToLower(strings.TrimSpace(pos.Direction))
-	if direction == "" {
-		direction = "long"
-	}
-	isIncrease := (direction == "long" && side == "buy") || (direction == "short" && side == "sell")
-	if isIncrease {
-		newAmt := pos.Amount + executedQty
-		newAvg := pos.AvgPrice
-		if newAmt > 0 {
-			newAvg = ((pos.AvgPrice * pos.Amount) + (avgPrice * executedQty)) / newAmt
-		}
-		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
-			Updates(map[string]interface{}{"amount": newAmt, "avg_price": newAvg, "direction": direction, "updated_at": now})
-		if hub != nil {
-			hub.BroadcastJSON(map[string]interface{}{
-				"type": "position",
-				"data": map[string]interface{}{
-					"symbol":        pos.Symbol,
-					"direction":     direction,
-					"amount":        newAmt,
-					"price":         newAvg,
-					"strategy_name": pos.StrategyName,
-					"exchange_name": pos.Exchange,
-					"status":        "active",
-					"owner_id":      pos.OwnerID,
-					"open_time":     pos.OpenTime,
-				},
-			})
-		}
-		return
-	}
-
-	isReduce := (direction == "long" && side == "sell") || (direction == "short" && side == "buy")
-	if !isReduce {
-		return
-	}
-	newAmt := pos.Amount - executedQty
-	if newAmt <= 0 {
-		database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
-			Updates(map[string]interface{}{
-				"amount":     0,
-				"direction":  direction,
-				"status":     "closed",
-				"close_time": eventTime,
-				"updated_at": now,
-			})
-		if hub != nil {
-			hub.BroadcastJSON(map[string]interface{}{
-				"type": "position",
-				"data": map[string]interface{}{
-					"symbol":        pos.Symbol,
-					"direction":     direction,
-					"amount":        0,
-					"price":         pos.AvgPrice,
-					"strategy_name": pos.StrategyName,
-					"exchange_name": pos.Exchange,
-					"status":        "closed",
-					"owner_id":      pos.OwnerID,
-					"open_time":     pos.OpenTime,
-					"close_time":    eventTime,
-				},
-			})
-		}
-		return
-	}
-	database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
-		Updates(map[string]interface{}{"amount": newAmt, "direction": direction, "updated_at": now})
-	if hub != nil {
-		hub.BroadcastJSON(map[string]interface{}{
-			"type": "position",
-			"data": map[string]interface{}{
-				"symbol":        pos.Symbol,
-				"direction":     direction,
-				"amount":        newAmt,
-				"price":         pos.AvgPrice,
-				"strategy_name": pos.StrategyName,
-				"exchange_name": pos.Exchange,
-				"status":        "active",
-				"owner_id":      pos.OwnerID,
-				"open_time":     pos.OpenTime,
-			},
-		})
-	}
-}
 
 func toString(v interface{}) string {
 	switch t := v.(type) {

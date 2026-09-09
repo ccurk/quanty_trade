@@ -931,9 +931,10 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 	}
 
 	syncOnce()
-	// 2s 间隔：把交易所 TP/SL 成交的发现窗口从 10s 压到 ~2s。Binance USDM
-	// 没有 user data stream（EnsureUserDataStream 对 usdm 直接 return），
-	// 这条同步链是发现服务器侧平仓的唯一渠道。每个 owner 一次 FetchPositions
+	// 2s 间隔：把交易所 TP/SL 成交的发现窗口从 10s 压到 ~2s。EnsureUserDataStream
+	// 过去对 usdm 直接 return，期货完全没有成交回报流，这条同步链是发现服务器侧
+	// 平仓的唯一渠道；现在 ORDER_TRADE_UPDATE 已接通，它退化为兜底（流断开、
+	// 或成交对不上 client_order_id 时仍然靠它）。每个 owner 一次 FetchPositions
 	// REST 调用，30 个用户 * 30 次/min = 900/min，远低于 2400/min 的 IP 上限。
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -1290,9 +1291,14 @@ func (m *Manager) prepareBacktestStrategyFile(inst *StrategyInstance, backtestID
 // 已经知道、过去却没传进来的那一位信息:没有它,本函数在找不到 open 行时只能拿
 // side 猜 —— buy 一律猜成开多,买入平空于是被写成 direction=long / realized_pn_l=0
 // 的假仓(台账 #91)。
-func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, executedQty float64, avgPrice float64, takeProfit float64, stopLoss float64, eventTime time.Time, purpose string) {
+// applyOrderFillToPosition is the single implementation of position accounting.
+// It returns the StrategyPosition row the fill landed on (0 = nothing written),
+// so callers that keep their own event ledger — the exchange user data stream —
+// can stamp position_id on the fill at the moment it happens instead of
+// reconstructing attribution later by joining back through strategy_orders.
+func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, strategyName string, exchangeName string, symbol string, side string, executedQty float64, avgPrice float64, takeProfit float64, stopLoss float64, eventTime time.Time, purpose string) uint {
 	if database.DB == nil || executedQty <= 0 || strategyID == "" {
-		return
+		return 0
 	}
 
 	side = strings.ToLower(strings.TrimSpace(side))
@@ -1306,7 +1312,7 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 			// 的假仓,既污染多空归属又把真盈亏吞成 0,而且从库里看不出来。宁可留
 			// 一条可数的孤儿日志,也不写一个骗人的 0。
 			logger.Errorf("[POSITION] 平仓成交找不到对应持仓,不建仓 owner=%d strategy=%s symbol=%s side=%s qty=%v price=%v", ownerID, strategyID, symbol, side, executedQty, avgPrice)
-			return
+			return 0
 		}
 		// 开仓成交:side 直接决定方向。过去 sell 还额外要求带 tp/sl 才认空头,于是
 		// resolveTPSLFromROI 在拿不到成交价(entryPrice<=0)时返回 0/0 的那些开空
@@ -1319,7 +1325,7 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 			openDirection = "short"
 		}
 		if openDirection == "" {
-			return
+			return 0
 		}
 		pos = models.StrategyPosition{
 			StrategyID:       strategyID,
@@ -1345,7 +1351,7 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 		if hub != nil {
 			hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
 		}
-		return
+		return pos.ID
 	}
 
 	direction := strings.ToLower(strings.TrimSpace(pos.Direction))
@@ -1406,12 +1412,12 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 			}
 			hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
 		}
-		return
+		return pos.ID
 	}
 
 	isReduce := (direction == "long" && side == "sell") || (direction == "short" && side == "buy")
 	if !isReduce {
-		return
+		return 0
 	}
 	newAmt := pos.Amount - executedQty
 	realized := executedQty * (avgPrice - pos.AvgPrice)
@@ -1452,7 +1458,7 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 			pos.CloseTime = eventTime
 			hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
 		}
-		return
+		return pos.ID
 	}
 	database.DB.Model(&models.StrategyPosition{}).Where("id = ?", pos.ID).
 		Updates(map[string]interface{}{
@@ -1473,6 +1479,7 @@ func applyOrderFillToPosition(hub *ws.Hub, ownerID uint, strategyID string, stra
 		pos.RealizedNotional = newRealizedNotional
 		hub.BroadcastJSON(map[string]interface{}{"type": "position", "data": pos})
 	}
+	return pos.ID
 }
 
 func (inst *StrategyInstance) readStderr(stderr io.ReadCloser) {

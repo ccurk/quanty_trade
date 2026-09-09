@@ -103,6 +103,21 @@ func (m *Manager) attachUserDataStream(inst *StrategyInstance) {
 	if inst == nil {
 		return
 	}
+	// The ledger callback must be installed BEFORE the stream starts, otherwise
+	// a fill arriving in the gap would be persisted as an event with no position
+	// attached. Both calls are idempotent.
+	if ex, ok := inst.exchange.(interface {
+		SetOrderFillHandler(fn exchange.OrderFillFunc)
+	}); ok {
+		hub := inst.hub
+		ex.SetOrderFillHandler(func(f exchange.OrderFill) uint {
+			// take_profit/stop_loss are 0: an exchange fill report carries no
+			// TP/SL, and applyOrderFillToPosition only writes those when > 0,
+			// so the levels already on the row survive.
+			return applyOrderFillToPosition(hub, f.OwnerID, f.StrategyID, f.StrategyName,
+				f.Exchange, f.Symbol, f.Side, f.ExecutedQty, f.AvgPrice, 0, 0, f.EventTime, f.Purpose)
+		})
+	}
 	if ex, ok := inst.exchange.(interface {
 		EnsureUserDataStream(ownerID uint, hub *ws.Hub) error
 	}); ok {

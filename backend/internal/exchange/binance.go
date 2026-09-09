@@ -46,6 +46,7 @@ type BinanceExchange struct {
 
 	streamMu    sync.Mutex
 	streamsByID map[uint]*binanceUserStream
+	onOrderFill OrderFillFunc
 
 	leverageMu    sync.Mutex
 	leverageByKey map[string]int

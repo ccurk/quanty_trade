@@ -56,10 +56,13 @@ ALTER TABLE strategy_orders ADD KEY idx_strategy_orders_param_version_id (param_
 --
 -- 为什么要新建一张表，而不是给 strategy_orders 加 fee_amount / fee_asset：
 --   下单应答里没有手续费 —— exchange.Order 结构体只有 id/side/amount/price/status，
---   没有任何 fee 字段；而 USDM 期货**根本没有成交回报流**：
---   EnsureUserDataStream 在 market == "usdm" 时直接 return nil，
+--   没有任何 fee 字段；而 USDM 期货在很长时间里**根本没有成交回报流**：
+--   EnsureUserDataStream 曾在 market == "usdm" 时直接 return nil，
 --   handleExecutionReport 对期货一次都不会触发。
---   所以给 strategy_orders 加两列，结果是两列永远为 NULL 的死列。
+--   （那道 return 已经拆掉，期货走 ORDER_TRADE_UPDATE，其 n/N 字段带手续费，
+--   目前原样留在 exchange_order_events.raw 里，没有解析成列。所以下面这段
+--   讲的是历史数据为什么没有手续费；新数据的手续费另有来源。）
+--   所以给 strategy_orders 加两列，结果是历史行永远为 NULL 的死列。
 --   手续费实际进入本系统的唯一入口是 /fapi/v1/userTrades，
 --   它返回的 commission / commissionAsset / maker 三个字段本来就已经解析出来了，
 --   只是在日结 job 里被丢掉。本表就是把它们接住。

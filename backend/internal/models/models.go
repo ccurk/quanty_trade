@@ -213,6 +213,20 @@ type ExchangeOrderEvent struct {
 	LastQty float64 `json:"last_qty"`
 	// LastPrice is the last fill price of this event.
 	LastPrice float64 `json:"last_price"`
+	// RealizedProfit is the exchange-reported realized PnL of THIS event
+	// (USDM ORDER_TRADE_UPDATE "rp"). It is per-fill, not cumulative for the
+	// order: an order filled in three parts emits three rows whose rp must be
+	// summed to get the order total. Kept here — not folded into
+	// StrategyPosition.RealizedPnL — so the ledger keeps exactly one PnL
+	// definition (qty*(exit-entry), computed) and this stays the independent
+	// exchange-reported number to reconcile against. Zero for spot events,
+	// which carry no such field.
+	RealizedProfit float64 `json:"realized_profit"`
+	// PositionID is the StrategyPosition row this fill was applied to, stamped
+	// at fill time. 0 when the event is not a terminal fill, or when the fill
+	// found no position to attach to. This is the per-position attribution that
+	// otherwise has to be reconstructed by joining back through strategy_orders.
+	PositionID uint `gorm:"index" json:"position_id"`
 	// EventTime is the exchange event timestamp.
 	EventTime time.Time `gorm:"index" json:"event_time"`
 	// Raw is the raw JSON payload for auditing and future parsing.
@@ -515,10 +529,14 @@ type DailyPnL struct {
 // ExchangeFill is the raw per-trade fill ledger pulled from the exchange
 // (Binance USDM /fapi/v1/userTrades). It exists because commission is the one
 // number the platform can never reconstruct later: it is not in the order
-// placement response (exchange.Order carries no fee field) and, for USDM, no
-// execution-report stream runs at all — EnsureUserDataStream returns early when
-// market == "usdm", so handleExecutionReport never fires for futures. userTrades
-// is therefore the ONLY place fee/maker data enters this system.
+// placement response (exchange.Order carries no fee field) and, for every fill
+// written before the USDM user data stream was connected, no execution report
+// exists at all — EnsureUserDataStream used to return early when
+// market == "usdm". For those historical rows userTrades is the ONLY place
+// fee/maker data can come from. Going forward ORDER_TRADE_UPDATE also carries
+// commission (n) and commission asset (N); those are currently kept only inside
+// ExchangeOrderEvent.Raw and are not parsed into columns, so userTrades remains
+// the sole *structured* fee source.
 //
 // Deliberately a raw mirror, not a derived table:
 //   - append-only; rows are never updated once written, so a re-pull is a no-op;
