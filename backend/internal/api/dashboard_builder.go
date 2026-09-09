@@ -120,7 +120,13 @@ func buildPnLPeriod(uid uint, start time.Time, end time.Time, unrealized float64
 			COALESCE(SUM(realized_pn_l), 0) AS realized_pnl,
 			COALESCE(SUM(realized_notional), 0) AS realized_notional
 		`).
-		Where("owner_id = ? AND status = ? AND close_time >= ? AND close_time <= ?", uid, "closed", start, end).
+		// closed_qty>0 是口径的一部分,别删:status='closed' 里约七成(实测 2026-09-09
+		// 线上 2828 行中 2006 行)是 closed_qty=0 的空壳 —— stale-close 静默 0 和收养
+		// 假仓(台账 #91/#122)。今天它们 realized_pn_l 恰好都是 0,所以删掉过滤
+		// "看起来"不影响总额;一旦 #91 的回填把交易所真实 PnL 写回这些行,裸 SUM
+		// 就会和归因页(strategy_attribution.go 同样过滤)分叉,而两页的数正是对外
+		// 口径(台账 #32)的来源。两边必须是同一个 WHERE。
+		Where("owner_id = ? AND status = ? AND closed_qty > 0 AND close_time >= ? AND close_time <= ?", uid, "closed", start, end).
 		Scan(&row).Error
 
 	ret := 0.0

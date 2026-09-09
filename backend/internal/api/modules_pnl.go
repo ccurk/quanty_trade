@@ -43,8 +43,14 @@ func GetModulesPnL(c *gin.Context) {
 	startMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
 
 	sumRealized := func(start *time.Time) float64 {
+		// closed_qty>0 是口径的一部分,别删:status='closed' 里约七成(实测 2026-09-09
+		// 线上 2828 行中 2006 行)是 closed_qty=0 的空壳 —— stale-close 静默 0 和收养
+		// 假仓(台账 #91/#122)。今天它们 realized_pn_l 恰好都是 0,所以删掉过滤
+		// "看起来"不影响总额;一旦 #91 的回填把交易所真实 PnL 写回这些行,裸 SUM 就会
+		// 和归因页(strategy_attribution.go 同样过滤)分叉,而两页的数正是对外口径
+		// (台账 #32)的来源。两边必须是同一个 WHERE。
 		q := database.DB.Model(&models.StrategyPosition{}).
-			Where("owner_id = ? AND status = ?", uid, "closed")
+			Where("owner_id = ? AND status = ? AND closed_qty > 0", uid, "closed")
 		if start != nil {
 			q = q.Where("close_time >= ?", *start)
 		}
