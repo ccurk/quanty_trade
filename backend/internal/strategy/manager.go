@@ -664,29 +664,48 @@ func mayAdoptUnclaimedPosition(inst *StrategyInstance) bool {
 }
 
 // adoptUnclaimedExchangePositions records exchange net positions that no open
-// strategy_positions row claims, attributing each to the strategy that last
-// ordered that symbol — provided that strategy is still live.
+// strategy_positions row claims, attributing each to the strategy that OPENED
+// it — provided that strategy belongs to this owner and is still live.
 //
-// Declining to adopt does not leave a naked position: this loop already skipped
-// symbols with no strategy-tagged recent order, TP/SL live as native exchange
-// conditional orders rather than in the DB row, and the positions API renders
-// exchange positions directly. The decline is logged so the orphan is visible
-// instead of silent.
+// The opener, not the last actor: see the ruling in position_opener.go. Under a
+// shared exchange account the last order on a symbol is routinely a CLOSE leg
+// from a different strategy than the one that built the position, and crediting
+// it makes the per-strategy PnL a function of execution order rather than of
+// what the strategy did.
+//
+// Declining to adopt does not leave a naked position: TP/SL live as native
+// exchange conditional orders rather than in the DB row, and the positions API
+// renders exchange positions directly. The decline is logged so the orphan is
+// visible instead of silent.
+//
+// loadEntryOrders is a lazy loader so the common tick — nothing unclaimed —
+// costs no extra query on this 2s loop.
 func adoptUnclaimedExchangePositions(
 	ownerID uint,
 	now time.Time,
 	activePositions map[string]exchange.Position,
-	latestOrderBySymbol map[string]models.StrategyOrder,
+	loadEntryOrders func() map[string][]models.StrategyOrder,
 	instLookup map[string]*StrategyInstance,
 	countedSymbols map[string]struct{},
 	countByStrategy map[string]int64,
 ) {
+	var entryOrders map[string][]models.StrategyOrder
 	for symKey, pos := range activePositions {
 		if _, ok := countedSymbols[symKey]; ok {
 			continue
 		}
-		ord, ok := latestOrderBySymbol[symKey]
-		if !ok || strings.TrimSpace(ord.StrategyID) == "" {
+		if entryOrders == nil {
+			entryOrders = loadEntryOrders()
+		}
+		ord, ok := PositionOpener(entryOrders[symKey], pos.Direction, pos.OpenTime)
+		if !ok {
+			logger.Warnf("[REDIS OPEN COUNT] skip adoption: opener unknown owner=%d symbol=%s direction=%s amount=%v", ownerID, pos.Symbol, pos.Direction, pos.Amount)
+			continue
+		}
+		if ord.OwnerID != ownerID {
+			// 开仓方挂在另一个 app owner 名下(共享交易所账户)。这一仓归它,不归本
+			// owner 的任何策略 —— 等外层循环走到开仓方那个 owner 时再收养。不打日志:
+			// 这是每 2s 都会命中的正常分支,不是异常。
 			continue
 		}
 		if !mayAdoptUnclaimedPosition(instLookup[strings.TrimSpace(ord.StrategyID)]) {
@@ -706,7 +725,10 @@ func adoptUnclaimedExchangePositions(
 			AvgPrice:     pos.Price,
 			Status:       "open",
 			OpenTime:     pos.OpenTime,
-			UpdatedAt:    now,
+			// 收养行的 realized_pn_l 从来不是"这笔打平",而是"还没有平仓腿"。
+			// 显式标 unknown,让它一出生就能被聚合排除掉(台账 #122 三态)。
+			PnLSource: "unknown",
+			UpdatedAt: now,
 		}).Error
 	}
 }
@@ -726,6 +748,16 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 		m.mu.RUnlock()
 		if rb == nil || ex == nil {
 			return
+		}
+
+		// 开仓腿是账户级的(共享账户下开仓方常常挂在别的 owner 名下),所以按 tick
+		// 读一次、跨 owner 复用;没有无主净仓的 tick 一次都不读。
+		var entryOrdersOnce map[string][]models.StrategyOrder
+		loadEntryOrders := func() map[string][]models.StrategyOrder {
+			if entryOrdersOnce == nil {
+				entryOrdersOnce = LoadRecentEntryOrdersBySymbol()
+			}
+			return entryOrdersOnce
 		}
 
 		byOwner := map[uint][]*StrategyInstance{}
@@ -913,7 +945,7 @@ func (m *Manager) SyncRedisOpenCountsFromExchange(ctx context.Context) {
 				}
 			}
 
-			adoptUnclaimedExchangePositions(ownerID, now, activePositions, latestOrderBySymbol, instLookup, countedSymbols, countByStrategy)
+			adoptUnclaimedExchangePositions(ownerID, now, activePositions, loadEntryOrders, instLookup, countedSymbols, countByStrategy)
 
 			pendingCutoff := now.Add(-2 * time.Minute)
 			for symKey, ord := range latestOrderBySymbol {

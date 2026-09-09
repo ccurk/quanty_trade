@@ -307,3 +307,59 @@ GROUP BY bucket;
 --            改计入 unaccounted_closed_positions,让排除动作在 payload 里看得见。
 --   [待做]   查询侧五处对外聚合排除 unknown —— **必须等写入侧部署、且 6.3 跑过
 --            之后**,否则历史行全是 NULL/空,对外数字会毫无预告跳一次。
+
+-- ###########################################################################
+-- §8 realized_pn_l 里的负零 —— 会让恢复演练永久多报一行假差异
+-- ###########################################################################
+--
+-- 起因:老徐做恢复演练时发现 `-0` 过不了 mysqldump 往返(台账 #155)。
+-- 本节是在这个库上独立核实的结果,**只跑了 SELECT**。
+--
+-- 8.1 存量(实测 2026-09-09,只读)
+--     strategy_positions 里恰好 **1 行** 的 realized_pn_l 是 IEEE-754 负零:
+--       id=1721  Meme_合约信号计算引擎_1  TST/USDT  short  closed
+--                open 2026-08-09 09:46:34  close 10:46:38
+--                closed_qty=3990  avg_price=0.015569999999999999  avg_close=0.01557
+--     其余 2,010 个零全是 +0。realized_notional / amount / closed_qty /
+--     avg_close_price 四列一个负零都没有。
+SELECT SUM(CAST(realized_pn_l AS CHAR) = '-0') AS neg_zero_rows FROM strategy_positions;
+
+-- 8.2 它是怎么来的(可复现,不是推测)
+--     manager.go applyOrderFillToPosition 对空头算 realized = qty*(entry-close);
+--     那两个价格是相邻的两个 double(bits 0x…c74f vs 0x…c750),差 -1.73e-18,
+--     乘 3990 得 -6.92e-15。roundMoney8 = math.Round(v*1e8)/1e8,而
+--     math.Round(-0.00000069) 在 Go 里返回 **-0**(保号),-0/1e8 仍是 -0。
+--     拿这一行自己的存量数字跑一遍 roundMoney8,复现出的就是 -0。
+--
+-- 8.3 为什么它有害 —— 而且只在一种比对下有害
+--     * 等值比对**不受影响**:IEEE-754 里 -0 = 0,MySQL 也是。实测
+--       "会被等值比对报成差异的行数 = 0"。所以本文件 §1-§5 全部安全。
+--     * 文本 / 字节 / checksum 比对**会假报**:dump 写出来的是 `-0`,
+--       而 MySQL 解析字面量 `-0` 归一成 `+0`(实测 SELECT CAST(-0.0 AS CHAR) → '0.0')。
+--       于是同一行在 dump 前后 md5 不同。实测:
+--         id=1721   md5(as dumped)=f35e6e…  md5(after import)=cfcd20…  matches=0
+--         id=56(普通 0)                                              matches=1
+--     业务影响为零(-0 和 0 在任何计算里等价),但**会让恢复演练永远多报一行
+--     对不上**。而"习惯了总有一行对不上、从此不看验收结果"比漏报一条更坏。
+--
+-- 8.4 处理办法
+--     (a) 写入侧已修:strategy/money.go 的 roundMoney8 末尾 `+ 0`,把负零归一成 +0。
+--         注意只有 `+ 0` 管用 —— 实测 `* 1` 和 `ROUND(x,10)` 都保号,归不掉;
+--         `ABS()` 能归但会吃掉真实负值,不能当通用归一化用。Go 侧同结论。
+--     (b) 任何按文本 / checksum 做的恢复比对,两边都套一层 `+ 0` 再比:
+--           MD5(GROUP_CONCAT(CAST(realized_pn_l + 0 AS CHAR) ORDER BY id))
+--         (⚠ GROUP_CONCAT 默认 group_concat_max_len=1024,长表会被静默截断,
+--          截断后两边算出来一样,看着"通过"其实什么都没比 —— 要么先调大,
+--          要么像下面这样逐行比。)
+--     (c) 存量那 1 行:等 (a) 上线后由任何一笔新成交自然写正即可;想立刻抹掉就
+--         执行下面这条(**默认注释掉**,写库,需备份 + 所有者点头)。数值不变。
+-- UPDATE strategy_positions SET realized_pn_l = realized_pn_l + 0, updated_at = NOW()
+--  WHERE CAST(realized_pn_l AS CHAR) = '-0';
+
+-- 8.5 归一化是安全的:它只改零的符号,不改任何数值(只读)
+SELECT SUM(NOT (realized_pn_l <=> realized_pn_l + 0))            AS value_changed_rows,
+       SUM(CAST(realized_pn_l AS CHAR) <> CAST(realized_pn_l + 0 AS CHAR)) AS text_changed_rows
+FROM strategy_positions;
+-- 实测 2026-09-09:value_changed_rows=0(没有一行的数值被改动)
+--                 text_changed_rows =1(只有 id=1721 的文本从 '-0' 变成 '0')
+-- 这正是要的结果:等值比对本来就不会误报,受影响的只有文本/checksum 比对。

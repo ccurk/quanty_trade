@@ -241,6 +241,8 @@ func ListPositions(c *gin.Context) {
 			instRows := loadUserStrategyInstances(uid)
 			bySymbol := loadOpenStrategyPositionMeta(uid)
 			orderMeta := loadRecentStrategyOrderMeta(uid)
+			// 账户级(跨 owner)的开仓腿——共享账户下开仓方常常不是当前用户。
+			entryOrders := strategy.LoadRecentEntryOrdersBySymbol()
 			out := make([]exchange.Position, 0, len(exPos))
 			for _, p := range exPos {
 				key := strings.ToUpper(p.Symbol)
@@ -276,24 +278,22 @@ func ListPositions(c *gin.Context) {
 						}
 					}
 				} else {
-					si := findStrategyInstanceForSymbol(instRows, p.Symbol)
-					// 收养守卫，与 strategy.mayAdoptUnclaimedPosition 同口径：
-					// 只有 running/starting 的实例能认领无主净仓。少了它，退役策略会
-					// 永久保留它最后交易过的 symbol 的收养权（instRows 按 symbol 配置
-					// 匹配、orderMeta 取最近 500 单，两者都不看状态），在共享交易所账户
-					// 上把别人的净仓写成自己名下的幽灵行。
-					if si != nil && !instanceRowMayAdopt(si) {
-						si = nil
-					}
+					// 归属归开仓方（台账 #31 的裁决，同口径实现在
+					// strategy.PositionOpener）。这里过去先按 config 的 symbol 匹配实例、
+					// 再退到「最近 500 单里最后下单的策略」——两者都是「最后动过它的人」，
+					// 在共享交易所账户上会把别人开的净仓铸成自己名下的幽灵行。收养守卫
+					// (instanceRowMayAdopt) 挡住了退役策略，但挡不住「活着、只是没开这一仓」
+					// 的策略：实测有净仓由 qt-trend-long 开出、却被记到 Meme 名下。
+					// 查不出开仓方就不铸行——不猜。
+					var si *models.StrategyInstance
 					strategyID := ""
 					strategyName := ""
-					if si != nil {
-						strategyID = si.ID
-						strategyName = si.Name
-					} else if meta := orderMeta[key]; meta.StrategyID != "" &&
-						instanceRowMayAdopt(findStrategyInstanceByID(instRows, meta.StrategyID)) {
-						strategyID = meta.StrategyID
-						strategyName = meta.StrategyName
+					if opener, ok := strategy.PositionOpener(entryOrders[exchange.NormalizeSymbol(p.Symbol)], p.Direction, p.OpenTime); ok && opener.OwnerID == uid {
+						if cand := findStrategyInstanceByID(instRows, opener.StrategyID); instanceRowMayAdopt(cand) {
+							si = cand
+							strategyID = cand.ID
+							strategyName = cand.Name
+						}
 					}
 					if strategyID != "" {
 						tp, sl := deriveTPSLFromStrategyInstance(si, p.Price, p.Direction)
@@ -311,7 +311,10 @@ func ListPositions(c *gin.Context) {
 							StopLoss:     sl,
 							Status:       "open",
 							OpenTime:     p.OpenTime,
-							UpdatedAt:    now,
+							// 收养行还没有平仓腿，它的 realized_pn_l=0 是「没查到」不是
+							// 「打平」——显式标 unknown，与 strategy 侧同口径（#122 三态）。
+							PnLSource: "unknown",
+							UpdatedAt: now,
 						}
 						_ = database.DB.Create(&pos).Error
 						p.StrategyID = strategyID
