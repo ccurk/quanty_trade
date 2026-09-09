@@ -5,7 +5,24 @@ set -euo pipefail
 # env 文件里，默认 /etc/quanty/backend.env，可用 QUANTY_ENV_FILE 覆盖路径。
 # 该文件格式为每行 KEY=VALUE，示例见本脚本末尾注释。
 QUANTY_ENV_FILE="${QUANTY_ENV_FILE:-/etc/quanty/backend.env}"
+
+# --check：只跑前置校验就退出，不 pull、不删容器、不起容器。
+# 让"现在部署会不会 fail"这个问题有一条命令能回答，而不是起到一半才炸。
+CHECK_ONLY=0
+if [ "${1:-}" = "--check" ]; then
+  CHECK_ONLY=1
+elif [ -n "${1:-}" ]; then
+  echo "用法: $0 [--check]" >&2
+  exit 2
+fi
+
+RUNBOOK="docs/deploy-preflight.md"
+
+ENV_FILE_PRESENT=0
 if [ -f "$QUANTY_ENV_FILE" ]; then
+  ENV_FILE_PRESENT=1
+fi
+if [ "$ENV_FILE_PRESENT" = 1 ]; then
   perm="$(stat -c '%a' "$QUANTY_ENV_FILE" 2>/dev/null || stat -f '%Lp' "$QUANTY_ENV_FILE" 2>/dev/null || echo '')"
   if [ -n "$perm" ] && [ "$perm" != "600" ]; then
     echo "错误: $QUANTY_ENV_FILE 权限是 $perm，必须是 600。执行: chmod 600 $QUANTY_ENV_FILE" >&2
@@ -66,8 +83,25 @@ for name in DB_PASS REDIS_PASSWORD BINANCE_API_KEY BINANCE_API_SECRET \
   [ -z "$val" ] && missing="$missing $name"
 done
 if [ -n "$missing" ]; then
-  echo "错误: 以下必填凭据未设置:$missing" >&2
-  echo "请写入 $QUANTY_ENV_FILE (chmod 600)，或先 export 再运行本脚本。" >&2
+  if [ "$ENV_FILE_PRESENT" = 0 ]; then
+    # 最常见的一种失败：文件根本不存在。上面那个 -f 判断是静默跳过的，
+    # 不在这里点名，操作者只会看到"凭据未设置"然后去 export，绕开了真正的问题。
+    echo "错误: 凭据文件 $QUANTY_ENV_FILE 不存在，因此以下必填凭据没有来源:$missing" >&2
+    echo "" >&2
+    echo "这不是 bug —— 凭据不入公开仓库，缺了就拒绝启动(fail closed)。" >&2
+    echo "在所有者把这些值填进去之前，本服务不可部署。" >&2
+    echo "" >&2
+    echo "怎么办(需要所有者本人操作，agent 不得代填):" >&2
+    echo "  sudo mkdir -p \"$(dirname "$QUANTY_ENV_FILE")\"" >&2
+    echo "  sudo install -m 600 -o root -g root /dev/null \"$QUANTY_ENV_FILE\"" >&2
+    echo "  sudo vi \"$QUANTY_ENV_FILE\"" >&2
+    echo "" >&2
+    echo "模板、每个值去哪拿、以及两个会丢密钥的坑，见仓库里的 $RUNBOOK" >&2
+    echo "特别注意: CONFIG_ENCRYPTION_KEY 必须沿用现有值，新生成会让 users.configs 永久解不开。" >&2
+  else
+    echo "错误: 以下必填凭据未设置:$missing" >&2
+    echo "$QUANTY_ENV_FILE 存在但没提供它们。补齐后重试；变量清单见 $RUNBOOK" >&2
+  fi
   exit 1
 fi
 
@@ -105,6 +139,12 @@ if [ "${REDIS_ENABLED}" = "true" ]; then
   if [[ "$REDIS_ADDR" != *:* ]]; then
     REDIS_ADDR="${REDIS_ADDR}:6379"
   fi
+fi
+
+if [ "$CHECK_ONLY" = 1 ]; then
+  echo "自检通过：$QUANTY_ENV_FILE 权限合规、6 个必填凭据齐备、DB_USER=${DB_USER}(非 root)、BACKEND_VERSION=${BACKEND_VERSION}。"
+  echo "现在执行部署不会因前置条件失败。回滚现实与失败处置见 $RUNBOOK"
+  exit 0
 fi
 
 docker pull "${BACKEND_IMAGE}:${BACKEND_VERSION}"
@@ -217,6 +257,9 @@ if [ "$built_from_commit" != "$server_checkout_commit" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 完整 runbook（模板 + 每个值去哪拿 + 自检 + 失败处置 + 回滚现实）：docs/deploy-preflight.md
+# 只想知道"现在部署会不会 fail"：bash server_deploy_backend.sh --check
+#
 # $QUANTY_ENV_FILE 示例（默认 /etc/quanty/backend.env，权限必须 600）：
 #
 #   sudo mkdir -p /etc/quanty
