@@ -34,6 +34,16 @@ if [ "$ENV_FILE_PRESENT" = 1 ]; then
   set +a
 fi
 
+# 密钥抹除闸，排在「凭据缺失」检查**前面**：故意的。
+# 凭据缺失只是部署起不来（可恢复）；conf_pro.yaml 里那两把 key 被 pull 覆盖是
+# 不可逆的数据损失。两件事同时成立时，先报后果大的那件。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -r "$SCRIPT_DIR/scripts/guard-conf-secrets.sh" ]; then
+  # shellcheck source=scripts/guard-conf-secrets.sh
+  . "$SCRIPT_DIR/scripts/guard-conf-secrets.sh"
+  guard_conf_secrets "$SCRIPT_DIR" "$QUANTY_ENV_FILE" || exit 1
+fi
+
 DOCKER_HUB_ID="zhaoxianxinclimber108"
 BACKEND_IMAGE="${DOCKER_HUB_ID}/quanty_trade-backend"
 BACKEND_VERSION="${BACKEND_VERSION:-}"
@@ -143,6 +153,7 @@ fi
 
 if [ "$CHECK_ONLY" = 1 ]; then
   echo "自检通过：$QUANTY_ENV_FILE 权限合规、6 个必填凭据齐备、DB_USER=${DB_USER}(非 root)、BACKEND_VERSION=${BACKEND_VERSION}。"
+  echo "密钥抹除闸通过：jwt_secret / config_encryption_key 不会因 git pull 丢失。"
   echo "现在执行部署不会因前置条件失败。回滚现实与失败处置见 $RUNBOOK"
   exit 0
 fi

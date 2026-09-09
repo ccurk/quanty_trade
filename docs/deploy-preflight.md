@@ -83,6 +83,89 @@ MySQL/Redis 容器那两个脚本读的是**另一份** `/etc/quanty/datastore.e
 > **所以顺序是：先把值从服务器现有的 `conf_pro.yaml` 抄进 `backend.env`，再 `git pull`。**
 > 反过来做，就要靠"从旧镜像/旧容器里刨"来救，而按第 6 节，这里没有第二个版本兜底。
 
+### 3.1.1 【操作步骤】先抄密钥再 pull —— 确切顺序
+
+这一节是 3.1 的解法。**顺序错一次就没有第二次机会**，照抄，别跳步。
+只有所有者能做这件事；agent 不得代抄、代填、代打印。全程约 5 分钟。
+
+#### 已经加了硬闸，但它有一个覆盖不到的缺口
+
+`scripts/guard-conf-secrets.sh` 现在会在 `pre.sh` 执行任何 git 命令**之前**、
+以及 `server_deploy_backend.sh --check` 里做这道判断：
+*conf_pro.yaml 里还有值、而 `backend.env` 里还没有* → **exit 1，不让往下走**。
+它只看键在不在、值空不空，不读值、不打印值、不落盘。
+
+⚠ **缺口**：这道闸本身在仓库里，而**服务器上现在是旧代码**（第 1 节：服务器 HEAD `326e43e`）。
+也就是说 **"把闸装上服务器"这个动作本身需要一次 pull，而那次 pull 正是没有闸保护的那次。**
+所以**下面的步骤 0 必须手动跑一次**；之后每一次 pull 才是自动有闸的。
+
+#### 步骤 0：pull 之前先问"今天会不会踩"（手动，只读，不回显值）
+
+```bash
+# a) conf_pro.yaml 里这两个键还有几个是活的？
+ssh mycloud 'sudo grep -cE "^[[:space:]]*(jwt_secret|config_encryption_key):[[:space:]]*.?[A-Za-z0-9]" /root/work/quanty_trade/conf/conf_pro.yaml'
+
+# b) backend.env 里已经抄进去几个？（文件不存在会报 No such file，等同于 0）
+ssh mycloud 'sudo grep -cE "^[[:space:]]*(JWT_SECRET|CONFIG_ENCRYPTION_KEY)=.?[A-Za-z0-9]" /etc/quanty/backend.env'
+```
+
+两条都是 `grep -c`，**只输出数字，不回显任何值**。
+
+**判读规则**：`a > b` → **现在 pull 会丢密钥，先做步骤 1-4**。`a == 0` 或 `b >= a` → 可以 pull。
+
+> 本轮（2026-09-09）没有在服务器上实跑这两条 —— 它们是给所有者的命令，本文不代填输出。
+> 但第 1 节已实测过前提：服务器那份 `conf_pro.yaml` 里这两个字段**都还非空**，
+> 而 `/etc/quanty` 目录**根本不存在**。按此推断当前是 `a=2, b=0`，**即"会踩"**。
+
+#### 步骤 1-4：抄
+
+```bash
+ssh mycloud
+sudo mkdir -p /etc/quanty
+sudo install -m 600 -o root -g root /dev/null /etc/quanty/backend.env
+
+# 用 vi 人工对照着抄，两个文件各开一次。
+# **不要用 echo / cat / 管道 / 复制粘贴到聊天窗口** —— 会进 shell history，也可能被日志收走。
+sudo vi /root/work/quanty_trade/conf/conf_pro.yaml   # 只读着抄，改都别改，用 :q! 退出
+sudo vi /etc/quanty/backend.env                      # 填下面这两行（外加第 4 节其余 4 个必填）
+```
+
+`backend.env` 里这两行（**值留空是本文的占位，实际由所有者填**）：
+
+```sh
+JWT_SECRET=                # ← conf_pro.yaml 的 security.jwt_secret
+CONFIG_ENCRYPTION_KEY=     # ← conf_pro.yaml 的 security.config_encryption_key
+                           #   【切勿新生成】必须一字不差沿用现有值
+```
+
+抄完确认（同样只数键、不回显值，**期望输出 `2`**）：
+
+```bash
+sudo grep -cE '^[[:space:]]*(JWT_SECRET|CONFIG_ENCRYPTION_KEY)=.?[A-Za-z0-9]' /etc/quanty/backend.env
+sudo chmod 600 /etc/quanty/backend.env
+```
+
+#### 步骤 5：这时才允许 pull
+
+```bash
+cd /root/work/quanty_trade && bash pre.sh
+```
+
+新版 `pre.sh` 会先过闸再 `git fetch`/`reset --hard`/`pull`。
+**没抄干净的话它会 exit 1 并说明缺哪个键，一条 git 命令都不会执行。**
+
+#### 抄错 / 不抄的后果（写清楚，免得有人觉得"大不了重生成一个"）
+
+| 情况 | 后果 | 可逆？ |
+|---|---|---|
+| `JWT_SECRET` 丢了或抄错 | 所有已登录用户被踢下线，需重新登录 | **可逆**，重新生成即可，代价只是一次全员重登 |
+| `CONFIG_ENCRYPTION_KEY` 丢了或抄错 | `quanty_trade.users.configs`（实测 **2 行用户**）是用它做 AES-256 加密的（`backend/internal/secure/secrets.go:15-33`）。换一把新 key **解不开旧密文** | **不可逆。没有任何补救手段** —— 不是"麻烦一点"，是那两行用户的交易所配置永久报废，只能让用户从头重填 |
+
+抄错比不抄更糟：不抄会被闸拦下，抄错则一路绿灯到用不了那天才发现。
+**所以步骤 4 那条 `grep -c` 只能证明"键非空"，证明不了"抄对了"** ——
+真正的验收是部署后后端不 panic 且用户配置能正常读出来（见第 6 节最后一条：看 `docker logs`，
+`MustValidateSecurity` 缺值时会明写缺哪个）。
+
 ### 3.2 `DB_USER` 必须是 `quanty`，不能填 `root`（脚本会拦）
 
 - `server_deploy_backend.sh:88-92` 硬拦 `DB_USER=root`。
@@ -176,7 +259,9 @@ FAIL: /etc/quanty/backend.env 不存在 → 部署必定失败(fail closed)
 ### 5.2 新脚本上了服务器之后（权威自检）
 
 `server_deploy_backend.sh` 已加 `--check`：跑完**全部**前置校验就停，
-不 `docker pull`、不删容器、不起容器。
+不 `docker pull`、不删容器、不起容器。**3.1 那道密钥抹除闸也在里面**，
+而且排在"凭据缺失"检查**前面** —— 凭据缺了只是起不来（可恢复），
+密钥被 pull 抹掉是不可逆的，两件事同时成立时先报后果大的那件。
 
 ```bash
 ssh mycloud 'cd /root/work/quanty_trade \
@@ -184,11 +269,27 @@ ssh mycloud 'cd /root/work/quanty_trade \
   && bash server_deploy_backend.sh --check'
 ```
 
-`--check` 退出码 0 = 前置条件全过；非 0 = 现在部署会失败，且信息里写明缺什么。
+`--check` 退出码 0 = 前置条件全过（含"今天 pull 不会丢密钥"）；
+非 0 = 现在部署会失败或会丢密钥，且信息里写明是哪一种、缺什么键。
 这比 5.1 更权威，因为它跑的就是真部署那条代码路径。
 
-> ⚠ 服务器上现在那份是**旧脚本**（第 1 节），没有 `--check`。
-> 得先 `git pull` 才有 —— 而 `git pull` 受 3.1 约束。**所以今天只能用 5.1。**
+本机实跑过的退出码（2026-09-09，沙箱里用**假占位值**构造，未碰服务器）：
+
+| 场景 | 退出码 |
+|---|---|
+| conf 两键有值 + env 里没有 | `1`（闸拦下，点名两个键） |
+| conf 两键有值 + env 里只抄了 `JWT_SECRET` | `1`（只点名 `CONFIG_ENCRYPTION_KEY`） |
+| conf 两键有值 + env 里两个都有 | `0`（放行，继续走后面的校验） |
+| conf 里两键已清空（仓库 main 那份） | `0` |
+| `conf/conf_pro.yaml` 不存在 | `0` |
+
+> 最后一行是刻意的：文件不存在 = 没有活体副本 = pull 抹不掉任何东西。
+> 在构建机、新 clone 上拦一下纯属误报，而误报会把人训练成随手 `|| true` 绕过，
+> 真出事那次也就一起绕过去了。**闸只在"确实有东西可丢"时才响。**
+
+> ⚠ 服务器上现在那份是**旧脚本**（第 1 节），没有 `--check`，**也没有那道闸**。
+> 得先 `git pull` 才有 —— 而那一次 pull 恰恰是没有闸保护的。
+> **所以今天只能用 5.1，并且必须先手动跑 3.1.1 的步骤 0。**
 
 ---
 
