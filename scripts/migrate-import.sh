@@ -70,8 +70,9 @@ DB_PORT=$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /port:/{gsub(/[" ]/,"",$
 DB_NAME=$(awk '/^db:/{f=1;next} f && /^[^ ]/{exit} f && /name:/{gsub(/[" ]/,"",$2); print $2; exit}' "$USE_CONF")
 
 # 凭据不从 yaml 读：conf_pro.yaml 的 db.pass 恒为 ""，读出来是空口令，会一路跑到
-# 下面 Step 1 的 mysqldump 才失败——而 Step 1 正是「导入前先备份」那一步，失败还被
-# `|| { 继续 }` 吞掉当成「DB 是空的」，于是无备份直接往下导。必须显式给。
+# 下面 Step 1 的 mysqldump 才失败——而 Step 1 正是「导入前先备份」那一步。
+# （那一步过去会把失败吞掉当成「DB 是空的」、无备份直接往下导；已改成 fail closed，
+#   台账 #116。这里仍然要求显式给凭据：让它在第一行就停，比跑到 Step 1 才停更好。）
 # 本脚本会 mysqldump + 导入整库，权限对齐备份口径：用 root（口令 A）。
 DB_USER="${DB_USER:-}"
 DB_PASS="${DB_PASS:-}"
@@ -89,14 +90,54 @@ echo ""
 # ───────────────────────────────────────────────────────────────────────
 echo "🛡  1/4 备份新服务器当前 DB..."
 BACKUP="/tmp/before_import_${DB_NAME}_$(date +%s).sql"
-mysqldump \
+
+# ⚠ 这一步必须 fail closed，别再改回 `|| { 继续 }`（台账 #116）。
+# 原来的写法把「备份失败」和「DB 本来就是空的」混成一件事：mysqldump 任何原因失败
+# ——连不上、口令错、盘满、权限不够——都被当成「空库」，然后**无备份直接往下导**，
+# 而 Step 2 是覆盖式导入。那一刻这台机器上的数据就没有第二份了。
+# （实测确认过它真的会继续往下走：`a || { echo; }` 里 a 的失败不触发 set -e，
+#  bash 只对 && / || 列表的最后一个命令生效。）
+# 正确的分法：先问「目标库到底有没有表」——这个问题失败了就是连不上，直接停；
+# 答案是 0 张表才叫空库，才允许跳过备份。
+PRE_ERR="$WORK/pre_import.err"
+EXISTING_TABLES=$(mysql \
   --host="$DB_HOST" --port="$DB_PORT" \
   --user="$DB_USER" --password="$DB_PASS" \
-  --single-transaction --no-tablespaces \
-  "$DB_NAME" > "$BACKUP" 2>/dev/null || {
-    echo "   ⚠️  备份失败（可能 DB 是空的，第一次部署），继续"
+  -N -B -e "SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema='$DB_NAME' AND table_type='BASE TABLE'" \
+  2> "$PRE_ERR") || {
+    echo "❌ 连目标 DB 有几张表都数不出来，停。"
+    echo "   不知道目标库里有什么，就不能覆盖它。"
+    sed -n '1,10p' "$PRE_ERR"
+    rm -rf "$WORK"
+    exit 1
   }
-[ -s "$BACKUP" ] && echo "   ✅ 备份: $BACKUP ($(du -h $BACKUP | cut -f1))"
+
+if [ "$EXISTING_TABLES" -eq 0 ]; then
+  echo "   ℹ️  ${DB_NAME} 里 0 张基表，确认是空库（首次部署），跳过备份"
+  BACKUP=""   # 置空：后面的回滚提示不许拿一个不存在的文件糊弄人
+else
+  mysqldump \
+    --host="$DB_HOST" --port="$DB_PORT" \
+    --user="$DB_USER" --password="$DB_PASS" \
+    --single-transaction --no-tablespaces \
+    "$DB_NAME" > "$BACKUP" 2> "$PRE_ERR" || {
+      echo "❌ 导入前备份失败，停。目标库有 ${EXISTING_TABLES} 张表，不是空库。"
+      echo "   Step 2 是覆盖式导入，没有这份备份就没有回滚路径。"
+      sed -n '1,10p' "$PRE_ERR"
+      rm -f "$BACKUP"
+      rm -rf "$WORK"
+      exit 1
+    }
+  if [ ! -s "$BACKUP" ]; then
+    echo "❌ 导入前备份产出 0 字节，停。目标库有 ${EXISTING_TABLES} 张表，不可能备出空文件。"
+    sed -n '1,10p' "$PRE_ERR"
+    rm -f "$BACKUP"
+    rm -rf "$WORK"
+    exit 1
+  fi
+  echo "   ✅ 备份: $BACKUP ($(du -h "$BACKUP" | cut -f1))"
+fi
 
 # ───────────────────────────────────────────────────────────────────────
 # Step 2: 还原 SQL
@@ -115,10 +156,56 @@ mysql \
     echo "❌ SQL 还原失败:"
     head -20 "$WORK/restore.err"
     echo ""
-    echo "可以用备份恢复: mysql ... $DB_NAME < $BACKUP"
+    if [ -n "$BACKUP" ]; then
+      echo "可以用备份恢复: mysql ... $DB_NAME < $BACKUP"
+    else
+      echo "（导入前目标库是空的，没有备份可回滚 —— 本来也没东西可丢）"
+    fi
     exit 1
   }
 echo "   ✅ DB 还原完成"
+
+# ───────────────────────────────────────────────────────────────────────
+# Step 2b: 内容验收 —— **不是只对行数**
+# ───────────────────────────────────────────────────────────────────────
+# 2026-09-09 恢复演练实测（RUNBOOK-restore.md §8.3）：strategy_positions 2815=2815、
+# daily_pn_ls 1016=1016，行数完美对上、内容却是差的。**只对行数的验收会判为通过。**
+# 这里拿 migrate-export.sh 在 dump 之前记下的逐表 (id上界, 行数, 内容校验和) 复算一遍。
+if [ -f "$WORK/db.checks.tsv" ]; then
+  echo "🔎 2/4b 内容验收：逐表复算行数 + 内容校验和..."
+  AFTER_OK=1
+  bash "$REPO_ROOT/scripts/db-content-checks.sh" \
+    "$DB_HOST" "$DB_PORT" "$DB_NAME" "$DB_USER" "$DB_PASS" "$WORK/db.checks.tsv" \
+    > "$WORK/db.checks.after.tsv" 2> "$WORK/checks.err" || AFTER_OK=0
+  if [ "$AFTER_OK" != 1 ]; then
+    echo "❌ 内容验收跑不起来 —— 不把「没验」说成「验过了」:"
+    sed -n '1,10p' "$WORK/checks.err"
+    echo "   数据已经导进去了。人工核对前不要放业务上来。"
+    echo "   证据留在 $WORK（本次不清理）"
+    exit 1
+  fi
+  if diff -u "$WORK/db.checks.tsv" "$WORK/db.checks.after.tsv" > "$WORK/checks.diff"; then
+    echo "   ✅ $(wc -l < "$WORK/db.checks.tsv" | tr -d ' ') 张表：行数与内容校验和全等"
+  else
+    echo "❌ 内容验收不通过 —— 导进去的和包里记的不是同一份数据:"
+    sed -n '1,40p' "$WORK/checks.diff"
+    echo ""
+    echo "   先别怀疑校验本身：负零 -0 这个已知坑已经在 db-content-checks.sh 里躲开了"
+    echo "   （数值列先归一 IF(col = 0, '0', ...)，见台账 #155）。"
+    echo "   真正会撞上的一种非故障情形：导出期间源库那边有行被删（比如 05:00 的"
+    echo "   db-log-retention.sh 清 api_logs）。那不是假警报，是源库在导出窗口里真删了行 ——"
+    echo "   重跑一次 migrate-export.sh 即可。除此之外，一律按数据不一致处理。"
+    if [ -n "$BACKUP" ]; then
+      echo ""
+      echo "   回滚: mysql ... $DB_NAME < $BACKUP"
+    fi
+    echo "   证据留在 $WORK（本次不清理）"
+    exit 1
+  fi
+else
+  echo "⚠️  包里没有 db.checks.tsv（旧版 migrate-export.sh 导出的包）。"
+  echo "   本次导入**没有做内容验收** —— 行数看着对不等于数据一样，别当成验过了。"
+fi
 
 # ───────────────────────────────────────────────────────────────────────
 # Step 3: 还原配置文件

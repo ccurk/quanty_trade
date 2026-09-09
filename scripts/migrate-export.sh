@@ -55,6 +55,27 @@ echo ""
 # ───────────────────────────────────────────────────────────────────────
 # Step 1: SQL dump（完整 DB，含所有历史 — 这是最重要的一步）
 # ───────────────────────────────────────────────────────────────────────
+# ─── 内容校验清单：**必须在 dump 之前取** ───
+# 只对行数的验收会漏判：2026-09-09 恢复演练实测 strategy_positions 2815=2815、
+# daily_pn_ls 1016=1016，行数完美对上、内容却是差的（RUNBOOK-restore.md §8.3）。
+# 所以这里逐表记下 (id 上界, 行数, 顺序无关的内容校验和)，由 migrate-import.sh 复算比对。
+#
+# 顺序为什么是「先清单、后 dump」：清单里的 id 上界取自这一刻的 MAX(id)。
+# 之后到 dump 完成之间源库新写的行，id 都大于上界，两边一起被排除掉 —— 不会误报。
+# 反过来先 dump 后取清单，那些新行会进上界却不在包里，每一次导入都报不一致，
+# 而一条永远报警的验收比没有验收更坏。
+echo "🔎 0/4 内容校验清单（先于 dump 取，见上面注释）..."
+if bash "$REPO_ROOT/scripts/db-content-checks.sh" \
+      "$DB_HOST" "$DB_PORT" "$DB_NAME" "$DB_USER" "$DB_PASS" \
+      > "$WORK/db.checks.tsv" 2> "$WORK/checks.err"; then
+  echo "   ✅ $(wc -l < "$WORK/db.checks.tsv" | tr -d ' ') 张表已记下行数 + 内容校验和"
+else
+  echo "❌ 内容校验清单生成失败 —— 不导出一个「事后无法验收」的迁移包:"
+  sed -n '1,10p' "$WORK/checks.err"
+  rm -rf "$WORK"
+  exit 1
+fi
+
 echo "🗄  1/4 mysqldump 全量 DB（含交易历史、PnL、审计）..."
 mysqldump \
   --host="$DB_HOST" \
@@ -153,7 +174,8 @@ DB: ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}
 DB dump 大小: $SQL_SIZE
 策略文件: $PYFILES
 
-包含的表统计:
+包含的表统计（information_schema.table_rows 是 InnoDB 的**估算值**，不是精确行数，
+只当概览看。精确行数 + 内容校验和在包里的 db.checks.tsv，由 migrate-import.sh 复算）:
 $(mysql --host="$DB_HOST" --port="$DB_PORT" --user="$DB_USER" --password="$DB_PASS" -BN -e "
   SELECT table_name, table_rows
   FROM information_schema.tables
