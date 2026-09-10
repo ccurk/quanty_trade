@@ -86,7 +86,7 @@ func TestValidateModeDefault(t *testing.T) {
 func TestBuildPlannerFromConfig(t *testing.T) {
 	wl := NewWhitelist([]AllowedAddress{{Exchange: "gate", Asset: "USDT", Network: "TRC20", Address: "TGate"}})
 	p := validCfg().BuildPlanner(wl)
-	plans := p.Plan([]Balance{{Exchange: "gate", Asset: "USDT", Free: 100}}) // below min 500
+	plans, _ := p.Plan(readOK([]Balance{{Exchange: "gate", Asset: "USDT", Free: 100}}, "gate", "binance")) // below min 500
 	if len(plans) != 1 || plans[0].ToExchange != "gate" || !plans[0].Executable() {
 		t.Fatalf("planner from config should propose an executable refill, got %+v", plans)
 	}

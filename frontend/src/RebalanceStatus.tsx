@@ -7,7 +7,7 @@ import { ArrowRight, AlertTriangle } from 'lucide-react';
 
 interface Balance { exchange: string; asset: string; free: number; locked: number; }
 interface Plan { asset: string; from_exchange: string; to_exchange: string; amount: number; network: string; to_address: string; reason: string; }
-interface Snapshot { balances: Balance[]; plans: Plan[]; last_update: string; error: string; running: boolean; }
+interface Snapshot { balances: Balance[]; plans: Plan[]; blocked: string; last_update: string; error: string; running: boolean; }
 interface StatusResp { enabled: boolean; message?: string; snapshot?: Snapshot; }
 interface Transfer { id: number; asset: string; from_exchange: string; to_exchange: string; amount: number; amount_usd: number; status: string; tx_id: string; detail: string; created_at: string; }
 
@@ -83,7 +83,9 @@ export default function RebalanceStatus({ isDarkMode }: { isDarkMode: boolean })
                   <td className="text-right font-mono font-semibold">{fmt(b.free + b.locked)}</td>
                 </tr>
               ))}
-              {balances.length === 0 && <tr><td colSpan={5} className="py-6 text-center text-gray-500">暂无余额数据(检查 key 权限 / 入金)</td></tr>}
+              {balances.length === 0 && <tr><td colSpan={5} className="py-6 text-center text-gray-500">
+                {snap.error ? '余额没读到 —— 这不等于余额是 0' : '暂无余额数据(检查 key 权限 / 入金)'}
+              </td></tr>}
             </tbody>
           </table>
         </div>
@@ -93,8 +95,14 @@ export default function RebalanceStatus({ isDarkMode }: { isDarkMode: boolean })
       <div className={`p-5 rounded-2xl border shadow-xl ${card}`}>
         <div className="font-bold mb-3">搬运建议({snap.plans?.length || 0})<span className="text-xs font-normal text-gray-500 ml-2">执行时后端重算,recommend/dryRun 不真提</span></div>
         {msg && <div className="text-sm mb-3">{msg}</div>}
+        {/* blocked 非空 = 库存未知,"0 条建议"不等于"都在带内" —— 这两句必须分开说。 */}
+        {snap.blocked && (
+          <div className="text-sm mb-3 p-2 rounded-lg bg-red-500/10 text-red-500 flex items-start gap-1">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" /><span>{snap.blocked}</span>
+          </div>
+        )}
         {(!snap.plans || snap.plans.length === 0) ? (
-          <div className="text-sm text-gray-500">当前库存都在带内,无需搬运。</div>
+          <div className="text-sm text-gray-500">{snap.blocked ? '库存未知,本轮不给任何搬运建议。' : '当前库存都在带内,无需搬运。'}</div>
         ) : (
           <div className="space-y-2">
             {snap.plans.map((p, i) => {

@@ -58,6 +58,14 @@ type Plan struct {
 	ToAddress    string  `json:"to_address"` // "" ⇒ blocked (no whitelisted destination)
 	Memo         string  `json:"memo"`
 	Reason       string  `json:"reason"`
+
+	// balanceKnown attests that the exec-exchange inventory this plan was derived
+	// from was actually READ — not assumed to be zero because the read failed.
+	// Unexported on purpose: only Planner.Plan sets it, and only after a successful
+	// read, so a Plan built anywhere else (another package, a future endpoint, a
+	// decoded JSON body) arrives with the zero value false. The executor refuses an
+	// un-attested plan, so forgetting about this field fails closed.
+	balanceKnown bool
 }
 
 // Executable is true only when a whitelisted destination address was resolved.

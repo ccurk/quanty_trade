@@ -38,9 +38,24 @@ func (p *Planner) network(asset string) string {
 // other exchanges are ignored. Each plan's destination is resolved from the
 // whitelist; if none is whitelisted the plan is still returned but marked
 // non-executable (empty ToAddress + a Reason) — surfaced, never silently dropped.
-func (p *Planner) Plan(balances []Balance) []Plan {
+//
+// It plans ONLY when the exec exchange's balances were actually read. If they were
+// not, it returns no plans and a non-empty blocked reason, because an unread
+// exchange has UNKNOWN inventory: reading that as "0" is what turns a failed HTTP
+// call into "below Min → refill from the reservoir" → a real withdrawal. The
+// reservoir's read status is deliberately not required — the reservoir balance is
+// not an input to any band comparison, so not knowing it changes no number here.
+func (p *Planner) Plan(bs *BalanceSet) (plans []Plan, blocked string) {
+	if !bs.Known(p.Exec) {
+		why := bs.Err()
+		if why == "" {
+			why = "本轮没有提供该所的余额读取结果"
+		}
+		return nil, fmt.Sprintf("%s 余额没读到,库存未知 —— 本轮不产出任何搬运计划(未知 ≠ 0);原因: %s", p.Exec, why)
+	}
+
 	onExec := map[string]float64{}
-	for _, b := range balances {
+	for _, b := range bs.Balances() {
 		if eqFold(b.Exchange, p.Exec) {
 			onExec[strings.ToUpper(b.Asset)] += b.Total()
 		}
@@ -71,7 +86,7 @@ func (p *Planner) Plan(balances []Balance) []Plan {
 	}
 	// Largest imbalance first — most urgent to act on.
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Amount > out[j].Amount })
-	return out
+	return out, ""
 }
 
 func (p *Planner) build(asset, from, to string, amount float64, reason string) Plan {
@@ -83,6 +98,8 @@ func (p *Planner) build(asset, from, to string, amount float64, reason string) P
 		Amount:       amount,
 		Network:      net,
 		Reason:       reason,
+		// Only reachable after Plan established the exec exchange was really read.
+		balanceKnown: true,
 	}
 	if addr, memo, ok := p.Whitelist.Resolve(to, asset, net); ok {
 		pl.ToAddress = addr

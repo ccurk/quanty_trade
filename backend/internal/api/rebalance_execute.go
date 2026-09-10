@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -47,23 +48,32 @@ func lastSubmittedAt(asset string) time.Time {
 }
 
 // freshPlanForAsset re-computes plans server-side from LIVE balances + the current
-// whitelist, and returns the one for asset (nil if none). This is the trust anchor:
-// the executed address + amount always come from here, never from the client.
-func freshPlanForAsset(asset string) *rebalance.Plan {
-	var balances []rebalance.Balance
-	if g, err := rebalance.FetchGateSpotBalances(); err == nil {
-		balances = append(balances, g...)
+// whitelist, and returns the one for asset (nil, nil if the asset is in band). This
+// is the trust anchor: the executed address + amount always come from here, never
+// from the client.
+//
+// A trust anchor is not allowed to guess. It used to collect balances with
+// `if _, err := Fetch...(); err == nil { append }` — so a gate read failure was
+// dropped without even a log line, gate looked like it held 0, and the caller got a
+// confident "pull 1000 USDT in from binance". Now a failed exec-exchange read is an
+// error, not a plan.
+func freshPlanForAsset(asset string) (*rebalance.Plan, error) {
+	bs := rebalance.FetchAllSpotBalances()
+	plans, blocked := rebalanceCfg.BuildPlanner(LoadRebalanceWhitelist()).Plan(bs)
+	if blocked != "" {
+		logger.Errorf("[rebalance] 拒绝为 %s 生成计划: %s", strings.ToUpper(asset), blocked)
+		return nil, errors.New(blocked)
 	}
-	if b, err := rebalance.FetchBinanceSpotBalances(); err == nil {
-		balances = append(balances, b...)
+	if e := bs.Err(); e != "" {
+		// 水库侧读失败不改变任何带内比较,所以不拦;但必须留痕。
+		logger.Warnf("[rebalance] 余额读取部分失败(不影响 %s 的带内判断): %s", strings.ToUpper(asset), e)
 	}
-	plans := rebalanceCfg.BuildPlanner(LoadRebalanceWhitelist()).Plan(balances)
 	for i := range plans {
 		if strings.EqualFold(plans[i].Asset, asset) {
-			return &plans[i]
+			return &plans[i], nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // executeAndRecord runs one plan through the executor and writes the outcome to the
@@ -111,9 +121,14 @@ func ExecuteRebalancePlan(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "当前 mode=recommend,只建议不执行;要执行请把配置改为 semi/auto 并重启"})
 		return
 	}
-	plan := freshPlanForAsset(req.Asset)
+	plan, err := freshPlanForAsset(req.Asset)
+	if err != nil {
+		// 读不到余额 ⇒ 明确报错,绝不返回 200 + 一个凭空算出来的计划。
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "拒绝执行:" + err.Error()})
+		return
+	}
 	if plan == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": req.Asset + " 当前无搬运需求(在带内 / 无余额数据)"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": req.Asset + " 当前无搬运需求(库存在带内)"})
 		return
 	}
 	res := executeAndRecord(*plan, rebalanceActorID(c))
@@ -140,14 +155,18 @@ func runAutoRebalance(ctx context.Context) {
 			return
 		case <-t.C:
 		}
-		var balances []rebalance.Balance
-		if g, err := rebalance.FetchGateSpotBalances(); err == nil {
-			balances = append(balances, g...)
+		bs := rebalance.FetchAllSpotBalances()
+		plans, blocked := rebalanceCfg.BuildPlanner(LoadRebalanceWhitelist()).Plan(bs)
+		if blocked != "" {
+			// 读不到就什么都不搬。这一条必须是 Error 级并且每轮都打:
+			// 它意味着自动搬运正处在"看不见库存"的状态,不是一次性抖动。
+			logger.Errorf("[rebalance] auto 本轮不动作: %s", blocked)
+			continue
 		}
-		if b, err := rebalance.FetchBinanceSpotBalances(); err == nil {
-			balances = append(balances, b...)
+		if e := bs.Err(); e != "" {
+			logger.Warnf("[rebalance] auto 余额读取部分失败: %s", e)
 		}
-		for _, p := range rebalanceCfg.BuildPlanner(LoadRebalanceWhitelist()).Plan(balances) {
+		for _, p := range plans {
 			if !p.Executable() {
 				continue
 			}

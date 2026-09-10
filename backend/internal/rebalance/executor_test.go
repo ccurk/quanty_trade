@@ -1,6 +1,7 @@
 package rebalance
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,8 +15,10 @@ func semiCfg() *Config {
 	}
 }
 
+// execPlan is a plan as Planner.Plan would have produced it — including the
+// balanceKnown attestation, without which the executor refuses everything.
 func execPlan(amount float64) Plan {
-	return Plan{Asset: "USDT", FromExchange: "binance", ToExchange: "gate", Amount: amount, Network: "TRC20", ToAddress: "Tgate"}
+	return Plan{Asset: "USDT", FromExchange: "binance", ToExchange: "gate", Amount: amount, Network: "TRC20", ToAddress: "Tgate", balanceKnown: true}
 }
 
 var priceUSDT = func(a string) float64 {
@@ -125,5 +128,35 @@ func TestExecuteDustAfterCapSkips(t *testing.T) {
 	r := NewExecutor(semiCfg(), w, priceUSDT).Execute(execPlan(800), 4970, time.Time{}, time.Now())
 	if r.Executed || *calls != 0 || r.Skipped == "" {
 		t.Fatalf("sub-dust after cap must skip, got %+v", r)
+	}
+}
+
+// TestExecuteRefusesUnattestedPlan is the hard gate: a plan that does not carry
+// proof its exec-exchange balances were really read never reaches withdraw — no
+// matter how well-formed and whitelisted it otherwise looks. The zero value of the
+// attestation is false, so this is what happens by DEFAULT to any plan that did not
+// come out of Planner.Plan.
+func TestExecuteRefusesUnattestedPlan(t *testing.T) {
+	w, calls, _ := spyWithdraw()
+	p := execPlan(800)
+	p.balanceKnown = false // 手搓 / 反序列化 / 未来某个新入口忘了这回事
+	r := NewExecutor(semiCfg(), w, priceUSDT).Execute(p, 0, time.Time{}, time.Now())
+	if r.Executed || *calls != 0 || r.Skipped == "" {
+		t.Fatalf("未证实余额来源的计划必须被拒,得到 %+v (withdraw 调用 %d 次)", r, *calls)
+	}
+}
+
+// TestExecuteGateIsBeforeEveryOtherCheck pins the ordering: the attestation is
+// checked before mode/cooldown/caps, so a plan built on unknown balances is refused
+// for the RIGHT reason even when it would also have been stopped by something else.
+func TestExecuteGateIsBeforeEveryOtherCheck(t *testing.T) {
+	w, calls, _ := spyWithdraw()
+	c := semiCfg()
+	c.Mode = ModeRecommend
+	p := execPlan(800)
+	p.balanceKnown = false
+	r := NewExecutor(c, w, priceUSDT).Execute(p, 0, time.Time{}, time.Now())
+	if *calls != 0 || !strings.Contains(r.Skipped, "余额来源未证实") {
+		t.Fatalf("应先报余额来源未证实,得到 skipped=%q", r.Skipped)
 	}
 }

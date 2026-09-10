@@ -24,13 +24,23 @@ import (
 
 var balanceHTTP = &http.Client{Timeout: 10 * time.Second}
 
+// Hosts for the two READ-ONLY balance endpoints. They are vars (not consts) so a
+// test can point them at a local httptest server and exercise a real read failure
+// end-to-end without touching a live exchange. Unexported: only this package can
+// repoint them. withdraw.go deliberately keeps its hosts `const` — the money-moving
+// endpoint gets no such seam.
+var (
+	gateSpotHost    = "https://api.gateio.ws"
+	binanceSpotHost = "https://api.binance.com"
+)
+
 // FetchGateSpotBalances calls GET /api/v4/spot/accounts (HMAC-SHA512 signed).
 func FetchGateSpotBalances() ([]Balance, error) {
 	key, secret := os.Getenv("MM_GATE_API_KEY"), os.Getenv("MM_GATE_API_SECRET")
 	if key == "" || secret == "" {
 		return nil, fmt.Errorf("gate 密钥未配置(MM_GATE_API_KEY/SECRET)")
 	}
-	const host = "https://api.gateio.ws"
+	host := gateSpotHost
 	const path = "/api/v4/spot/accounts"
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 
@@ -81,7 +91,7 @@ func FetchBinanceSpotBalances() ([]Balance, error) {
 	if key == "" || secret == "" {
 		return nil, fmt.Errorf("binance 密钥未配置(BINANCE_API_KEY/SECRET)")
 	}
-	const host = "https://api.binance.com"
+	host := binanceSpotHost
 	const path = "/api/v3/account"
 	query := "timestamp=" + strconv.FormatInt(time.Now().UnixMilli(), 10) + "&recvWindow=5000"
 	mac := hmac.New(sha256.New, []byte(secret))

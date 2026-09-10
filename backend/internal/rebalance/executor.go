@@ -48,6 +48,16 @@ type TransferResult struct {
 func (e *Executor) Execute(p Plan, spentTodayUSD float64, lastTransferAt, now time.Time) TransferResult {
 	res := TransferResult{Plan: p, Amount: p.Amount}
 
+	// 0. 硬闸,且与"上游算得对不对"无关:计划必须自带"exec 所余额确实读到了"的凭证。
+	//    这道闸设在执行器而不是 planner / 白名单,因为执行器是唯一能调到 withdraw 的地方
+	//    (withdraw.go 的三个函数没有第二个调用点),而 planner 只是众多可能的计划来源之一。
+	//    凭证是 Plan 上一个包外无法赋值的字段,零值为 false —— 所以不是"检查有没有出错",
+	//    而是"没证明过就不放行":planner 再错一次、有人手搓一个 Plan、或者将来多一个接口
+	//    直接反序列化出 Plan,到这里都是未证实,一律拒绝。
+	if !p.balanceKnown {
+		res.Skipped = "余额来源未证实(读失败 ≠ 余额为 0),拒绝执行"
+		return res
+	}
 	// 1. 必须白名单可解析(planner 已判定;这里再挡一次,纵深防御)。
 	if !p.Executable() {
 		res.Skipped = "目标地址不在白名单,拒绝"
