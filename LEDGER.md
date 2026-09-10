@@ -277,7 +277,7 @@
 ## 6. 假设库·观察计数（v2 迁移注记 @08-01 16:40Z：并入假设库，与 §4 合称；跨轮累计；9 秒日志窗单次未观测 ≠ 零，以本节跨轮增量为准）
 
 | 计数项 | 读数 | 更新轮 | 备注 |
-| backend→Binance REST DNS断连 | **n=1: 09-09 16:12Z起持续,09-10 09:1xZ仍在(≥17h)**;特征=fapi SERVFAIL(resolver 100.100.100.100=Tailscale MagicDNS,修复在宿主机);ws评分循环存活(main183/183+trend3/3),active端点返回DNS错误串=直证;skip文案'不支持该交易对'=误导;ctx balance=0+income{}=伪影 | 09-10 09:3x | 恢复后复核:①income补记完整性②feed有无重播种③若平台重启于断连窗=ws也死须立报;再现→升§3;⚠️断连窗禁stop/start(重订阅可能失败) |
+| backend→Binance REST DNS断连 | **n=1: 09-09 16:12Z起持续,09-10 11:11Z仍在(≥19h,自查点#1探测)**;特征=fapi SERVFAIL(resolver 100.100.100.100=Tailscale MagicDNS,修复在宿主机);ws评分循环存活(main183/183+trend3/3),active端点返回DNS错误串=直证;skip文案'不支持该交易对'=误导;ctx balance=0+income{}=伪影 | 09-10 11:1x | 恢复后复核:①income补记完整性②feed有无重播种③若平台重启于断连窗=ws也死须立报;再现→升§3;⚠️断连窗禁stop/start(重订阅可能失败) |
 | TradFi嫌疑币watch | BYD/AXTI/INTW/MVLL/MEGA(零史+名形存疑,无直证) | 09-10 04:1x | 任一现-4411或官宣名单确认→即隔离(不限流);MEGA大概率MegaETH(低嫌) |
 | 幻影行post-fix观察 | **+1@08-29 17:0x(TAC空short 14:50→15:16无pnl,与14:52apply/15:30重启窗重叠;史SCRT@08-25;累计n=2)** | 08-28 18:1x | 再现累计;n≥3或含实亏→升§4 |
 | epsilon边界放行观测(v2域;#65永久化伴生) | n=5/类净+0.027(HANA×3细目git 91b3276;VELVET−0.175;+MELANIA 16:45入0.600边界→60m超时+0.186@08-28) | 08-28 18:2x | 累计n≥5∧类净≤−2U→复议(远离门);premium加距源码判死+main0.600档scp0.049史=git 91b3276 |
