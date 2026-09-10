@@ -91,8 +91,18 @@ if [ "$COMPONENT" = "backend" ] || [ "$COMPONENT" = "all" ]; then
     fi
   fi
   if [ "$EXCHANGE" = "binance" ]; then
-    if [ "$BINANCE_API_KEY" = "REPLACE_BINANCE_API_KEY" ] || [ "$BINANCE_API_SECRET" = "REPLACE_BINANCE_API_SECRET" ]; then
-      echo "请先在脚本顶部填写币安配置：BINANCE_API_KEY BINANCE_API_SECRET"
+    # 这两个已改成从 env 读（第 54-55 行），原来那句 = "REPLACE_BINANCE_API_KEY"
+    # 的判断从此永远为假 —— 空值会一路通过，容器带着空凭据起来，签名接口全废但
+    # 进程是活的（fail open）。改成判空并点名，缺了就拒绝部署（台账 #54）。
+    missing=""
+    for name in BINANCE_API_KEY BINANCE_API_SECRET; do
+      eval "val=\${$name}"
+      [ -z "$val" ] && missing="$missing $name"
+    done
+    if [ -n "$missing" ]; then
+      echo "错误: 以下币安凭据未设置:$missing" >&2
+      echo "写进 $QUANTY_ENV_FILE (chmod 600 root:root) 或先 export，别写进本脚本 —— 本仓库是公开的。" >&2
+      echo "模板与每个值去哪拿，见 docs/deploy-preflight.md" >&2
       exit 1
     fi
   fi
