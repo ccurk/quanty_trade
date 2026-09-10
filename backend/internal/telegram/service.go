@@ -284,6 +284,26 @@ func (s *Service) run(ctx context.Context) {
 	}
 }
 
+// scrub 把错误信息里的 bot token 抹掉再交出去。
+//
+// 【为什么必须有这一步】token 就嵌在 URL 里(https://api.telegram.org/bot<TOKEN>/…),
+// 而 http.Client 失败时返回的 *url.Error 会把【整条 URL】写进 Error()。也就是说
+// 每一次网络失败,都是一次 token 明文落盘。
+// 2026-09-09 15:56 容器 DNS 一断,run() 里那句 "telegram poll failed err=%v" 每 3 秒
+// 打一次,30 小时把同一把在用的 token 写进容器日志 14,380 次(实测计数)。
+// 容器日志会被 docker logs 拉出来、会被贴进工单、会被 AI 助手读走 —— 凭据不该跟着走。
+// 这是台账 #107(token 明文散在 5 个消费点)的第 6 个点,而且是唯一一个会自己增殖的。
+func (s *Service) scrub(err error) error {
+	if err == nil || s == nil || s.token == "" {
+		return err
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, s.token) {
+		return err
+	}
+	return fmt.Errorf("%s", strings.ReplaceAll(msg, s.token, "<redacted>"))
+}
+
 func (s *Service) fetchUpdates(ctx context.Context, offset int64) ([]telegramUpdate, int64, error) {
 	values := url.Values{}
 	values.Set("timeout", strconv.Itoa(s.pollTimeout))
@@ -292,11 +312,11 @@ func (s *Service) fetchUpdates(ctx context.Context, offset int64) ([]telegramUpd
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/getUpdates?"+values.Encode(), nil)
 	if err != nil {
-		return nil, offset, err
+		return nil, offset, s.scrub(err)
 	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, offset, err
+		return nil, offset, s.scrub(err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
@@ -525,12 +545,12 @@ func (s *Service) sendText(chatID int64, text string) error {
 	form.Set("text", text)
 	req, err := http.NewRequest(http.MethodPost, s.baseURL+"/sendMessage", strings.NewReader(form.Encode()))
 	if err != nil {
-		return err
+		return s.scrub(err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return err
+		return s.scrub(err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
