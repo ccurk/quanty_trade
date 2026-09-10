@@ -267,7 +267,7 @@
 
 | # | 类型 | 内容（含完整意图） | 登记轮 | 状态 |
 |---|---|---|---|---|
-| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除 |
+| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(probe#2-#4@12:2x会话三探全未恢复,末读17:30Z≥25.3h;监护已移交cron轮) |
 > 维护注(指针@09-10 15:2x归并): #87宕机复盘结案+#86 bl16/S33注册结案全文=git 805a115版§5原文。
 > 维护注(指针@09-08 12:3x): #84落地结案全文=git dd4326e版行@09-05 21:2x。
 > 维护注(指针@09-08 00:2x): #83=git版行@09-05 06:2x;#82=git版行@09-04 07:3x;#81/#78=git 4be520c版行。
@@ -276,7 +276,7 @@
 ## 6. 假设库·观察计数（v2 迁移注记 @08-01 16:40Z：并入假设库，与 §4 合称；跨轮累计；9 秒日志窗单次未观测 ≠ 零，以本节跨轮增量为准）
 
 | 计数项 | 读数 | 更新轮 | 备注 |
-| backend→Binance REST DNS断连 | **n=1: 09-09 16:12Z起持续,09-10 15:46Z仍在(≥23.6h,probe#3直证;ws同刻存活15:46:05实时行=长连接免DNS,掉线即不可重连须警惕全盲;**probe#4已排17:30Z=12:2x会话末枚,18:0x cron勿重复排点**;15:13Z cron/probe#2 14:07Z史)**;特征=fapi SERVFAIL(resolver 100.100.100.100=Tailscale MagicDNS,修复在宿主机);ws评分循环存活(main183/183+trend3/3),active端点返回DNS错误串=直证;skip文案'不支持该交易对'=误导;ctx balance=0+income{}=伪影 | 09-10 15:1x | 恢复后复核:①income补记完整性②feed有无重播种③若平台重启于断连窗=ws也死须立报;再现→升§3;⚠️断连窗禁stop/start(重订阅可能失败) |
+| backend→Binance REST DNS断连 | **n=1: 09-09 16:12Z起持续,09-10 17:30Z仍在(≥25.3h,probe#4末枚直证;ws同刻存活17:30:05实时行;**12:2x会话probe配额尽[#2-#4三枚全未恢复],断连监护移交cron轮**;probe史15:46/15:13/14:07)**;特征=fapi SERVFAIL(resolver 100.100.100.100=Tailscale MagicDNS,修复在宿主机);ws评分循环存活(main183/183+trend3/3),active端点返回DNS错误串=直证;skip文案'不支持该交易对'=误导;ctx balance=0+income{}=伪影 | 09-10 15:1x | 恢复后复核:①income补记完整性②feed有无重播种③若平台重启于断连窗=ws也死须立报;再现→升§3;⚠️断连窗禁stop/start(重订阅可能失败) |
 | TradFi嫌疑币watch | BYD/AXTI/INTW/MVLL/MEGA(零史+名形存疑,无直证) | 09-10 04:1x | 任一现-4411或官宣名单确认→即隔离(不限流);MEGA大概率MegaETH(低嫌) |
 | 幻影行post-fix观察 | **+1@08-29 17:0x(TAC空short 14:50→15:16无pnl,与14:52apply/15:30重启窗重叠;史SCRT@08-25;累计n=2)** | 08-28 18:1x | 再现累计;n≥3或含实亏→升§4 |
 | epsilon边界放行观测(v2域;#65永久化伴生) | n=5/类净+0.027(HANA×3细目git 91b3276;VELVET−0.175;+MELANIA 16:45入0.600边界→60m超时+0.186@08-28) | 08-28 18:2x | 累计n≥5∧类净≤−2U→复议(远离门);premium加距源码判死+main0.600档scp0.049史=git 91b3276 |
