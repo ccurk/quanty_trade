@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"quanty_trade/internal/api"
 	"quanty_trade/internal/bus"
@@ -28,13 +29,40 @@ func BuildExchange() exchange.Exchange {
 	}
 }
 
+// redisBusReconnectInterval 15s:比人反应快,又不至于把一台连不上的 Redis 打爆。
+const redisBusReconnectInterval = 15 * time.Second
+
 func BuildStrategyManager(ctx context.Context, hub *ws.Hub) *strategy.Manager {
 	mgr := strategy.NewManager(hub, BuildExchange())
 	if conf.C().Redis.Enabled {
 		if rb, err := bus.NewRedisBusFromConfig(); err == nil {
 			mgr.SetRedisBus(rb)
 		} else {
-			logger.Errorf("Redis bus init failed err=%v", err)
+			// 台账 #115。原来这里【只有】下面那行 Errorf,然后若无其事地继续:
+			// 容器 Up、网页 200、/api/health/db 200,而 Go↔Python 的总线是死的。
+			//
+			// 为什么不改成 log.Fatal 拒启:这个进程同时是【手动止血的唯一入口】——
+			// 看仓位 /positions、平仓 /positions/close、撤单 /strategies/:id/cancel-orders
+			// 全都走 DB + 交易所 REST,一步都不经 Redis。Redis 一断就退出,配上
+			// docker restart:always 就是 crash-loop:所有者在最需要手动平仓的时刻
+			// 连后台都打不开。做市模块(gate×binance)也完全不用 Redis,没理由陪葬。
+			//
+			// 所以选的是"起来,但认账、并且让外面看得见":
+			//   1) 健康端点从此对 Redis 说实话(/api/health、/api/health/redis 回 503)。
+			//      失败结果已由 bus.NewRedisBusFromConfig 登记进进程级状态,
+			//      调用方吞不掉。这是"30 秒内被外面发现"的主信号。
+			//   2) 尽力发一条外部告警。注意:Lark 通道当前在生产上是坏的
+			//      (容器 DNS 解析 open.larksuite.com 失败,docker logs 里实测
+			//      9,877 条 "[lark] send err="),所以【不能】把可发现性押在它身上——
+			//      它只是补充,主信号是上面那个健康端点。
+			//   3) 后台按固定间隔重连,恢复后自动接上,不需要人重启进程。
+			//      这一条同时保证:Redis 口令/网络晚一步就位时,先起来的后端会自愈,
+			//      不会把所有者的恢复流程(重登 Tailscale → 重启 backend)卡住。
+			logger.Errorf("[REDIS BUS] 初始化失败,总线不可用,策略将无法启动(健康端点已转 503,后台每 %s 重连一次): %v"+
+				" | 该配哪里: REDIS_ENABLED / REDIS_ADDR / REDIS_PASSWORD —— 生产上这三个由容器 env 注入,conf_pro.yaml 里 redis.password 是空串占位",
+				redisBusReconnectInterval, err)
+			lark.AlertSync("🚨 QuantyTrade · Redis 总线不可用,策略无法启动 · " + err.Error())
+			go reconnectRedisBus(ctx, mgr)
 		}
 	}
 	mgr.SyncFromDB(database.DB)
@@ -47,6 +75,28 @@ func BuildStrategyManager(ctx context.Context, hub *ws.Hub) *strategy.Manager {
 	mgr.StartWorkers()
 	go mgr.RestoreRunningStrategies(ctx)
 	return mgr
+}
+
+// reconnectRedisBus 在启动期 Redis 不可用之后守着重连,直到接上为止。
+//
+// 不打失败日志:失败状态由 bus.Health() 持有,健康端点随时可查;每 15s 刷一条 ERROR
+// 只会淹掉日志,还会把告警通道刷爆(台账 #184/#196 就是这个形状)。只在【恢复】时出声。
+func reconnectRedisBus(ctx context.Context, mgr *strategy.Manager) {
+	t := time.NewTicker(redisBusReconnectInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := mgr.EnsureRedisBus(); err != nil {
+				continue
+			}
+			logger.Infof("[REDIS BUS] 重连成功,总线恢复;健康端点转回 200。开机自恢复只在启动时跑过一次,断线期间转为 error 的策略需要人工重新启动")
+			lark.AlertSync("✅ QuantyTrade · Redis 总线已恢复(断线期间启动失败的策略需人工重启)")
+			return
+		}
+	}
 }
 
 // StartBackgroundJobs 拉起所有后台模块,并把【做市引擎的优雅关闭】交回给调用方。

@@ -76,6 +76,13 @@ func (m *Manager) getStartableStrategy(id string) (*StrategyInstance, error) {
 	return inst, nil
 }
 
+// EnsureRedisBus 给 app 层的重连守护用:总线已就绪就直接返回 nil,否则试着建一条。
+// 复用 ensureStartRedisBus 而不是另写一份重连逻辑——两份会各自漂移。
+func (m *Manager) EnsureRedisBus() error {
+	_, err := m.ensureStartRedisBus()
+	return err
+}
+
 func (m *Manager) ensureStartRedisBus() (*bus.RedisBus, error) {
 	m.mu.RLock()
 	rb := m.redisBus

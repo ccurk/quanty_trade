@@ -84,13 +84,17 @@ type SignalMessage struct {
 	GeneratedAt time.Time `json:"generated_at"`
 }
 
+// NewRedisBusFromConfig 建立总线连接。每一次尝试的结果(成败)都会登记到 health.go
+// 的进程级状态里,健康端点靠它对外说实话——调用方吞掉 error 也不会让失败消失。
 func NewRedisBusFromConfig() (*RedisBus, error) {
 	c := conf.C().Redis
 	if !c.Enabled {
 		return nil, fmt.Errorf("redis disabled")
 	}
 	if c.Addr == "" {
-		return nil, fmt.Errorf("redis addr is empty")
+		err := fmt.Errorf("redis addr is empty")
+		recordBusResult(nil, err)
+		return nil, err
 	}
 	prefix := c.Prefix
 	if prefix == "" {
@@ -104,9 +108,13 @@ func NewRedisBusFromConfig() (*RedisBus, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
+		recordBusResult(nil, err)
 		return nil, err
 	}
-	return &RedisBus{client: client, prefix: prefix}, nil
+	b := &RedisBus{client: client, prefix: prefix}
+	recordBusResult(b, nil)
+	return b, nil
 }
 
 func (b *RedisBus) CandleChannel(strategyID string) string {

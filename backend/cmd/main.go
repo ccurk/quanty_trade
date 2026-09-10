@@ -136,6 +136,11 @@ func main() {
 
 	// Health（免认证）: DB 层活性探针,挂死事故时给监控一个确定信号(2s 内 200/503)。
 	r.GET("/api/health/db", api.DBHealth)
+	// Redis 总线活性探针(台账 #115)。/api/health/db 只探 DB,Redis 认证失败时它照回
+	// 200 —— 那正是"看起来在跑,其实是死的"能瞒过所有外部检查的原因。
+	r.GET("/api/health/redis", api.RedisHealth)
+	// 聚合探针:DB + Redis 全绿才 200。容器 HEALTHCHECK 和外部监控用这一个。
+	r.GET("/api/health", api.Health)
 
 	// Auth Routes
 	r.POST("/api/login", api.Login)
