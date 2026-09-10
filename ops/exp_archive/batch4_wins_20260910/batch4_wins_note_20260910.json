@@ -1,0 +1,42 @@
+{
+ "HEMI": {
+  "open_time": "2026-09-09T04:45:07",
+  "pnl": 0.769,
+  "type": "TP/trailing 29m",
+  "taker_buy_ratio_pre15m": 0.397,
+  "taker_buy_ratio_pre60m": 0.514,
+  "n_bars_saved": 105,
+  "bars15": 15,
+  "bars60": 60
+ },
+ "MIRA": {
+  "open_time": "2026-09-09T00:37:35",
+  "pnl": 0.203,
+  "type": "赢 23m",
+  "taker_buy_ratio_pre15m": 0.475,
+  "taker_buy_ratio_pre60m": 0.488,
+  "n_bars_saved": 105,
+  "bars15": 15,
+  "bars60": 60
+ },
+ "VVV": {
+  "open_time": "2026-09-08T15:23:35",
+  "pnl": 0.174,
+  "type": "快赢 4m",
+  "taker_buy_ratio_pre15m": 0.531,
+  "taker_buy_ratio_pre60m": 0.497,
+  "n_bars_saved": 105,
+  "bars15": 15,
+  "bars60": 60
+ },
+ "MARSCOIN": {
+  "open_time": "2026-09-08T17:04:35",
+  "pnl": 0.039,
+  "type": "边缘赢 7m",
+  "taker_buy_ratio_pre15m": 0.45,
+  "taker_buy_ratio_pre60m": 0.511,
+  "n_bars_saved": 105,
+  "bars15": 15,
+  "bars60": 60
+ }
+}

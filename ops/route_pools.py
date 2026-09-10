@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# 策略组·动态币池路由对账器 (owner 直令 2026-08-09: 币池不写死,动态增删)
+# 策略组·动态币池路由对账器 v1.6 (owner 直令 2026-08-09: 币池不写死,动态增删)
+# v1.6@2026-09-10: 防御性48h close_time过滤(见main()注;阈值零改动)
 #
 # 模式=期望态对账: 每 cron 轮跑一次 → 用逐笔证据算【期望池】→ GET 各载具
 # live feed 拿【实际池】→ 输出 rotate 差分计划(add/remove per 载具)。
@@ -65,6 +66,17 @@ def main():
     closed_path = sys.argv[1]  # 本轮已拉的 closed48 json(滤幻影后逐笔)
     rows = [r for r in json.load(open(closed_path)) if r.get("realized_pnl") is not None]
     now = datetime.datetime.now(datetime.timezone.utc)
+    # v1.6 (2026-09-10): 防御性48h窗过滤。09-10实证: closed48 API可夹带53天陈旧行
+    # (最老close_time 07-19; BULLA 32行/-6.73全为陈旧行,曾致隔离/晋升门被历史幽灵
+    # 假触发,polluted plan=隔离+7币/trend+3币全作废)。本过滤=强制执行头注既有"48h"
+    # 语义(非阈值变更);无close_time或不可解析行同滤(幻影行纪律一致)。
+    _cut48 = now - datetime.timedelta(hours=48)
+    def _ct(r):
+        try:
+            return datetime.datetime.fromisoformat(str(r.get("close_time", "")).replace("Z", "+00:00"))
+        except Exception:
+            return None
+    rows = [r for r in rows if _ct(r) is not None and _ct(r) >= _cut48]
     stat = defaultdict(lambda: {"n": 0, "net": 0.0, "nL": 0, "L": 0.0, "wL": 0,
                                 "nS": 0, "S": 0.0, "wS": 0, "maxmv": 0.0, "last_ct": None})
     for r in rows:
