@@ -171,16 +171,22 @@ func TestBalanceBlindLimitTracksWindow(t *testing.T) {
 	}
 }
 
-// TestBalanceBlindLimitExceedsRoutineGap 量出"惩罚档下两次成功读余额之间最长隔多久",
+// TestBalanceBlindLimitExceedsRoutineGap 量出"读被节流时两次成功读余额之间最长隔多久",
 // 并要求边界对它留出至少 2 倍余量 —— 这就是 balanceBlindWindows=2 的依据本身。
 //
-// 边界要是贴着常态间隔,惩罚档下每隔十几秒就会误报一次"读不到余额"并撤单,
+// 边界要是贴着常态间隔,被节流时每隔十几秒就会误报一次"读不到余额"并撤单,
 // 等于这一轮什么都没改。
+//
+// 【台账 #197 之后为什么这里要显式写死一个很紧的查询档】读已经不花下单池的名额了,
+// 按【默认】查询档(200/窗口)跑这个循环,余额读一次都不会被挡 —— 那正是 #197 修好的
+// 样子,并且由 TestBalanceBlindNotReachedAtDefaultTier 单独钉住。但 balanceBlindWindows
+// 这个常量的职责不变:它要在【查询档真的被调紧】时仍然不误报。所以这里把查询档写成 7
+// (= 改动前报价类实际看得见的名额数),让这条测量继续量的是同一个东西。
 func TestBalanceBlindLimitExceedsRoutineGap(t *testing.T) {
 	for _, refreshMs := range []int{500, 1000, 2000} {
 		srv := &fakeGateServer{hits: map[string]int{}}
 		ts := httptest.NewServer(srv.handler())
-		lim, clk := newTestLimiter(RateLimitConfig{}) // 默认档 = 台账 #84 的 10 请求/10 秒
+		lim, clk := newTestLimiter(RateLimitConfig{QueryRequests: 7}) // 刻意调紧的查询档
 		ex := &GateExchange{baseURL: ts.URL, apiKey: "k", secret: "s",
 			http: ts.Client(), filters: map[string]SymbolFilter{}, limiter: lim}
 		p := PairConfig{ExecSymbol: "SOL_USDT", SpreadBps: 20, OrderQty: 1, MaxPosition: 100, RefreshMs: refreshMs}
@@ -224,5 +230,39 @@ func TestBalanceBlindLimitExceedsRoutineGap(t *testing.T) {
 			t.Fatalf("盲区边界 %s 没有对常态最长间隔 %s 留出 2 倍余量:惩罚档下会周期性误报"+
 				"「读不到余额」并撤单,等于没改", limit, maxGap)
 		}
+	}
+}
+
+// TestBalanceBlindNotReachedAtDefaultTier 是台账 #197 在【余额盲区】这条路径上的收口:
+// 默认档下,引擎满负荷跑一整个窗口,余额读【一次都不会被本地挡】,
+// 于是"读不到余额 → 撤单避险 → 走平"这条链根本不会被本地限流触发。
+//
+// 这正是 09-09 日报里"20 个周期 19 个盘口是空的"那条链的源头 ——
+// 它在这里被证明已经断了。
+func TestBalanceBlindNotReachedAtDefaultTier(t *testing.T) {
+	srv := &fakeGateServer{hits: map[string]int{}}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+	lim, clk := newTestLimiter(RateLimitConfig{}) // 全默认:下单 10、撤单 500、查询 200
+	ex := &GateExchange{baseURL: ts.URL, apiKey: "k", secret: "s",
+		http: ts.Client(), filters: map[string]SymbolFilter{}, limiter: lim}
+
+	// marketmaker.json 的真实形状:4 个 pair、refresh_ms=1000,连跑 30 秒(3 个窗口)。
+	const pairs, cycles = 4, 30
+	denied := 0
+	for i := 0; i < cycles; i++ {
+		for p := 0; p < pairs; p++ {
+			if _, err := ex.Balances(); err != nil {
+				denied++
+			}
+			if _, err := ex.OpenOrders("SOL_USDT"); err != nil {
+				denied++
+			}
+		}
+		clk.advance(time.Second)
+	}
+	if denied != 0 {
+		t.Fatalf("默认档下 %d 个读应当一个都不被本地挡(查询池 200/窗口),实际挡了 %d 个",
+			pairs*cycles*2, denied)
 	}
 }

@@ -40,11 +40,24 @@ type ExecConfig struct {
 // 台账 #84 实测当前是 10 请求/10 秒,但解限后会回到常规档、FR 再掉又会降回来。
 // 写死就等于每次调档改一次代码、发一次版。零值 = 走 defaults(),即 #84 那一档。
 type RateLimitConfig struct {
-	// Requests/WindowMs 是窗口预算本身:默认 10 请求 / 10000 毫秒(台账 #84 实测)。
+	// Requests/WindowMs 是【下单池】的窗口预算:默认 10 请求 / 10000 毫秒。
+	// 出处是 Gate 公告 40657,它点名的端点【只有】POST /spot/orders 与
+	// PATCH /spot/orders/{id};撤单和查询各有自己的池,见下面两项。
+	// 字段名保持 requests/window_ms 不变 = 已在跑的 yaml/json 不用改。
 	Requests int `yaml:"requests" json:"requests"`
 	WindowMs int `yaml:"window_ms" json:"window_ms"`
-	// ReservedCancel 从窗口预算里【划给撤单/救腿专用】的名额,报价类请求看不到它们。
-	// 见 gate_ratelimit.go 顶部"为什么撤单不能和下单共用一个池"。默认 3。
+	// CancelRequests 是【撤单池】每个窗口的名额(默认 500,即 50r/s)。
+	// 官方基线是 5000r/s,这里刻意取得保守得多:撤单虽然不吃下单的 10 个名额,
+	// 却进成交率公式的分母(公告 40657),撤太猛会把自己压进更深的惩罚档。
+	// 500/窗口 相对引擎最坏需求(8 腿×10s=80)仍有 6 倍余量。
+	CancelRequests int `yaml:"cancel_requests" json:"cancel_requests"`
+	// QueryRequests 是【查询池】每个窗口的名额(默认 200,即 20r/s)。
+	// 官方表格写的是 900r/s;取 200 是因为"查询走另一套池"这件事有据可查,
+	// 而"另一套池到底多大"我没拿到能引的原文 —— 保守 45 倍,且引擎实际只要 80。
+	QueryRequests int `yaml:"query_requests" json:"query_requests"`
+	// ReservedCancel 是【查询池】里划给撤单路径专用的名额,报价类的读看不到它们。
+	// (下单池不预留:今天没有 critical 类的下单路径,留了就是白扔报价预算。)
+	// 见 gate_ratelimit.go 顶部"预留名额现在护的是哪一格"。默认 3。
 	ReservedCancel int `yaml:"reserved_cancel" json:"reserved_cancel"`
 	// MaxWaitMs 是撤单类请求为了等一个名额最多阻塞多久(默认 3000)。
 	// 报价类【从不等待】,恒为 0:见 gate_ratelimit.go。
@@ -71,15 +84,21 @@ func (c RateLimitConfig) defaults() RateLimitConfig {
 	if c.WindowMs <= 0 {
 		c.WindowMs = 10000
 	}
+	if c.CancelRequests <= 0 {
+		c.CancelRequests = 500
+	}
+	if c.QueryRequests <= 0 {
+		c.QueryRequests = 200
+	}
 	if c.ReservedCancel < 0 {
 		c.ReservedCancel = 0
 	}
 	if c.ReservedCancel == 0 {
 		c.ReservedCancel = 3
 	}
-	// 预留不能吃光预算,否则报价类恒为 0 名额 = 永远不报价。
-	if c.ReservedCancel >= c.Requests {
-		c.ReservedCancel = c.Requests - 1
+	// 预留不能吃光它所在的那个池(查询池),否则报价类的读恒为 0 名额 = 永远不报价。
+	if c.ReservedCancel >= c.QueryRequests {
+		c.ReservedCancel = c.QueryRequests - 1
 	}
 	if c.MaxWaitMs <= 0 {
 		c.MaxWaitMs = 3000

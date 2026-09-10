@@ -1,6 +1,7 @@
 package marketmaker
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -49,17 +50,18 @@ func newTestLimiter(cfg RateLimitConfig) (*gateLimiter, *fakeClock) {
 // TestGateLimiterWindowBlocksThenReleases 是最核心的一条:
 // 打 N 个请求 → 窗口内被挡住 → 窗口滑过去 → 重新放行。
 func TestGateLimiterWindowBlocksThenReleases(t *testing.T) {
-	// 10 请求/10 秒、给撤单留 3 → 报价类只看得见 7 个名额。
+	// 下单池 10 请求/10 秒(公告 40657 那一档)。下单池【不预留】——
+	// 今天没有 critical 类的下单路径,所以报价类看得见全部 10 个(台账 #197)。
 	l, clk := newTestLimiter(RateLimitConfig{Requests: 10, WindowMs: 10000, ReservedCancel: 3})
 
-	const quotaForQuote = 7
+	const quotaForQuote = 10
 	for i := 0; i < quotaForQuote; i++ {
-		if err := l.acquire(gateClassQuote); err != nil {
+		if err := l.acquire(gateBudgetOrder, gateClassQuote); err != nil {
 			t.Fatalf("第 %d 个报价请求本应放行(预算 %d),却被拒: %v", i+1, quotaForQuote, err)
 		}
 	}
-	// 第 8 个必须被挡住 —— 这就是"零限流"时代不存在的那道门。
-	err := l.acquire(gateClassQuote)
+	// 第 11 个必须被挡住 —— 这就是"零限流"时代不存在的那道门。
+	err := l.acquire(gateBudgetOrder, gateClassQuote)
 	if err == nil {
 		t.Fatalf("第 %d 个报价请求本应被限流挡住,却放行了", quotaForQuote+1)
 	}
@@ -69,44 +71,56 @@ func TestGateLimiterWindowBlocksThenReleases(t *testing.T) {
 
 	// 窗口没滑完之前,仍然挡。9.9 秒时第一发还在窗口里。
 	clk.advance(9900 * time.Millisecond)
-	if err := l.acquire(gateClassQuote); err == nil {
+	if err := l.acquire(gateBudgetOrder, gateClassQuote); err == nil {
 		t.Fatal("窗口尚未滑过(9.9s < 10s),本应仍被挡住")
 	}
 
 	// 滑过 10 秒,最早那几发出窗,重新放行。
 	clk.advance(200 * time.Millisecond)
-	if err := l.acquire(gateClassQuote); err != nil {
+	if err := l.acquire(gateBudgetOrder, gateClassQuote); err != nil {
 		t.Fatalf("窗口已滑过,本应重新放行,却仍被拒: %v", err)
 	}
 }
 
-// TestGateLimiterCancelKeepsReservedQuota 验证本文件最重要的那个设计取舍:
-// 报价类把自己那份额度打光之后,撤单【仍然拿得到名额】。
-// 这一条如果不成立,就等于挂着的单撤不掉 = 实盘裸露敞口。
-func TestGateLimiterCancelKeepsReservedQuota(t *testing.T) {
-	l, _ := newTestLimiter(RateLimitConfig{Requests: 10, WindowMs: 10000, ReservedCancel: 3})
+// TestGateLimiterQueryPoolKeepsReservedQuota 验证预留名额那个设计取舍。
+//
+// 【为什么测的是查询池而不是下单池(台账 #197)】撤单本身已经不跟下单抢名额了
+// (公告 40657 只把 POST/PATCH 算进那 10 个)。但 cancelAll 的第一步是【读挂单】,
+// 它和报价周期的读挂单/读余额落在同一个查询池 —— 预留要护的就是这一步:
+// 报价类的读把查询池打光时,cancelAll 仍然读得到列表。读不到 = 一张也撤不掉
+// = 实盘裸露敞口,和原来那条不变式是同一条。
+func TestGateLimiterQueryPoolKeepsReservedQuota(t *testing.T) {
+	l, _ := newTestLimiter(RateLimitConfig{QueryRequests: 10, WindowMs: 10000, ReservedCancel: 3})
 
-	// 报价类一路打到被拒为止(应当恰好放行 7 个)。
+	// 报价类的读一路打到被拒为止(应当恰好放行 10-3=7 个)。
 	granted := 0
 	for i := 0; i < 50; i++ {
-		if err := l.acquire(gateClassQuote); err != nil {
+		if err := l.acquire(gateBudgetQuery, gateClassQuote); err != nil {
 			break
 		}
 		granted++
 	}
 	if granted != 7 {
-		t.Fatalf("报价类应当只看得见 10-3=7 个名额,实际放行 %d 个", granted)
+		t.Fatalf("报价类的读应当只看得见 10-3=7 个查询名额,实际放行 %d 个", granted)
 	}
 
-	// 此刻报价类已饿死,撤单必须还能连拿 3 个预留名额。
+	// 此刻报价类已饿死,撤单路径的读必须还能连拿 3 个预留名额。
 	for i := 0; i < 3; i++ {
-		if err := l.acquire(gateClassCritical); err != nil {
-			t.Fatalf("撤单第 %d 发本应拿到预留名额(报价类不该饿死撤单),却被拒: %v", i+1, err)
+		if err := l.acquire(gateBudgetQuery, gateClassCritical); err != nil {
+			t.Fatalf("撤单路径第 %d 发读本应拿到预留名额,却被拒: %v", i+1, err)
 		}
 	}
-	// 10 个全用完之后,撤单也该被拦 —— 预留是给撤单优先,不是给它无限额度。
-	if err := l.acquire(gateClassCritical); err == nil {
-		t.Fatal("整个 UID 池 10 个名额已用尽,撤单也必须被挡(否则本地记账会超发)")
+	// 10 个全用完之后,撤单路径的读也该被拦 —— 预留是优先权,不是无限额度。
+	if err := l.acquire(gateBudgetQuery, gateClassCritical); err == nil {
+		t.Fatal("查询池 10 个名额已用尽,撤单路径的读也必须被挡(否则本地记账会超发)")
+	}
+
+	// 关键:查询池被打光的同时,下单池【一个名额都没被动过】。
+	// 这就是 #197 的核心 —— 读和写不是一本账。
+	for i := 0; i < 10; i++ {
+		if err := l.acquire(gateBudgetOrder, gateClassQuote); err != nil {
+			t.Fatalf("查询池耗尽不该影响下单池,第 %d 发下单却被拒: %v", i+1, err)
+		}
 	}
 }
 
@@ -119,12 +133,12 @@ func TestGateLimiterCriticalWaitsForSlot(t *testing.T) {
 	})
 	start := clk.now()
 	for i := 0; i < 2; i++ {
-		if err := l.acquire(gateClassCritical); err != nil {
+		if err := l.acquire(gateBudgetOrder, gateClassCritical); err != nil {
 			t.Fatalf("前 2 发本应放行: %v", err)
 		}
 	}
 	// 第 3 发:池满,但撤单类应当等到窗口滑过后拿到名额(而不是报错)。
-	if err := l.acquire(gateClassCritical); err != nil {
+	if err := l.acquire(gateBudgetOrder, gateClassCritical); err != nil {
 		t.Fatalf("撤单类本应等待名额而不是放弃: %v", err)
 	}
 	if waited := clk.now().Sub(start); waited < 1000*time.Millisecond {
@@ -136,10 +150,10 @@ func TestGateLimiterCriticalWaitsForSlot(t *testing.T) {
 		Requests: 2, WindowMs: 1000, ReservedCancel: 0, MaxWaitMs: 3000,
 	})
 	for i := 0; i < 2; i++ {
-		_ = l2.acquire(gateClassQuote)
+		_ = l2.acquire(gateBudgetOrder, gateClassQuote)
 	}
 	t0 := clk2.now()
-	if err := l2.acquire(gateClassQuote); err == nil {
+	if err := l2.acquire(gateBudgetOrder, gateClassQuote); err == nil {
 		t.Fatal("报价类不该等待,应当立刻失败让引擎跳过本轮")
 	}
 	if clk2.now() != t0 {
@@ -153,11 +167,11 @@ func TestGateLimiterWaitIsCapped(t *testing.T) {
 	l, clk := newTestLimiter(RateLimitConfig{
 		Requests: 1, WindowMs: 60000, ReservedCancel: 0, MaxWaitMs: 500,
 	})
-	if err := l.acquire(gateClassCritical); err != nil {
+	if err := l.acquire(gateBudgetOrder, gateClassCritical); err != nil {
 		t.Fatalf("第 1 发本应放行: %v", err)
 	}
 	start := clk.now()
-	if err := l.acquire(gateClassCritical); err == nil {
+	if err := l.acquire(gateBudgetOrder, gateClassCritical); err == nil {
 		t.Fatal("等待超过上限后必须放弃,否则撤单会无限堆积")
 	}
 	if waited := clk.now().Sub(start); waited > 500*time.Millisecond {
@@ -263,10 +277,14 @@ func TestRateLimitConfigDefaults(t *testing.T) {
 	if partial.Requests != 20 || partial.WindowMs != 10000 || partial.ReservedCancel != 3 {
 		t.Fatalf("逐字段填默认失效: %+v", partial)
 	}
-	// 预留名额不能吃光预算,否则报价类永远拿不到名额。
-	starved := RateLimitConfig{Requests: 2, ReservedCancel: 5}.defaults()
+	// 三个池各有各的默认值(台账 #197):下单 10、撤单 500、查询 200,共用一个窗口。
+	if d.CancelRequests != 500 || d.QueryRequests != 200 {
+		t.Fatalf("撤单/查询池默认应为 500/200,实际 %d/%d", d.CancelRequests, d.QueryRequests)
+	}
+	// 预留名额不能吃光它所在的那个池(查询池),否则报价类的读永远拿不到名额。
+	starved := RateLimitConfig{QueryRequests: 2, ReservedCancel: 5}.defaults()
 	if starved.ReservedCancel != 1 {
-		t.Fatalf("预留应被钳到 Requests-1=1,实际 %d", starved.ReservedCancel)
+		t.Fatalf("预留应被钳到 QueryRequests-1=1,实际 %d", starved.ReservedCancel)
 	}
 }
 
@@ -349,5 +367,221 @@ func TestGateSignedBreakerBlocksQuoteButNotCancel(t *testing.T) {
 	_ = ex.CancelOrder("SOL_USDT", "12345")
 	if n := atomic.LoadInt32(hits); n <= before {
 		t.Fatal("熔断打开时撤单必须仍能出网(挂着的单撤不掉 = 裸露敞口)")
+	}
+}
+
+// ── 台账 #197:读写分池 —— 用引擎真实节拍造现场 ──────────────────────────
+
+// engineReadsPerWindow 是引擎在【一个 10 秒窗口】里发出的读请求数。
+// 不是拍的:marketmaker.json 里 4 个 pair、refresh_ms=1000,quote() 每轮
+// 先 Balances() 再 OpenOrders()(engine.go 那段"余额在挂单之前"),
+// 4 pair × 2 读 × 10 轮 = 80。这正是 #197 里"约 91% 的读被本地拒"的现场。
+const (
+	engineQuotePairs = 4
+	engineCycles     = 10 // 10 秒窗口 / refresh_ms=1000
+	engineReadsPer   = 2  // Balances + OpenOrders
+)
+
+// driveEngineReads 按引擎节拍打满一个窗口的读,返回 (放行数, 被拒数)。
+// 每轮之间把假时钟推进 1 秒 —— 和 refresh_ms=1000 一致。
+func driveEngineReads(l *gateLimiter, b gateBudget, clk *fakeClock) (granted, denied int) {
+	for c := 0; c < engineCycles; c++ {
+		for p := 0; p < engineQuotePairs; p++ {
+			for r := 0; r < engineReadsPer; r++ {
+				if err := l.acquire(b, gateClassQuote); err != nil {
+					denied++
+				} else {
+					granted++
+				}
+			}
+		}
+		clk.advance(time.Second)
+	}
+	return
+}
+
+// TestEngineReadsStarveInSinglePoolButPassWhenSplit 是 #197 的正面证据:
+// 同一批 80 个读,挤在原来那个 10/10s 单池里被拒掉九成,分池之后一个不拒。
+//
+// 【改前】用 QueryRequests=10 / ReservedCancel=3 复刻旧几何:一个 10 请求/10 秒的
+// 池,报价类只看得见 7 个 —— 这与改动前 acquire(class) 的行为逐位一致。
+// 【改后】查询池走默认 200/10s(见 config.go defaults 及 gate_ratelimit.go 头注出处)。
+func TestEngineReadsStarveInSinglePoolButPassWhenSplit(t *testing.T) {
+	const wantTotal = engineQuotePairs * engineCycles * engineReadsPer // 80
+
+	// 改前:单池几何。
+	oldL, oldClk := newTestLimiter(RateLimitConfig{QueryRequests: 10, WindowMs: 10000, ReservedCancel: 3})
+	gotOK, gotDenied := driveEngineReads(oldL, gateBudgetQuery, oldClk)
+	if gotOK+gotDenied != wantTotal {
+		t.Fatalf("现场应当是 %d 个读,实际 %d", wantTotal, gotOK+gotDenied)
+	}
+	// 7 个名额撑满整个窗口,其余全拒 —— 即 73/80 ≈ 91%。
+	if gotDenied != wantTotal-7 {
+		t.Fatalf("单池下应当只放行 7 个读、拒掉 %d 个,实际放行 %d 拒 %d",
+			wantTotal-7, gotOK, gotDenied)
+	}
+	t.Logf("改前(单池 10/10s,报价类可见 7):放行 %d / 拒 %d(拒单率 %.1f%%)",
+		gotOK, gotDenied, 100*float64(gotDenied)/float64(wantTotal))
+
+	// 改后:读走自己的查询池。
+	newL, newClk := newTestLimiter(RateLimitConfig{WindowMs: 10000})
+	gotOK, gotDenied = driveEngineReads(newL, gateBudgetQuery, newClk)
+	if gotDenied != 0 {
+		t.Fatalf("分池后 %d 个读应当【一个不拒】(查询池默认 200/窗口),实际拒了 %d 个",
+			wantTotal, gotDenied)
+	}
+	if gotOK != wantTotal {
+		t.Fatalf("分池后应当放行全部 %d 个读,实际 %d", wantTotal, gotOK)
+	}
+
+	// 而且这 80 个读没有占用下单池的任何一个名额:10 个下单名额原封不动。
+	placed := 0
+	for i := 0; i < 20; i++ {
+		if err := newL.acquire(gateBudgetOrder, gateClassQuote); err != nil {
+			break
+		}
+		placed++
+	}
+	if placed != 10 {
+		t.Fatalf("下单池应当完好无损地剩 10 个名额(公告 40657 那一档),实际只拿到 %d", placed)
+	}
+}
+
+// TestGateLimiterAdoptsRemoteLimit 验证限流器按【交易所报的】档位自适应,
+// 而不是死守我们配的常量 —— 这是把 gate_ws.go 那三个被丢掉的字段接回来的目的。
+func TestGateLimiterAdoptsRemoteLimit(t *testing.T) {
+	l, clk := newTestLimiter(RateLimitConfig{Requests: 10, WindowMs: 10000})
+
+	// 交易所说下单档位其实是 20 —— 照收,报价类立刻能看到 20 个。
+	l.observeRemote(gateBudgetOrder, 20, 20, time.Time{})
+	if got := l.remoteLimitFor(gateBudgetOrder); got != 20 {
+		t.Fatalf("档位应当以交易所应答为准(20),实际 %d", got)
+	}
+	granted := 0
+	for i := 0; i < 30; i++ {
+		if err := l.acquire(gateBudgetOrder, gateClassQuote); err != nil {
+			break
+		}
+		granted++
+	}
+	if granted != 20 {
+		t.Fatalf("交易所报 20 档位就该放行 20 发,实际 %d", granted)
+	}
+
+	// 交易所改口说档位降到 5:必须【立刻收紧】,而不是等配置改完发版。
+	// (此刻本地窗口里已经有 20 发,所以无论如何都发不出去 —— 这一步只验档位被改。)
+	l.observeRemote(gateBudgetOrder, 5, 5, time.Time{})
+	if got := l.remoteLimitFor(gateBudgetOrder); got != 5 {
+		t.Fatalf("档位调低也必须照收(5),实际 %d", got)
+	}
+	clk.advance(11 * time.Second) // 让旧的 20 发全部滑出窗口
+	granted = 0
+	for i := 0; i < 30; i++ {
+		if err := l.acquire(gateBudgetOrder, gateClassQuote); err != nil {
+			break
+		}
+		granted++
+	}
+	if granted != 5 {
+		t.Fatalf("档位降到 5 之后一个窗口只该放行 5 发,实际 %d", granted)
+	}
+
+	// 明显不可信的档位(比如把 reset_timestamp 误读成 limit)必须整条丢弃,
+	// 否则等于把限流器关掉。
+	before := l.remoteLimitFor(gateBudgetOrder)
+	l.observeRemote(gateBudgetOrder, 1757500000, 1, time.Time{})
+	if got := l.remoteLimitFor(gateBudgetOrder); got != before {
+		t.Fatalf("超出合理区间的档位必须丢弃,档位却被改成 %d", got)
+	}
+}
+
+// TestGateLimiterHonorsRemoteReset 单独验"剩余为 0"这条路径:
+// 交易所说这个池空了,就等到【它给的】reset 时刻,而不是等本地窗口自己算的。
+//
+// 【为什么这条必须以交易所为准】同一个 UID 上不止我们一个进程在花额度
+// (台账里那条"多 owner 共享单账户")。本地窗口记的是"我们以为自己发了多少",
+// 只有交易所记的才是"它真的收了多少"。
+func TestGateLimiterHonorsRemoteReset(t *testing.T) {
+	// 全新的限流器:本地窗口一发没占,唯一能挡住请求的就是交易所报的剩余额度。
+	l, clk := newTestLimiter(RateLimitConfig{Requests: 10, WindowMs: 10000})
+
+	l.observeRemote(gateBudgetOrder, 10, 0, clk.now().Add(3*time.Second))
+	if err := l.acquire(gateBudgetOrder, gateClassQuote); err == nil {
+		t.Fatal("交易所说剩余为 0,本地必须停发(哪怕本地窗口还空着)")
+	}
+	clk.advance(2 * time.Second)
+	if err := l.acquire(gateBudgetOrder, gateClassQuote); err == nil {
+		t.Fatal("还没到交易所给的 reset 时刻,应当仍然停发")
+	}
+	clk.advance(1500 * time.Millisecond)
+	if err := l.acquire(gateBudgetOrder, gateClassQuote); err != nil {
+		t.Fatalf("过了交易所给的 reset 时刻应当放行,实际: %v", err)
+	}
+
+	// 已经过期的 reset 时刻不该把池锁死(否则一次时钟偏斜就冻住下单)。
+	l2, clk2 := newTestLimiter(RateLimitConfig{Requests: 10, WindowMs: 10000})
+	l2.observeRemote(gateBudgetOrder, 10, 0, clk2.now().Add(-time.Minute))
+	if err := l2.acquire(gateBudgetOrder, gateClassQuote); err != nil {
+		t.Fatalf("reset 时刻已过去,不该锁池: %v", err)
+	}
+}
+
+func TestParseGateRateLimitHint(t *testing.T) {
+	// 秒级时间戳。
+	h := parseGateRateLimitHint("10", "3", "1757500000")
+	if !h.OK || h.Limit != 10 || h.Remain != 3 {
+		t.Fatalf("三个字段都该解出来,实际 %+v", h)
+	}
+	if h.ResetAt.Unix() != 1757500000 {
+		t.Fatalf("秒级时间戳解错: %s", h.ResetAt)
+	}
+	// 毫秒级时间戳(单位官方没写,靠量级判)。
+	if got := gateParseResetTimestamp("1757500000123"); got.UnixMilli() != 1757500000123 {
+		t.Fatalf("毫秒级时间戳解错: %s", got)
+	}
+	// 没带 limit = 这条应答没有限流信息,整条不采纳。
+	if h := parseGateRateLimitHint("", "3", "1757500000"); h.OK {
+		t.Fatal("没有 limit 时不该声称解出了档位")
+	}
+	// remain 缺失 ≠ remain 为 0:必须是"未知"(-1),否则会把正常应答误判成额度耗尽。
+	if h := parseGateRateLimitHint("10", "", ""); !h.OK || h.Remain != -1 {
+		t.Fatalf("remain 缺失应为未知(-1),实际 %+v", h)
+	}
+	if got := gateParseResetTimestamp("not-a-number"); !got.IsZero() {
+		t.Fatalf("解不出的时间戳应为零值,实际 %s", got)
+	}
+}
+
+// TestGateWSAckCarriesRateLimitFields 钉死那三个字段【真的进了信封】——
+// 它们此前被 gateWSAck 的 header 结构体整个丢掉,导致"当前是哪一档"只能靠翻日志。
+func TestGateWSAckCarriesRateLimitFields(t *testing.T) {
+	raw := []byte(`{"request_id":"qt-1","header":{"status":"200","channel":"spot.order_place",
+		"x_gate_ratelimit_limit":"10","x_gate_ratelimit_requests_remain":"4",
+		"x_gate_ratelimit_reset_timestamp":"1757500000"},"data":{"result":{"id":"1"}}}`)
+	var ack gateWSAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatalf("解不动应答: %v", err)
+	}
+	h := ack.Header.rateLimitHint()
+	if !h.OK || h.Limit != 10 || h.Remain != 4 || h.ResetAt.Unix() != 1757500000 {
+		t.Fatalf("三个限流字段必须从信封里解出来,实际 %+v", h)
+	}
+	// 官方文档里 reset 那个字段写作 x_gat_...(疑似笔误),两种拼法都要认。
+	raw2 := []byte(`{"request_id":"qt-2","header":{"status":"200",
+		"x_gate_ratelimit_limit":"10","x_gat_ratelimit_reset_timestamp":"1757500001"}}`)
+	var ack2 gateWSAck
+	if err := json.Unmarshal(raw2, &ack2); err != nil {
+		t.Fatalf("解不动应答: %v", err)
+	}
+	if got := ack2.Header.rateLimitHint(); got.ResetAt.Unix() != 1757500001 {
+		t.Fatalf("官方文档那个少一个 e 的拼法也必须认,实际 %+v", got)
+	}
+	// 没带这些字段的老应答:OK=false,限流器原样退回本地常量,不能因此变坏。
+	var ack3 gateWSAck
+	if err := json.Unmarshal([]byte(`{"request_id":"qt-3","header":{"status":"200"}}`), &ack3); err != nil {
+		t.Fatalf("解不动应答: %v", err)
+	}
+	if ack3.Header.rateLimitHint().OK {
+		t.Fatal("应答没带限流字段时不该声称解出了档位")
 	}
 }

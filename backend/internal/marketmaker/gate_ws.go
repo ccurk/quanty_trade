@@ -62,14 +62,44 @@ type gateWSRequest struct {
 	Payload gateWSPayload `json:"payload"`
 }
 
+// gateWSAckHeader 是应答信封的 header。
+//
+// 【为什么多了三个限流字段(台账 #197)】原来这里只解 status/channel/event,把
+// gate 每一条应答都带着的限流三件套整个丢掉了。后果是"我们现在是哪一档限流"这个
+// 问题在本地【无法回答】—— 只能靠翻两万多条日志考古反推。它们回来之后:
+//   - 当前档位是 grep 一行的事;
+//   - 限流器可以按交易所报的【真实剩余】自适应,不再靠我们猜的常量
+//     (gate_ratelimit.go observeRemote)。
+//
+// ⚠️ 字段名以官方 WS 文档为准:下划线、全小写(不是 HTTP 头那种连字符)。
+// reset 那个字段官方文档里写作 x_gat_ratelimit_reset_timestamp(少一个 e,
+// 看着像官方的笔误),所以两种拼法都收 —— 它们不会同时出现,谁有用谁。
+// 【未核实】我没有在实盘应答上亲眼验证过这三个字段真的会出现;解不到就是零值,
+// hint.OK=false,限流器原样退回本地配置常量,不会因此变坏。
+type gateWSAckHeader struct {
+	Status  string `json:"status"`
+	Channel string `json:"channel"`
+	Event   string `json:"event"`
+
+	RateLimitLimit  string `json:"x_gate_ratelimit_limit"`
+	RequestsRemain  string `json:"x_gate_ratelimit_requests_remain"`
+	ResetTimestamp  string `json:"x_gate_ratelimit_reset_timestamp"`
+	ResetTimestamp2 string `json:"x_gat_ratelimit_reset_timestamp"`
+}
+
+// rateLimitHint 把 header 里那三个字段解成限流器能吃的形状;没带就是 OK=false。
+func (h gateWSAckHeader) rateLimitHint() gateRateLimitHint {
+	reset := h.ResetTimestamp
+	if reset == "" {
+		reset = h.ResetTimestamp2
+	}
+	return parseGateRateLimitHint(h.RateLimitLimit, h.RequestsRemain, reset)
+}
+
 type gateWSAck struct {
-	RequestID string `json:"request_id"`
-	Header    struct {
-		Status  string `json:"status"`
-		Channel string `json:"channel"`
-		Event   string `json:"event"`
-	} `json:"header"`
-	Data struct {
+	RequestID string          `json:"request_id"`
+	Header    gateWSAckHeader `json:"header"`
+	Data      struct {
 		Result json.RawMessage `json:"result"`
 		Errs   *struct {
 			Label   string `json:"label"`
@@ -331,50 +361,68 @@ func (t *gateWSTrader) pingLoop(conn *websocket.Conn, closed chan struct{}) {
 	}
 }
 
-// PlaceLimit 走 spot.order_place。返回 (orderID, sentOut, err):
+// PlaceLimit 走 spot.order_place。返回 (orderID, hint, sentOut, err):
 // sentOut=false 且 err!=nil ⇒ 调用方可安全回退 REST。
-func (t *gateWSTrader) PlaceLimit(body map[string]string) (string, bool, error) {
+// hint 是交易所报的限流档位/剩余,【失败路径也回】—— 被拒的那一发带的档位信息
+// 恰恰最值钱(它就是"你现在被限到哪一档"的直接答案)。
+func (t *gateWSTrader) PlaceLimit(body map[string]string) (string, gateRateLimitHint, bool, error) {
+	var noHint gateRateLimitHint
 	reqParam, err := json.Marshal(body)
 	if err != nil {
-		return "", false, err
+		return "", noHint, false, err
 	}
 	start := time.Now()
 	ack, sentOut, err := t.request("spot.order_place", reqParam)
 	if err != nil {
-		return "", sentOut, err
+		return "", noHint, sentOut, err
 	}
+	hint := ack.Header.rateLimitHint()
 	if ack.Header.Status != "200" {
 		if ack.Data.Errs != nil {
-			return "", true, fmt.Errorf("gatews order_place %s: %s", ack.Data.Errs.Label, ack.Data.Errs.Message)
+			return "", hint, true, fmt.Errorf("gatews order_place %s: %s", ack.Data.Errs.Label, ack.Data.Errs.Message)
 		}
-		return "", true, fmt.Errorf("gatews order_place status=%s", ack.Header.Status)
+		return "", hint, true, fmt.Errorf("gatews order_place status=%s", ack.Header.Status)
 	}
 	var r struct {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(ack.Data.Result, &r); err != nil || r.ID == "" {
-		return "", true, fmt.Errorf("gatews order_place: ack ok but no order id (%s)", string(ack.Data.Result))
+		return "", hint, true, fmt.Errorf("gatews order_place: ack ok but no order id (%s)", string(ack.Data.Result))
 	}
-	logger.Infof("[mm-gatews] order_place %s %s ok id=%s rtt=%dms",
-		body["currency_pair"], body["side"], r.ID, time.Since(start).Milliseconds())
-	return r.ID, true, nil
+	// 档位/剩余进日志:这一行就是"当前是哪一档"的可 grep 答案,
+	// 不必再从两万多条日志里反推(台账 #197)。
+	logger.Infof("[mm-gatews] order_place %s %s ok id=%s rtt=%dms ratelimit=%s/%s reset=%s",
+		body["currency_pair"], body["side"], r.ID, time.Since(start).Milliseconds(),
+		nz(ack.Header.RequestsRemain), nz(ack.Header.RateLimitLimit), nz(ack.Header.ResetTimestamp))
+	return r.ID, hint, true, nil
+}
+
+// nz 把空字段打成 "-",免得日志里出现 "ratelimit=/" 这种看不出是"没带"还是"是 0"的行。
+func nz(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // CancelOrder 走 spot.order_cancel; 任何失败调用方都可 REST 兜底(撤单幂等)。
-func (t *gateWSTrader) CancelOrder(orderID, currencyPair string) error {
+// 同样把限流 hint 交回去 —— 撤单花的是撤单池,它报的档位属于那个池。
+func (t *gateWSTrader) CancelOrder(orderID, currencyPair string) (gateRateLimitHint, error) {
+	var noHint gateRateLimitHint
 	reqParam, err := json.Marshal(map[string]string{"order_id": orderID, "currency_pair": currencyPair})
 	if err != nil {
-		return err
+		return noHint, err
 	}
 	ack, _, err := t.request("spot.order_cancel", reqParam)
 	if err != nil {
-		return err
+		return noHint, err
 	}
+	hint := ack.Header.rateLimitHint()
 	if ack.Header.Status != "200" {
 		if ack.Data.Errs != nil {
-			return fmt.Errorf("gatews order_cancel %s: %s", ack.Data.Errs.Label, ack.Data.Errs.Message)
+			return hint, fmt.Errorf("gatews order_cancel %s: %s", ack.Data.Errs.Label, ack.Data.Errs.Message)
 		}
-		return fmt.Errorf("gatews order_cancel status=%s", ack.Header.Status)
+		return hint, fmt.Errorf("gatews order_cancel status=%s", ack.Header.Status)
 	}
-	return nil
+	return hint, nil
 }
