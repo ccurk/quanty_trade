@@ -32,6 +32,7 @@ type hedgeExec struct {
 	balErr        error // Balances() 的返回错误(nil = 成功)
 	openErr       error // OpenOrders()(报价档)的返回错误
 	cancelReadErr error // OpenOrdersForCancel()(撤单档)的返回错误
+	cancelErr     error // CancelOrder() 的返回错误(nil = 成功)——"读到了但撤不掉"
 
 	resting   []OpenOrder
 	cancelled []string
@@ -84,6 +85,9 @@ func (h *hedgeExec) OpenOrdersForCancel(string) ([]OpenOrder, error) {
 func (h *hedgeExec) CancelOrder(_, id string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.cancelErr != nil {
+		return h.cancelErr
+	}
 	h.cancelled = append(h.cancelled, id)
 	for i := range h.resting {
 		if h.resting[i].ID == id {
@@ -279,7 +283,7 @@ func TestStandDownRecoveryDebounceResets(t *testing.T) {
 func TestStandDownSkippedForAdaptersWithoutLimiter(t *testing.T) {
 	ex := &hedgeExec{} // 没实现 RateLimitReporter
 	var g standDownGate
-	if (&Engine{}).stepStandDown(&g, ex, PairConfig{ExecSymbol: "SOL_USDT"}, time.Now()) {
+	if (&Engine{}).stepStandDown(&g, ex, PairConfig{ExecSymbol: "SOL_USDT"}, nil, time.Now()) {
 		t.Fatal("适配器不报告限流状态时不得站下")
 	}
 	if g.down {
@@ -426,7 +430,7 @@ func TestStandDownEndToEnd(t *testing.T) {
 	// 没被拦下才进 quote()。顺序与 engine.go 里一致。
 	tick := func() {
 		clk.advance(time.Duration(p.refresh()) * time.Millisecond)
-		if e.stepStandDown(&g, ex, p, clk.now()) {
+		if e.stepStandDown(&g, ex, p, nil, clk.now()) {
 			return
 		}
 		e.quote(p, ex, ref, eb, 0, blind)
@@ -582,7 +586,7 @@ func TestStandDownProbeBreaksLivelock(t *testing.T) {
 	}
 	var g standDownGate
 	clk.advance(standDownAfter(p))
-	if !e.stepStandDown(&g, ex, p, clk.now()) || !g.down {
+	if !e.stepStandDown(&g, ex, p, nil, clk.now()) || !g.down {
 		t.Fatal("熔断持续过阈值应站下")
 	}
 
@@ -592,7 +596,7 @@ func TestStandDownProbeBreaksLivelock(t *testing.T) {
 	beforeProbe := srv.hits["GET /spot/orders"]
 	for i := 0; i < 30 && !ex.RateLimitStatus().BreakerOpenSince.IsZero(); i++ {
 		clk.advance(time.Second)
-		e.stepStandDown(&g, ex, p, clk.now())
+		e.stepStandDown(&g, ex, p, nil, clk.now())
 	}
 	if !ex.RateLimitStatus().BreakerOpenSince.IsZero() {
 		t.Fatal("站下期间必须有探针出网并清掉熔断,否则永久卡在站下(活锁)")
@@ -619,7 +623,7 @@ func TestStandDownEnterUsesCancelClass(t *testing.T) {
 		BreakerOpenSince: time.Now().Add(-time.Minute), WindowMs: 10000,
 	}}
 	var g standDownGate
-	if !(&Engine{}).stepStandDown(&g, rep, PairConfig{ExecSymbol: "SOL_USDT"}, time.Now()) {
+	if !(&Engine{}).stepStandDown(&g, rep, PairConfig{ExecSymbol: "SOL_USDT"}, nil, time.Now()) {
 		t.Fatal("熔断已持续 1 分钟,必须站下")
 	}
 	ex.mu.Lock()

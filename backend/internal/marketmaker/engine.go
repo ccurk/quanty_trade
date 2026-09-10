@@ -17,6 +17,10 @@ type Engine struct {
 	feed  FeedSource
 	execs map[string]ExecExchange
 	stop  context.CancelFunc
+	// dm 是交易所侧死人开关的 arm 凭证(deadman.go)。报价前必须能从里面查到
+	// "这个 symbol 最近一次 arm 成功"——查不到就不报价,见 deadmanGate。
+	// nil(不经 Start 构造的 Engine)= 什么都没证实 = gate 场馆一律不报价。
+	dm *deadmanArm
 	// workers 只数【报价 worker】(runPair),因为只有它们会挂新单。
 	// Stop() 要先等它们退干净再撤单,否则撤单扫一遍的同时还有 worker 在
 	// reconcileSide 里挂新的 —— 优雅关闭结束后盘口上仍留着一张裸单。
@@ -71,7 +75,7 @@ func Start(cfg Config) (*Engine, error) {
 		logger.Infof("[mm] pair %s@%s 双边报价已放开(allow_short),卖侧不再受已持有库存限制", p.ExecSymbol, p.Exec)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	e := &Engine{cfg: cfg, feed: feed, execs: execs, stop: cancel}
+	e := &Engine{cfg: cfg, feed: feed, execs: execs, stop: cancel, dm: &deadmanArm{}}
 	mode := "LIVE-QUOTE"
 	if cfg.ObserveOnly {
 		mode = "OBSERVE-ONLY"
@@ -162,23 +166,130 @@ func (e *Engine) drainWorkers(budget time.Duration) {
 
 // sweepCancel 把每个 pair 的挂单撤掉,整体最多花 budget。
 // 超时时【明说没撤干净】—— 静默放弃就是给自己留一个查不出来的裸单。
+//
+// 【为什么这里是"重试一次 + 如实报账"而不是记欠账】进程正在退出,没有下一个
+// 周期可以还账,所以重试必须就地做完(预算由下面的 select 兜住);而"已撤所有
+// 挂单"这句话是所有者事后判断"上一次退干净了没有"的唯一依据,撤单档读失败或
+// 逐张撤失败时【绝不能】再打它 —— 那就是一句假绿。
 func (e *Engine) sweepCancel(budget time.Duration) {
 	done := make(chan struct{})
+	var dirty []string // 只在 done 关闭之后读(超时分支不读),不需要额外同步
 	go func() {
 		defer close(done)
 		for _, p := range e.cfg.Pairs {
-			if ex, ok := e.execs[p.Exec]; ok {
-				e.cancelAll(ex, p.ExecSymbol)
+			ex, ok := e.execs[p.Exec]
+			if !ok {
+				continue
+			}
+			out := e.cancelAll(ex, p.ExecSymbol)
+			if !out.clean() {
+				// 关闭是最后一次机会:再撤一发再下结论(限流下第一发被拒是常态)。
+				logger.Warnf("[mm] Stop: %s@%s 撤单没被证实做成(%s),重试一次",
+					p.ExecSymbol, ex.Name(), out.why())
+				out = e.cancelAll(ex, p.ExecSymbol)
+			}
+			if !out.clean() {
+				dirty = append(dirty, fmt.Sprintf("%s@%s(%s)", p.ExecSymbol, ex.Name(), out.why()))
 			}
 		}
 	}()
 	select {
 	case <-done:
-		logger.Infof("[mm] Stop: 已撤所有挂单")
+		if len(dirty) == 0 {
+			logger.Infof("[mm] Stop: 已撤所有挂单")
+			return
+		}
+		logger.Errorf("[mm] Stop: 撤单扫完了但【没撤干净】:%s —— 交易所上可能仍有残留挂单。"+
+			"进程退出后唯一的兜底只剩交易所侧死人开关倒计时(仅 gate,且必须此前 arm 成功,"+
+			"见 deadman.go),下次启动时 runPair 的开机清理会补撤,期间请人工核对盘口",
+			strings.Join(dirty, "; "))
 	case <-time.After(budget):
 		logger.Errorf("[mm] Stop: 撤单没能在 %s 预算内跑完,放弃剩余部分继续退出 —— "+
 			"交易所上可能仍有残留挂单,下次启动时 runPair 的开机清理会补撤,期间请人工核对", budget)
 	}
+}
+
+// startupCancel*:开机清残留证实不了时的重试节奏。
+//
+// 前几发密一点(交易所偶发 5xx/超时几秒就过去了),之后退到慢档【长期】重试:
+// 只要没证实盘口干净就永远不报价,但也永远保留自愈的机会 —— 一次启动瞬间的抖动
+// 不该让这个 pair 到下次重启前都不工作,而 gate 侧一段十分钟的维护也不该。
+// 慢档 30s 同时兼作日志节流:坏着的时候每 30s 一条 ERROR,不刷屏也不静默。
+const (
+	startupCancelFastTries = 3
+	startupCancelFastGap   = 2 * time.Second
+	startupCancelSlowGap   = 30 * time.Second
+)
+
+// clearStaleOrders 反复清残留,直到【证实】盘口干净为止。
+// 返回 false 只有一个原因:ctx 结束(引擎在关闭)——那就别报价了,直接退出 worker。
+func (e *Engine) clearStaleOrders(ctx context.Context, p PairConfig, ex ExecExchange) bool {
+	for try := 1; ; try++ {
+		out := e.cancelAll(ex, p.ExecSymbol)
+		if out.clean() {
+			logger.Infof("[mm] %s@%s 启动清残留挂单:%s", p.ExecSymbol, ex.Name(), out.why())
+			return true
+		}
+		logger.Errorf("[mm] %s@%s 启动清残留挂单没被证实做成(第 %d 次):%s —— "+
+			"证实盘口干净之前这个 pair 不报价(上一轮/崩溃留下的孤儿单可能还在)",
+			p.ExecSymbol, ex.Name(), try, out.why())
+		gap := startupCancelFastGap
+		if try >= startupCancelFastTries {
+			gap = startupCancelSlowGap
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(gap):
+		}
+	}
+}
+
+// dmGateState 是"死人开关这道闸"在一个 pair 上的记忆:从什么时候开始被挡、上次喊过没。
+type dmGateState struct {
+	since time.Time
+	say   sayEvery
+}
+
+// deadmanGateSayEvery:被挡期间重复喊话的间隔(理由同 cancelDebtSayEvery)。
+const deadmanGateSayEvery = 30 * time.Second
+
+// deadmanGate 回答:这一轮能不能报价。false = 不能,交易所侧倒计时没被证实 arm 上。
+//
+// 【判据是数据,不是逻辑】它只问 e.dm 里有没有"这个 symbol 最近一次 arm 成功"的
+// 记录、且还在覆盖期内。没有记录一律算没覆盖 —— 包括:从没 arm 成功过、arm 连续
+// 失败到上一次成功已经过期、死人开关那个 goroutine 压根没起来、甚至 Engine 不经
+// Start 构造(e.dm 为 nil)。这样"忘了 arm"和"arm 报错"自动同归一路,
+// 而不是各写各的判断。
+func (e *Engine) deadmanGate(p PairConfig, ex ExecExchange, st *dmGateState, now time.Time) bool {
+	if !deadmanCovers(ex) {
+		return true // 这个场馆本来就没有交易所侧死人开关,不归这道闸管
+	}
+	if e.dm.covered(p.ExecSymbol, now) {
+		if !st.since.IsZero() {
+			logger.Infof("[mm] %s@%s 死人开关已 arm 上(挡了 %s),恢复报价",
+				p.ExecSymbol, ex.Name(), now.Sub(st.since).Truncate(time.Second))
+			*st = dmGateState{}
+		}
+		return true
+	}
+	if st.since.IsZero() {
+		st.since = now
+	}
+	blocked := now.Sub(st.since)
+	if st.say.due(now, deadmanGateSayEvery) {
+		if blocked < deadmanTimeout {
+			// 刚启动的头一两秒还没轮到第一次 arm,这是正常的(worker 比死人开关先起)。
+			logger.Warnf("[mm] %s@%s 交易所侧死人开关还没证实 arm 上(%s),本轮不报价",
+				p.ExecSymbol, ex.Name(), blocked.Truncate(time.Second))
+		} else {
+			logger.Errorf("[mm] %s@%s 交易所侧死人开关已 %s 没能 arm 上:拒绝报价 —— "+
+				"没有它,进程被 SIGKILL 之后挂单会原样留在盘口(见 deadman.go)。"+
+				"先查 MM_GATE_API_KEY/SECRET 的撤单权限和到 %s 的连通性",
+				p.ExecSymbol, ex.Name(), blocked.Truncate(time.Second), deadmanHost)
+		}
+	}
+	return false
 }
 
 // shortSideBlockers 列出"这个场馆的卖侧还不能放开"的原因。空 = 可以放开。
@@ -221,11 +332,16 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 	defer stop()
 
 	// 启动先撤掉该 symbol 的所有残留挂单(上次运行/崩溃留下的孤儿单),报价前先 reconcile 干净。
-	if !e.cfg.ObserveOnly {
-		e.cancelAll(ex, p.ExecSymbol)
-		logger.Infof("[mm] %s@%s 启动清残留挂单", p.ExecSymbol, ex.Name())
+	//
+	// 【必须证实,证实不了就不开工】读挂单失败时 cancelAll 一张也撤不掉,而它长得
+	// 和"盘口本来就是空的"一模一样。没证实就开始报价 = 在一堆来路不明的孤儿单上面
+	// 加挂;下面 blindClock 那句"此刻盘口是空的、我们知道自己的状态"也就成了假话。
+	if !e.cfg.ObserveOnly && !e.clearStaleOrders(ctx, p, ex) {
+		return
 	}
 	var devSince time.Time // exec-vs-ref 中价持续偏离的起始时刻(长时间偏移撤单用)
+	var debt cancelDebt    // 撤单欠账(每个 pair 一份),见 cancel_proof.go
+	var dmGate dmGateState // 死人开关这道闸在本 pair 上的记忆,见 deadman.go
 	// 每 symbol 的基差估计(台账 #7)。未配 basis_half_life_s 时为 nil = 关闭,
 	// 下面所有取值都退化成 0,行为与改动前完全一致。
 	basis := newBasisEWMA(p.BasisHalfLifeS, p.BasisCapBps)
@@ -289,8 +405,12 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 		markoutTracker.Observe(p.ExecSymbol, eb.Mid(), time.Now())
 
 		if !e.cfg.ObserveOnly {
+			now := time.Now()
 			// 单日止损熔断中:停报价至次日 UTC。
-			if !haltUntil.IsZero() && time.Now().Before(haltUntil) {
+			if !haltUntil.IsZero() && now.Before(haltUntil) {
+				// 【停业不等于盘口是空的】止损那一刻的撤单如果没被证实做成,
+				// 原来这一整天都不会再有人去撤它 —— 下面每个周期都在这里 continue。
+				e.repayCancelDebt(&debt, ex, p, now)
 				continue
 			}
 			// 限流熔断持续打开 → 撤单站下(standdown.go)。
@@ -299,12 +419,12 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 			// 不依赖任何会被熔断挡住的请求;要是像原来的余额避险那样排在
 			// quote() 内部 OpenOrders 之后,熔断一开第一发就被本地拒、整段永远
 			// 走不到 —— 那就成了第二条死代码(台账 #117 同病)。
-			if e.stepStandDown(&sdGate, ex, p, time.Now()) {
+			if e.stepStandDown(&sdGate, ex, p, &debt, now) {
 				continue
 			}
 			// 参考盘口过期就撤掉两边报价,绝不按陈旧参考挂单(防参考断流时裸报价)。
 			if time.Since(ref.Ts) > staleAfter(p) {
-				e.cancelAll(ex, p.ExecSymbol)
+				e.hedgeCancel(&debt, ex, p, "参考流过期", now)
 				continue
 			}
 			// 长时间偏移:exec 与 ref 中价持续偏离超阈值 → 撤单暂停(可能真错价/数据问题,
@@ -318,7 +438,7 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 					devSince = time.Now()
 				}
 				if time.Since(devSince) > maxDeviationDuration {
-					e.cancelAll(ex, p.ExecSymbol)
+					e.hedgeCancel(&debt, ex, p, "exec/ref 中价持续偏离", now)
 					continue
 				}
 			} else {
@@ -340,14 +460,30 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 					pnl := tracker.mtmPnL(eb.Mid())
 					recordMMPnL(ex.Name(), p.ExecSymbol, pnl)
 					if e.cfg.MaxDailyLossUSD > 0 && pnl < -e.cfg.MaxDailyLossUSD {
-						e.cancelAll(ex, p.ExecSymbol)
+						// 撤没撤成会记进欠账:上面那条 haltUntil 分支每个周期都会接着还,
+						// 否则"停业"只是不再报价,盘口上的单可能躺一整天。
+						e.hedgeCancel(&debt, ex, p, "单日止损", now)
 						haltUntil = nextUTCMidnight()
 						logger.Errorf("[mm] %s@%s 触发单日止损 PnL=%.2f < -%.2f → 停报价至次日", p.ExecSymbol, ex.Name(), pnl, e.cfg.MaxDailyLossUSD)
 						continue
 					}
 				}
 			}
-			e.quote(p, ex, ref, eb, corrBps, blind)
+			// 恢复报价的前提有两条,都必须是【被证实的数据】,不是"没人报错":
+			//   ① 上一次避险撤单确实撤干净了(cancel_proof.go);
+			//   ② 交易所侧死人开关确实 arm 上了(deadman.go)——
+			//      没有它,进程被 SIGKILL 之后挂单会原样留在盘口。
+			if !e.repayCancelDebt(&debt, ex, p, now) {
+				continue
+			}
+			if !e.deadmanGate(p, ex, &dmGate, now) {
+				continue
+			}
+			// quote 内部那条"余额读不到就撤单避险"也是一次 cancelAll,
+			// 同样要记账 —— 否则下一轮余额读回来了就会带着没撤成的单恢复报价。
+			if out := e.quote(p, ex, ref, eb, corrBps, blind); out != nil {
+				debt.note(*out, ex, p, "余额读不到", time.Now())
+			}
 		}
 	}
 }
@@ -356,7 +492,11 @@ func (e *Engine) runPair(ctx context.Context, p PairConfig, ex ExecExchange) {
 //
 // 适配器不实现 RateLimitReporter(coinsph/mexc/kucoin 等)时恒返回 false,
 // 整条路径不参与,行为与改动前逐位相同。
-func (e *Engine) stepStandDown(g *standDownGate, ex ExecExchange, p PairConfig, now time.Time) bool {
+//
+// d 是本 pair 的撤单欠账(cancel_proof.go):站下的那次撤单和站下期间的补撤都
+// 可能没做成,而站下的全部意义就是盘口上不留单 —— 没证实就得记账,并且在还清
+// 之前不许恢复报价(恢复的判据在 runPair 里)。
+func (e *Engine) stepStandDown(g *standDownGate, ex ExecExchange, p PairConfig, d *cancelDebt, now time.Time) bool {
 	rep, ok := ex.(RateLimitReporter)
 	if !ok {
 		return false
@@ -372,7 +512,7 @@ func (e *Engine) stepStandDown(g *standDownGate, ex ExecExchange, p PairConfig, 
 
 	switch g.decide(st.BreakerOpenSince, window, downAfter, now) {
 	case standDownEnter:
-		e.cancelAll(ex, p.ExecSymbol)
+		e.hedgeCancel(d, ex, p, "限流熔断站下", now)
 		logger.Errorf("[mm-standdown] %s@%s 限流熔断已持续打开 %s(阈值 %s):撤单站下 —— 报价移不动时不再挂单",
 			p.ExecSymbol, ex.Name(), now.Sub(st.BreakerOpenSince).Truncate(time.Millisecond), downAfter)
 		return true
@@ -390,9 +530,11 @@ func (e *Engine) stepStandDown(g *standDownGate, ex ExecExchange, p PairConfig, 
 		if !g.shouldProbe(now, window) {
 			return true
 		}
+		// 探针读失败【不】记欠账:站下期间它本来就该在本地被拒,那是设计,不是"不知道"。
+		// 但探针通了、看见残留单、补撤又没成 —— 那就是真的没撤干净,必须记账。
 		if orders, err := ex.OpenOrders(p.ExecSymbol); err == nil && len(orders) > 0 {
 			logger.Warnf("[mm-standdown] %s@%s 站下中仍有 %d 张残留挂单,补撤", p.ExecSymbol, ex.Name(), len(orders))
-			e.cancelAll(ex, p.ExecSymbol)
+			e.hedgeCancel(d, ex, p, "站下期间补撤残留挂单", now)
 		}
 		return true
 	case standDownExit:
@@ -534,7 +676,12 @@ func (b *blindClock) ok(now time.Time) {
 //
 // blind 是余额盲区时钟(见 blindClock),nil = 调用方没有记忆 → 任何余额读失败都
 // 按"真读不到"处理(fail-safe 那一侧)。
-func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBps float64, blind *blindClock) {
+//
+// 【返回值】非 nil = 本轮走了"余额读不到 → 撤单避险"那条路,里面是那次撤单的凭证
+// (cancel_proof.go)。调用方必须拿它记欠账:撤没撤成不能只由 quote 自己知道,
+// 否则下一轮余额读回来了,引擎就会带着可能没撤掉的单恢复报价。
+// nil = 本轮没做过避险撤单。
+func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBps float64, blind *blindClock) *cancelOutcome {
 	// 卖侧是"只能卖已持有"(现货)还是"可以卖到 −MaxPosition"(永续)。
 	// 全函数只在这里判一次,下面三处(持仓口径/卖量上限/库存偏移下界)共用同一个结论,
 	// 免得三处各判各的、将来漂成不一致。
@@ -543,7 +690,7 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBp
 	filt, err := ex.SymbolFilter(p.ExecSymbol)
 	if err != nil {
 		logger.Warnf("[mm] %s@%s filter 读取失败,本轮不报价: %v", p.ExecSymbol, ex.Name(), err)
-		return
+		return nil
 	}
 	refMid := ref.Mid()
 	half := p.SpreadBps / 10000.0
@@ -563,7 +710,7 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBp
 		if ok, blindFor := blind.tolerate(err, limit, time.Now()); ok {
 			logger.Debugf("[mm] %s@%s 本轮没去读余额(本地限流,已 %s 未读到,边界 %s):不报价、不撤单,持续限流交给站下: %v",
 				p.ExecSymbol, ex.Name(), blindFor.Truncate(time.Millisecond), limit, err)
-			return
+			return nil
 		} else if blindFor >= limit {
 			// 越过边界:本地名额把余额读挡了这么久,已经不能再叫"我们没问"了。
 			// 这条必须是 ERROR —— 它是那个静默洞唯一会响的地方。
@@ -572,8 +719,8 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBp
 		} else {
 			logger.Warnf("[mm] %s@%s 余额读取失败,撤单避险: %v", p.ExecSymbol, ex.Name(), err)
 		}
-		e.cancelAll(ex, p.ExecSymbol)
-		return
+		out := e.cancelAll(ex, p.ExecSymbol)
+		return &out
 	}
 	blind.ok(time.Now())
 
@@ -582,7 +729,7 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBp
 	orders, err := ex.OpenOrders(p.ExecSymbol)
 	if err != nil {
 		logger.Warnf("[mm] %s@%s openOrders 读取失败,本轮不动单: %v", p.ExecSymbol, ex.Name(), err)
-		return
+		return nil
 	}
 	var curBid, curAsk *OpenOrder
 	for i := range orders {
@@ -630,7 +777,7 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBp
 	// 面板量的是盘口既有价差,过去我们却挂在它里面把便宜货让了出去。
 	bidPx, askPx = rideToBook(bidPx, askPx, eb.BidPx, eb.AskPx, filt.TickSize)
 	if bidPx <= 0 || askPx <= 0 || askPx <= bidPx {
-		return
+		return nil
 	}
 
 	// 买量钳到"上限−持仓",防止在接近上限时又买满一整单冲破 cap(order_qty≈½cap 时最多溢出
@@ -657,6 +804,7 @@ func (e *Engine) quote(p PairConfig, ex ExecExchange, ref, eb BookTicker, corrBp
 	}
 	e.reconcileSide(ex, p.ExecSymbol, "BUY", bidPx, bidQty, wantBid, curBid, tol, filt.StepSize)
 	e.reconcileSide(ex, p.ExecSymbol, "SELL", askPx, askQty, wantAsk, curAsk, tol, filt.StepSize)
+	return nil
 }
 
 // reconcileSide keeps at most one resting order on a side matching the target.
@@ -683,17 +831,27 @@ func (e *Engine) reconcileSide(ex ExecExchange, symbol, side string, px, qty flo
 	}
 }
 
-// cancelAll 撤掉该 symbol 的全部挂单。它是本模块【所有】避险路径的共同动作
-// (参考流过期/持续偏离/单日止损/优雅关闭/熔断站下),所以它的第一步——读挂单——
-// 必须和撤单同档,不能走会被熔断挡住的报价档。见 types.go CancelPathReader。
-func (e *Engine) cancelAll(ex ExecExchange, symbol string) {
+// cancelAll 撤掉该 symbol 的全部挂单,并【返回凭证】(cancel_proof.go)。
+// 它是本模块【所有】避险路径的共同动作(参考流过期/持续偏离/单日止损/优雅关闭/
+// 熔断站下/开机清残留/余额读不到),所以它的第一步——读挂单——必须和撤单同档,
+// 不能走会被熔断挡住的报价档。见 types.go CancelPathReader。
+//
+// 【返回值必须被消费】读挂单失败时它一张也撤不掉,而"撤不掉"和"本来就没单"
+// 在调用方眼里长得一模一样;逐张撤单的失败同理。避险路径请走 e.hedgeCancel,
+// 别直接调它 —— 那里会把没证实的撤单记成欠账,并挡住"恢复报价"。
+func (e *Engine) cancelAll(ex ExecExchange, symbol string) cancelOutcome {
 	orders, err := cancelPathOpenOrders(ex, symbol)
 	if err != nil {
-		return
+		return cancelOutcome{err: err}
 	}
+	out := cancelOutcome{read: true, seen: len(orders)}
 	for _, o := range orders {
-		_ = ex.CancelOrder(symbol, o.ID)
+		if err := ex.CancelOrder(symbol, o.ID); err != nil {
+			out.failed++
+			out.err = err
+		}
 	}
+	return out
 }
 
 // cancelPathOpenOrders 用撤单档读挂单;适配器没实现这一档就退回普通读(行为不变)。
