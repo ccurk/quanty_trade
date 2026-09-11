@@ -267,7 +267,7 @@
 
 | # | 类型 | 内容（含完整意图） | 登记轮 | 状态 |
 |---|---|---|---|---|
-| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(probe史19:45→04:44九miss,末=probe#1@04:44Z双err直证[≥37.8h];probe#2@05:40Z排定(session额度2/3);落地窗=恢复瞬间全账户空仓stop→PATCH bl22单键→start;bl22值=对账器blacklist_sync期望态@03:1x复核一致(21连零)) |
+| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(probe史19:45→05:42十miss,末=probe#2@05:42Z双err直证[≥38.8h];本session probe止(2/3),移交下一cron轮;落地窗=恢复瞬间全账户空仓stop→PATCH bl22单键→start;bl22值=对账器blacklist_sync期望态@03:1x复核一致(21连零)) |
 > 维护注(指针@09-10 15:2x归并): #87宕机复盘结案+#86 bl16/S33注册结案全文=git 805a115版§5原文。
 > 维护注(指针@09-08 12:3x): #84落地结案全文=git dd4326e版行@09-05 21:2x。
 > 维护注(指针@09-08 00:2x): #83=git版行@09-05 06:2x;#82=git版行@09-04 07:3x;#81/#78=git 4be520c版行。
