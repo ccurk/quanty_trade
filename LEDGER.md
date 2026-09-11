@@ -267,7 +267,7 @@
 
 | # | 类型 | 内容（含完整意图） | 登记轮 | 状态 |
 |---|---|---|---|---|
-| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(probe史19:45→02:18Z七miss,末=09-11 02:18Z active端点DNS err直证[≥34.1h];probe#1@02:17Z=miss,余2枚不再排(下一cron轮<1h接管);落地窗=恢复瞬间全账户空仓stop→PATCH bl22单键→start;bl22值=对账器blacklist_sync期望态@00:1x复核一致) |
+| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(probe史19:45→03:1x八miss,末=09-11 03:1x cron轮双直证[≥36.3h];probe#1@04:44Z排定(03:1x session,≤3);落地窗=恢复瞬间全账户空仓stop→PATCH bl22单键→start;bl22值=对账器blacklist_sync期望态@03:1x复核一致(21连零)) |
 > 维护注(指针@09-10 15:2x归并): #87宕机复盘结案+#86 bl16/S33注册结案全文=git 805a115版§5原文。
 > 维护注(指针@09-08 12:3x): #84落地结案全文=git dd4326e版行@09-05 21:2x。
 > 维护注(指针@09-08 00:2x): #83=git版行@09-05 06:2x;#82=git版行@09-04 07:3x;#81/#78=git 4be520c版行。
@@ -301,10 +301,9 @@
 | short双窗负 | 0维持(逐笔配对为主口径)〔git 6a93e93〕 | 08-06 | 新增空头亏损事件逼近4.6c门→评估 |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
-| 2026-09-11 00:1x | 断连轮#8(≥32.0h): 00:12Z双直证(active端点positionRisk DNS err+ctx income同串,时间戳当刻);ws双活00:13(main评分1000LUNC+trend live K线TUT);24h n0持续(~32h零成交);48h真值n30/-5.88 wr37全断连前平仓=窗滚动零新亏,死法/归因与#7轮同(main26/-6.46,trend4/+0.58);被挡开仓19行/13币无新增(末09-10 16:16=夜间无过门信号);audit尾1808零无主;feed183/3∩∅无重播种=无重启直证;ROUTE v1.6 plan={}20连零,bl_sync22与#88一致;S31宽0.672(123/183)ON@00:15(0.219→0.601→0.672日内振荡续);S33冻结(评点09-11T09:30Z,cohort n12不动);宏观FGI56/BTC-1.9%/mcap-4.4%未触线;刹车未触(双窗0笔);HOLD 0原子包;probe#1排定02:17Z抢#88恢复窗(本session余2);TG续催resolver(≥32h) |
-| 09-10 21:2x stub: 断连轮#7(≥29.1h);48h真值n30/-5.88;被挡19行/13币;S31宽0.601ON;ROUTE 19连零;audit1808零无主;HOLD;probe22:15排定;全文git 7d83418版行 |
-| 09-10 18:2x stub: 断连轮#6(≥27.3h);48h n28/-3.07;S31宽0.219OFF;ROUTE 18连零;HOLD;probe19:45/20:30双miss;全文git 1d34ef4+427ca18/0b15ab8版行 |
+| 2026-09-11 03:1x | 断连轮#9(≥36.3h): 03:1x双直证(active=positionRisk DNS err对象+ctx income同串,均当刻);新证=closed?hours=48参数失效回灌全史2847行(07-19起)→本地close_time过滤真窗23行=v1.6防御设计自证有效;真窗去重n15/-3.45 wr33(#79双写8对剔,main13/-3.74[wr23,最佳UAI+0.89最差UAI-1.52],trend2/+0.29[USELESS双胜])全≤09-09 14:56断连前=窗滚动零新亏;ws评估活跃(03:14 KNC/ATH/ZAMA评分流,统计汇总60s发信号0/0,当前池183);24h n0持续;audit尾1808/1807零无主;feed183/3∩∅无重播种;ROUTE v1.6 plan={}21连零,bl_sync22=#88一致,trend三币aging_watch持续;S33冻结n12(评点09:30Z本轮03:1x未到→下轮裁决;断连冻窗顺延=候选裁法,非换指标);S31仪表行被日志缓冲挤出(S31/偏置/regime三查0命中,informational);宏观FGI56/BTC-2.0%/mcap-4.6%未触线;刹车未触(双窗0笔,钱包读数=fetch伪影不采);HOLD 0原子包;probe#1排定04:44Z(trig_01N5VKTwuwLLKkgL2kJtteUB,本session≤3);TG续催resolver(≥36h) |
+| 09-11 00:1x stub: 断连轮#8(≥32.0h);48h真值n30/-5.88;被挡19行/13币;S31宽0.672ON;ROUTE 20连零;audit1808零无主;HOLD;probe#1 02:17Z=miss余枚移交;全文git 7eb36e6版行 |
 <!-- §7瘦身史(09-03..09-05各轮stub化/删行)指针集=git 8729d22版本注(7565b0e/6d82e95/8c39ae5/13edbef/8ddf77f/558543d/a3dbdcc在内) -->
 | 时间(UTC) | 档位 | 五窗净额 1h/3h/6h/12h/24h | 世界 | 决策 | 备注 |
-> 瘦身注(指针集@09-11 00:1x归并): 断连轮#4[git 2596a9a]/#5[git 967d54b]双stub并入git 7d83418版行。前集@09-10 21:2x: 09-10 09:1x/04:0x双stub并入[git 805a115]。前集@18:2x: 09-09 15:1x[BOOK硬超时门预注册,git 522dfdc]/12:2x[batch4三死例,git 0097bd7]双stub并入。前集@09-10 09:3x: 09-09 03:1x/06:1x双stub并入[git c6a9c02]; 09-08 09:1x[FREQ2 KEEP+S33 apply tpl998+#86 bl16=git dd4326e]/18:1x[git 0809b7a]双stub并入; 09-05..09-09各轮stub/并入指针全集=git c6a9c028版§7原文(内含09-08宕机双ABORT/TRANSFER+40U/MARSCOIN promo_hold/S33精测不发货各轮;更早08-30..09-04系见该版内层指针链)。
+> 瘦身注(指针集@09-11 03:1x归并): 断连轮#6[git 1d34ef4]/#7[git 7d83418]双stub并入git 7eb36e6版行。前集@00:1x: #4[git 2596a9a]/#5[git 967d54b]并入git 7d83418版行。前集@09-10 21:2x: 09-10 09:1x/04:0x双stub并入[git 805a115]。前集@18:2x: 09-09 15:1x[BOOK硬超时门预注册,git 522dfdc]/12:2x[batch4三死例,git 0097bd7]双stub并入。前集@09-10 09:3x: 09-09 03:1x/06:1x双stub并入[git c6a9c02]; 09-08 09:1x[FREQ2 KEEP+S33 apply tpl998+#86 bl16=git dd4326e]/18:1x[git 0809b7a]双stub并入; 09-05..09-09各轮stub/并入指针全集=git c6a9c028版§7原文(内含09-08宕机双ABORT/TRANSFER+40U/MARSCOIN promo_hold/S33精测不发货各轮;更早08-30..09-04系见该版内层指针链)。
 |---|---|---|---|---|---|
