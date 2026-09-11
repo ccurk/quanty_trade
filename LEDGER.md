@@ -267,7 +267,7 @@
 
 | # | 类型 | 内容（含完整意图） | 登记轮 | 状态 |
 |---|---|---|---|---|
-| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(证据链=§6断连行+git 1e6270a;21:1x双直证仍断≥53.0h;落地窗=恢复瞬间全账户空仓stop→PATCH bl22单键→start;bl22值=对账器期望态21:1x再复核一致[27连零];probe 22:1x/23:1x排定,miss则00:1x cron接棒) |
+| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(证据链=§6断连行+git 1e6270a;21:1x双直证仍断≥53.0h;落地窗=恢复瞬间全账户空仓stop→PATCH bl22单键→start;bl22值=对账器期望态21:1x再复核一致[27连零];probe22:16/23:15双miss同串SERVFAIL[≥55.1h]→静默交接00:1x cron) |
 > 维护注(指针@09-10 15:2x归并): #87宕机复盘结案+#86 bl16/S33注册结案全文=git 805a115版§5原文。
 > 维护注(指针@09-08 12:3x): #84落地结案全文=git dd4326e版行@09-05 21:2x。
 > 维护注(指针@09-08 00:2x): #83=git版行@09-05 06:2x;#82=git版行@09-04 07:3x;#81/#78=git 4be520c版行。
@@ -276,7 +276,7 @@
 ## 6. 假设库·观察计数（v2 迁移注记 @08-01 16:40Z：并入假设库，与 §4 合称；跨轮累计；9 秒日志窗单次未观测 ≠ 零，以本节跨轮增量为准）
 
 | 计数项 | 读数 | 更新轮 | 备注 |
-| backend→Binance REST DNS断连 | **n=1: 09-09 16:12Z起持续,09-11 21:1x仍在(≥53.0h;probe史14miss+cron直证七轮03:1x..21:1x逐枚=git fc2c6d4/1e6270a版行;21:1x直证=active@21:11+main ctx income@21:12同串fapi SERVFAIL+balance=0伪零;ws活证=main STAR/O/AZTEC评分@21:12:03+trend CAP@21:12:03 IDLE3/3;feed183/3无重播种)**;特征=fapi SERVFAIL(resolver 100.100.100.100=Tailscale MagicDNS,修复在宿主机);skip文案'不支持该交易对'=误导;ctx balance=0+income{}=伪影;新伪影@21:1x: closed hours=48仍回close 54h前行=窗过滤宽松/懒生成族(末真实close不变=n0判定不受扰) | 09-11 21:1x | 恢复后复核:①income补记完整性②feed有无重播种③若平台重启于断连窗=ws也死须立报;再现→升§3;⚠️断连窗禁stop/start(重订阅可能失败) |
+| backend→Binance REST DNS断连 | **n=1: 09-09 16:12Z起持续,09-11 23:15仍在(≥55.1h;probe史16miss+cron直证七轮03:1x..21:1x逐枚=git fc2c6d4/1e6270a版行;21:1x直证=active@21:11+main ctx income@21:12同串fapi SERVFAIL+balance=0伪零;ws活证=main STAR/O/AZTEC评分@21:12:03+trend CAP@21:12:03 IDLE3/3;feed183/3无重播种)**;特征=fapi SERVFAIL(resolver 100.100.100.100=Tailscale MagicDNS,修复在宿主机);skip文案'不支持该交易对'=误导;ctx balance=0+income{}=伪影;新伪影@21:1x: closed hours=48仍回close 54h前行=窗过滤宽松/懒生成族(末真实close不变=n0判定不受扰) | 09-11 21:1x | 恢复后复核:①income补记完整性②feed有无重播种③若平台重启于断连窗=ws也死须立报;再现→升§3;⚠️断连窗禁stop/start(重订阅可能失败) |
 | TradFi嫌疑币watch | BYD/AXTI/INTW/MVLL/MEGA(零史+名形存疑,无直证) | 09-10 04:1x | 任一现-4411或官宣名单确认→即隔离(不限流);MEGA大概率MegaETH(低嫌) |
 | 幻影行post-fix观察 | **+1@08-29 17:0x(TAC空short 14:50→15:16无pnl,与14:52apply/15:30重启窗重叠;史SCRT@08-25;累计n=2)** | 08-28 18:1x | 再现累计;n≥3或含实亏→升§4 |
 | epsilon边界放行观测(v2域;#65永久化伴生) | n=5/类净+0.027(HANA×3细目git 91b3276;VELVET−0.175;+MELANIA 16:45入0.600边界→60m超时+0.186@08-28) | 08-28 18:2x | 累计n≥5∧类净≤−2U→复议(远离门);premium加距源码判死+main0.600档scp0.049史=git 91b3276 |
