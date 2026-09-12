@@ -120,7 +120,7 @@ type binanceCred struct {
 func NewBinanceExchange() *BinanceExchange {
 	ex := &BinanceExchange{
 		name:       "Binance",
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		httpClient: &http.Client{Timeout: 15 * time.Second, Transport: newResilientTransport()},
 		credsByID:  make(map[uint]binanceCred),
 	}
 	c := conf.C().Exchange.Binance

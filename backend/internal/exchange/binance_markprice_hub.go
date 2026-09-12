@@ -62,7 +62,7 @@ func (b *BinanceExchange) runMarkPriceStream(ctx context.Context, cb func([]Mark
 			return
 		default:
 		}
-		conn, _, err := websocket.DefaultDialer.DialContext(ctx, url, nil)
+		conn, _, err := wsDialer.DialContext(ctx, url, nil)
 		if err != nil {
 			log.Printf("[markprice-hub] dial失败 err=%v backoff=%s", err, backoff)
 			select {

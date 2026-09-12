@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 type BinanceDepthSnapshot struct {
@@ -28,7 +26,7 @@ type BinanceRecentTrade struct {
 
 func (b *BinanceExchange) wsAPIRequest(cred binanceCred, method string, params map[string]interface{}, out interface{}) error {
 	u := b.wsAPIURL(cred)
-	conn, _, err := websocket.DefaultDialer.Dial(u, nil)
+	conn, _, err := wsDialer.Dial(u, nil)
 	if err != nil {
 		return err
 	}
@@ -126,7 +124,7 @@ func (b *BinanceExchange) SubscribeDepth(symbol string, callback func(BinanceDep
 	sym := strings.ToLower(binanceSymbol(symbol))
 	wsURL := b.wsBaseURL + "/ws/" + sym + "@depth"
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, _, err := wsDialer.Dial(wsURL, nil)
 	if err != nil {
 		return err
 	}

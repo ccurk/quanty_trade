@@ -90,7 +90,7 @@ func (b *BinanceExchange) runUserStream(s *binanceUserStream) {
 		}
 
 		wsURL := b.wsBaseURL + "/ws/" + listenKey
-		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+		conn, _, err := wsDialer.Dial(wsURL, nil)
 		if err != nil {
 			_ = b.closeListenKey(cred, listenKey)
 			time.Sleep(backoff)
