@@ -267,7 +267,7 @@
 
 | # | 类型 | 内容（含完整意图） | 登记轮 | 状态 |
 |---|---|---|---|---|
-| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(03:1x cron直证仍SERVFAIL≥59.0h;probe04:16/05:15双miss(同串SERVFAIL≥61.1h),03:1x session probe额度尽不自续,静默交接06:1x cron;desired_bl22 29连零一致;+6币斜杠形态照bl16口径已复核;落地窗=恢复瞬间全账户空仓stop→PATCH bl22单键勿动_exp→start→复读) |
+| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(06:1x cron直证仍SERVFAIL≥62.1h同串;desired_bl22 30连零一致;+6币斜杠形态照bl16口径已复核;落地窗=恢复瞬间全账户空仓stop→PATCH bl22单键勿动_exp→start→复读;probe史归并git adfc233) |
 > 维护注(指针@09-10 15:2x归并): #87宕机复盘结案+#86 bl16/S33注册结案全文=git 805a115版§5原文。
 > 维护注(指针@09-08 12:3x): #84落地结案全文=git dd4326e版行@09-05 21:2x。
 > 维护注(指针@09-08 00:2x): #83=git版行@09-05 06:2x;#82=git版行@09-04 07:3x;#81/#78=git 4be520c版行。
@@ -276,7 +276,7 @@
 ## 6. 假设库·观察计数（v2 迁移注记 @08-01 16:40Z：并入假设库，与 §4 合称；跨轮累计；9 秒日志窗单次未观测 ≠ 零，以本节跨轮增量为准）
 
 | 计数项 | 读数 | 更新轮 | 备注 |
-| backend→Binance REST DNS断连 | **n=1: 09-09 16:12Z起持续,09-12 03:12仍在(≥59.0h;probe史20miss+cron直证九轮=git fc2c6d4/1e6270a/9e8dc48/01d79a0链;03:1x直证=ctx income+active同串fapi SERVFAIL+balance伪零;ws活证GRASS评分@03:12:04池183;feed183/3无重播种)**;特征=fapi SERVFAIL(resolver 100.100.100.100=Tailscale MagicDNS,修复在宿主机);伪影族: ctx balance=0+income{}伪零/skip文案误导/closed窗过滤失效升级@00:1x(hours=48回2847行最早07-19,末真实close不变=close_time过滤判n0不受扰) | 09-12 00:1x | 恢复后复核:①income补记完整性②feed有无重播种③若平台重启于断连窗=ws也死须立报;再现→升§3;⚠️断连窗禁stop/start(重订阅可能失败) |
+| backend→Binance REST DNS断连 | **n=1: 09-09 16:12Z起持续,09-12 06:16仍在(≥62.1h;probe史22miss+cron直证十轮=git fc2c6d4/1e6270a/9e8dc48/01d79a0/adfc233链;06:1x直证=ctx income+active同串fapi SERVFAIL+balance伪零;ws活证main/trend双载具评分@06:14-17池183/3;feed183/3无重播种)**;特征=fapi SERVFAIL(resolver 100.100.100.100=Tailscale MagicDNS,修复在宿主机);伪影族: ctx balance=0+income{}伪零/skip文案误导/closed窗过滤失效升级@00:1x(hours=48回2847行最早07-19,末真实close不变=close_time过滤判n0不受扰) | 09-12 06:1x | 恢复后复核:①income补记完整性②feed有无重播种③若平台重启于断连窗=ws也死须立报;再现→升§3;⚠️断连窗禁stop/start(重订阅可能失败) |
 | TradFi嫌疑币watch | BYD/AXTI/INTW/MVLL/MEGA(零史+名形存疑,无直证) | 09-10 04:1x | 任一现-4411或官宣名单确认→即隔离(不限流);MEGA大概率MegaETH(低嫌) |
 | 幻影行post-fix观察 | **+1@08-29 17:0x(TAC空short 14:50→15:16无pnl,与14:52apply/15:30重启窗重叠;史SCRT@08-25;累计n=2)** | 08-28 18:1x | 再现累计;n≥3或含实亏→升§4 |
 | epsilon边界放行观测(v2域;#65永久化伴生) | n=5/类净+0.027(HANA×3细目git 91b3276;VELVET−0.175;+MELANIA 16:45入0.600边界→60m超时+0.186@08-28) | 08-28 18:2x | 累计n≥5∧类净≤−2U→复议(远离门);premium加距源码判死+main0.600档scp0.049史=git 91b3276 |
@@ -301,6 +301,7 @@
 | short双窗负 | 0维持(逐笔配对为主口径)〔git 6a93e93〕 | 08-06 | 新增空头亏损事件逼近4.6c门→评估 |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
+| 2026-09-12 06:1x | 断连轮#18(≥62.1h,锚09-09 16:12Z): 双直证同串(active positionRisk+main ctx income@06:13-16 fapi SERVFAIL on 100.100.100.100;balance=0伪零);ws活证(main评分KNC0.36/M0.40@06:14池183 recv183/183+trend评分TUT0.24@06:17 recv3/3);feed183/3无重播种;audit尾1808零无主;main/trend config全键零漂移(bl16/pct0.08/lcp0.15/scp0.05/S33 _exp open原封);真窗n0(末close TAC 09-09 14:56维持;2847行窗伪影维持);ROUTE v1.6 plan={}30连零,quarantine19,desired_bl22=#88一致,aging_watch trend三币;S31宽度本轮无触发行可采(断连窗评分行短格式无detail;零成交=判据零影响);S33冻结KEEP-armed零动;宏观FGI63 Greed/BTC−0.08%@77204/mcap−2.29%未触;刹车未触(零成交);保证金0.55✓;HOLD 0原子包;#88续候;TG催resolver(≥62h) |
 | 2026-09-12 03:1x | 断连轮#17(≥59.0h,锚09-09 16:12Z): 双直证同串(main ctx income+active positionRisk@03:11-12 fapi DNS SERVFAIL on 100.100.100.100;balance=0伪零);ws活证(GRASS评分@03:12:04池183+trend CAP@03:14:03);feed183/3无重播种;audit尾1808零无主;main/trend config全键零漂移(bl16斜杠形复核✓=#88基底);真窗n0(末close TAC 09-09 14:56维持;2847行窗过滤伪影维持);ROUTE v1.6 plan={}29连零,quarantine19,desired_bl22=#88一致,aging_watch trend三币;S31宽0.492(90/183)中性@03:1x(0.541→0.077→0.601→0.809→0.492振荡续证);S33冻结KEEP-armed零动;宏观FGI63 Greed/BTC+0.72%@77266/mcap−1.69%未触;刹车未触(零成交);保证金0.55✓;HOLD 0原子包;#88续候;probe 04:1x/05:1x本session排定,双miss则06:1x cron接棒;TG催resolver(≥59h) |
 <!-- §7瘦身史指针集=git 8729d22版本注(逐hash在内) -->
 | 时间(UTC) | 档位 | 五窗净额 1h/3h/6h/12h/24h | 世界 | 决策 | 备注 |
