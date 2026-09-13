@@ -268,7 +268,7 @@
 
 | # | 类型 | 内容（含完整意图） | 登记轮 | 状态 |
 |---|---|---|---|---|
-| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(03:1x cron直证仍SERVFAIL≥83.0h同串;desired_bl22 37连零一致;+6币斜杠形态照bl16口径已复核;落地窗=恢复瞬间全账户空仓stop→PATCH bl22单键勿动_exp→start→复读;probe史归并git adfc233) |
+| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(09:1x cron直证仍SERVFAIL≥89.0h同串;desired_bl22 39连零一致;+6币斜杠形态照bl16口径已复核;落地窗=恢复瞬间全账户空仓stop→PATCH bl22单键勿动_exp→start→复读;probe史归并git adfc233) |
 > 维护注(指针@09-10 15:2x归并): #87宕机复盘结案+#86 bl16/S33注册结案全文=git 805a115版§5原文。
 > 维护注(指针@09-08 12:3x): #84落地结案全文=git dd4326e版行@09-05 21:2x。
 > 维护注(指针@09-08 00:2x): #83=git版行@09-05 06:2x;#82=git版行@09-04 07:3x;#81/#78=git 4be520c版行。
@@ -277,7 +277,7 @@
 ## 6. 假设库·观察计数（v2 迁移注记 @08-01 16:40Z：并入假设库，与 §4 合称；跨轮累计；9 秒日志窗单次未观测 ≠ 零，以本节跨轮增量为准）
 
 | 计数项 | 读数 | 更新轮 | 备注 |
-| backend→Binance REST DNS断连 | **n=1(episode): 09-09 16:12Z起持续,09-13 03:12仍在(≥83.0h;probe史39miss+cron直证十七轮=git链→e40f8cf→9e93333;03:1x直证=active+main ctx income同串fapi SERVFAIL+balance伪零;ws活证main评估流183/183+trend3/3@03:13;feed183/3无重播种=无重启=#89未部署)** | 09-13 03:1x | 特征=fapi SERVFAIL(resolver 100.100.100.100=Tailscale MagicDNS,修复在宿主机);伪影族=ctx balance/income伪零+skip文案+closed窗过滤失效(close_time过滤免疫)+active回error(全谱git ecec3b0);**已升§3复发向量n=2+#89补丁c49c555候部署(§4)**;本轮re-arm×3@03:57/04:57/05:57→恢复即落#88;恢复后复核:①income补记完整性②feed重播种③断连窗内重启(ws也死须立报);⚠️断连窗禁stop/start(重订阅可能失败) |
+| backend→Binance REST DNS断连 | **n=1(episode): 09-09 16:12Z起持续,09-13 09:14仍在(≥89.0h;probe史45miss+cron直证十九轮=git链→9e93333→11361fb;09:1x直证=active+main ctx income同串fapi SERVFAIL+balance伪零双载具;ws活证main评估流100币/2.3s+trend CAP@09:12;feed183/3无重播种=无重启=#89未部署;⚠️S31宽度0.273首OFF档=离线窗市场转弱)** | 09-13 09:1x | 特征=fapi SERVFAIL(resolver 100.100.100.100=Tailscale MagicDNS,修复在宿主机);伪影族=ctx balance/income伪零+skip文案+closed窗过滤失效(close_time过滤免疫)+active回error(全谱git ecec3b0);**已升§3复发向量n=2+#89补丁c49c555候部署(§4)**;本轮re-arm×3@09:57/10:57/11:57→恢复即落#88;恢复后复核:①income补记完整性②feed重播种③断连窗内重启(ws也死须立报);⚠️断连窗禁stop/start(重订阅可能失败) |
 | TradFi嫌疑币watch | BYD/AXTI/INTW/MVLL/MEGA(零史+名形存疑,无直证) | 09-10 04:1x | 任一现-4411或官宣名单确认→即隔离(不限流);MEGA大概率MegaETH(低嫌) |
 | 幻影行post-fix观察 | **+1@08-29 17:0x(TAC空short 14:50→15:16无pnl,与14:52apply/15:30重启窗重叠;史SCRT@08-25;累计n=2)** | 08-28 18:1x | 再现累计;n≥3或含实亏→升§4 |
 | epsilon边界放行观测(v2域;#65永久化伴生) | n=5/类净+0.027(HANA×3细目git 91b3276;VELVET−0.175;+MELANIA 16:45入0.600边界→60m超时+0.186@08-28) | 08-28 18:2x | 累计n≥5∧类净≤−2U→复议(远离门);premium加距源码判死+main0.600档scp0.049史=git 91b3276 |
@@ -302,12 +302,9 @@
 | short双窗负 | 0维持(逐笔配对为主口径)〔git 6a93e93〕 | 08-06 | 新增空头亏损事件逼近4.6c门→评估 |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
-| 2026-09-13 08:5x | 注记: 断连probe#3 miss(同串SERVFAIL@08:57,≥88.7h;末次);session probe预算尽,交接09:1x cron |
-| 2026-09-13 07:5x | 注记: 断连probe#2 miss(同串SERVFAIL@07:57,≥87.7h);probe#3@08:57候(末次) |
-| 2026-09-13 06:5x | 注记: 断连probe#1 miss(同串SERVFAIL@06:57,≥86.7h);probe#2@07:57候 |
+| 2026-09-13 09:1x | 断连轮#27(≥89.0h,锚09-09 16:12Z): 三直证同串@09:11-14(active positionRisk+main ctx income fapi SERVFAIL on 100.100.100.100;balance伪零双载具);ws活证(main评估流100币/2.3s全速@09:12+trend CAP收K线@09:12);feed183/3无重播种=无重启=#89(c49c555)未部署;audit尾1808/1807零无主;config零漂移双载具(main cs五键+lcp0.15/scp0.05/trailing/be/bl16/etw""/ao=false直读全对,trend lcp0.149/tpl575);真窗n0(839实行全≤09-09 14:56,幻影2008/2847零增);ROUTE v1.6 plan={}39连零/quarantine19/desired_bl22=#88一致/aging trend三币;⚠️S31宽度0.273(50/183)=断连系列首个OFF档读数(0.421→0.383→0.273三连降;离线态下S31本会+0.10多头premium=方向性防御);S33冻结KEEP-armed零动;宏观FGI61 Greed/BTC76834−0.65%/mcap−4.28%未触(mcap向−6%线滑近watch);trending∩main池={PONS,PUMP,KAS,PENGU,MON,LINK};刹车未触(零成交);保证金0.55✓;决策=HOLD 0原子包;probe×3 re-arm 09:57/10:57/11:57(恢复即落#88+复核三项,交接12:1x cron);TG=续催宿主resolver+#89部署(≥89h) |
 | 2026-09-13 06:1x | 断连轮#26(≥86.0h,锚09-09 16:12Z): 三直证同串@06:11-17(active positionRisk+main ctx income fapi SERVFAIL on 100.100.100.100;balance伪零双载具);ws活证(main评估流183全扫@06:17+trend 3/3 IDLE@06:13);feed183/3无重播种=无重启=#89(c49c555)未部署;audit尾1808/1807零无主;config零漂移双载具(main cs五键+lcp0.15/scp0.05/trailing/be/bl16/etw""/ao=false直读全对,trend lcp0.149/tpl575);真窗n0(839实行全≤09-09 14:56,幻影2008/2847零增);ROUTE v1.6 plan={}38连零/quarantine19/desired_bl22=#88一致/aging trend三币;S31宽度0.383(70/183)N档(振荡带0.383-0.607);S33冻结KEEP-armed零动;宏观FGI61 Greed/BTC77295+0.12%/mcap−3.35%未触;trending∩main池={NEAR,PENGU,PONS,PRL,PUMP};刹车未触(零成交);保证金0.55✓;决策=HOLD 0原子包;probe×3 re-arm 06:57/07:57/08:57(恢复即落#88+复核三项,交接09:1x cron);TG=续催宿主resolver+#89部署(≥86h) |
-| 2026-09-13 05:5x | 注记: 断连probe#3 miss(同串SERVFAIL,≥85.8h;末次);session probe预算尽,交接06:1x cron |
-| 2026-09-13 03:1x | 断连轮#25(≥83.0h,锚09-09 16:12Z): 三直证同串@03:12-13(active positionRisk+main ctx income fapi SERVFAIL on 100.100.100.100;balance伪零);ws活证(main 183/183评估流+trend 3/3@03:13);feed183/3无重播种=无重启=#89未部署;audit尾1808/1807零无主;config零漂移双载具(cs五键+lcp0.15/scp0.05/trailing/be/bl16/etw""/ao=false直读全对);真窗n0(839实行全≤09-09 14:56,幻影2008/2847与上轮同值=零增);ROUTE v1.6 plan={}37连零/quarantine19/desired_bl22=#88一致/aging trend三币;S31宽度0.421(77/183)N档回落(0.607 ON触后单轮回落=日内振荡再证);S33冻结KEEP-armed零动;宏观FGI61 Greed/BTC77281+0.02%/mcap−3.42%未触;trending∩main池={PENGU,PONS,ENA,MET,VET,PRL};刹车未触(零成交);保证金0.55✓;决策=HOLD 0原子包;probe×3 re-arm 03:57/04:57/05:57(恢复即落#88+复核三项,交接06:1x cron);TG=续催宿主resolver+#89部署(≥83h) |
 <!-- §7瘦身史指针集=git 8729d22版本注(逐hash在内) -->
+> 瘦身注(指针@09-13 09:1x归并): 断连#25(03:1x)全文+#25后probe#3注记(05:5x)+#26后probe#1-3注记(06:5x/07:5x/08:5x)=git 11361fb版行。
 > 瘦身注(指针@09-13 06:1x归并): 断连#23(09-12 21:1x)/#24(00:1x)全文+probe#1/#2注记=git 94e9b88版行；断连#22系(前归并@09-13 00:1x): 断连#22(18:1x全文+probe×3注记)=git e40f8cf版行;断连#19(09:1x)/#20(12:1x)=git ecec3b0版行;#21(15:1x)+probe#1/#2注记=git 981f7ed版行;#11=git fc2c6d4;#12=git 0207b9f;#13(15:1x)=git 1e6270a版行;#14(18:1x)/#15(21:1x)=git 9e8dc48版行;#16(00:1x)=git 01d79a0版行;#17(03:1x)=git dc081bf版行;#18(06:1x)=git f4090af版行。
 > 瘦身注(更早stub指针集09-05..09-11各轮全文=git 1e6270a版§7注原文)。
