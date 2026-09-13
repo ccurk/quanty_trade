@@ -268,7 +268,7 @@
 
 | # | 类型 | 内容（含完整意图） | 登记轮 | 状态 |
 |---|---|---|---|---|
-| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(18:1x cron直证仍SERVFAIL≥98.0h同串;desired_bl22 42连零一致;+6币斜杠形态照bl16口径已复核;落地窗=恢复瞬间全账户空仓stop→PATCH bl22单键勿动_exp→start→复读;probe史归并git adfc233) |
+| #88 | PATCH | main bl种子16→22(+6 TradFi币,格式照现值config口径复核后写):断连解除(ctx fetch_error消失)∧main空仓窗→stop→PATCH{symbol_blacklist单键,勿动_exp}→start→复读;意图=TradFi隔离重启免疫(rotate系内存态,重播种会放回) | 09-10 04:1x | open·等断连解除(21:1x cron直证仍SERVFAIL≥101.0h同串(#31);desired_bl22 42连零一致;+6币斜杠形态照bl16口径已复核;落地窗=恢复瞬间全账户空仓stop→PATCH bl22单键勿动_exp→start→复读;probe史归并git adfc233) |
 > 维护注(指针@09-10 15:2x归并): #87宕机复盘结案+#86 bl16/S33注册结案全文=git 805a115版§5原文。
 > 维护注(指针@09-08 12:3x): #84落地结案全文=git dd4326e版行@09-05 21:2x。
 > 维护注(指针@09-08 00:2x): #83=git版行@09-05 06:2x;#82=git版行@09-04 07:3x;#81/#78=git 4be520c版行。
@@ -302,11 +302,9 @@
 | short双窗负 | 0维持(逐笔配对为主口径)〔git 6a93e93〕 | 08-06 | 新增空头亏损事件逼近4.6c门→评估 |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
-| 2026-09-13 20:5x | 注记: 断连probe#3 miss(同串SERVFAIL@20:57,≥100.8h;ws活证main评估流@20:58;末次);session probe预算尽,交接21:1x cron |
-| 2026-09-13 19:5x | 注记: 断连probe#2 miss(同串SERVFAIL@19:58,≥99.8h;ws活证main评估流@19:58);probe#3@20:57候(末次) |
-| 2026-09-13 18:5x | 注记: 断连probe#1 miss(同串SERVFAIL@18:59,≥98.8h;ws活证GRVT评估@18:59);probe#2@19:57候 |
+| 2026-09-13 21:1x | 断连轮#31(≥101.0h,锚09-09 16:12Z): 三直证同串@21:13(active positionRisk fapi SERVFAIL on 100.100.100.100+main/trend ctx income null+balance伪零双载具);ws活证(main IDLE候K线 recv=183/183@21:14:34+GRVT评分/波动过滤行@21:14:04);feed183/3/0无重播种=无重启=#89(c49c555)未部署;audit尾1808/1807零无主;config零漂移双载具(main cs五键+lcp0.15/scp0.05/pct0.08/trailing1/1.2/be1/bl16/etw""/ao=false直读全对,trend lcp0.149/pct0.05/mcp3/buy/池TUT,USELESS,CAP);真窗n0(839实行全≤09-09 14:56,幻影2008/2847零增);ROUTE v1.6 plan={}43连零/quarantine19/desired_bl22=#88一致/aging trend三币;**S31宽度0.617(113/183)ON档=断连窗首个背靠背ON(0.639→0.617),带0.268-0.639内敛**;S33冻结KEEP-armed零动;宏观FGI61 Greed/BTC77319+0.22%/mcap−3.44%回升未触;trending∩main池={CAKE,FIL,LIT,PENGU,PONS,VVV};刹车未触(零成交);保证金0.55✓;决策=HOLD 0原子包;probe×3 re-arm 21:57/22:57/23:57(恢复即落#88+复核三项:income补记/feed重播种/窗内重启,交接00:1x cron);TG=续催宿主resolver+#89部署(≥101h,恢复窗背靠背ON首信号复核提示) |
 | 2026-09-13 18:1x | 断连轮#30(≥98.0h,锚09-09 16:12Z): 三直证同串@18:10-11(active positionRisk fapi SERVFAIL on 100.100.100.100+main/trend ctx income null+balance伪零双载具);ws活证(main评估SENT@18:11:04 183币扫描窗18:02-18:12全绿+trend TUT评估@18:11:03);feed183/3/0无重播种=无重启=#89(c49c555)未部署;audit尾1808/1807零无主;config零漂移双载具(main cs五键+lcp0.15/scp0.05/pct0.08/trailing1.0/1.2/be1/bl16/etw""/ao=false直读全对,trend lcp0.149/pct0.05/mcp3/buy);真窗n0(839实行全≤09-09 14:56,幻影2008/2847零增);ROUTE v1.6 plan={}42连零/quarantine19/desired_bl22=#88一致/aging trend三币;**S31宽度0.639(117/183)ON档=断连窗首个ON直采,振荡带上界更新0.268-0.639(0.426N→0.268OFF→0.639ON三轮全档穿越)**;附证=trend TUT多头分0.600<门0.699(0.55+lcp0.149)拒入=门逻辑活;S33冻结KEEP-armed零动;宏观FGI61 Greed/BTC77294+0.13%/mcap−3.57%回升未触;trending∩main池={DOT,FIL,LIT,PENDLE,PENGU,PONS,REZ,VVV};刹车未触(零成交);保证金0.55✓;决策=HOLD 0原子包;probe×3 re-arm 18:57/19:57/20:57(恢复即落#88+复核三项:income补记/feed重播种/窗内重启,交接21:1x cron);TG=续催宿主resolver+#89部署(≥98h,恢复窗ON档首信号复核提示) |
-| 2026-09-13 15:1x | 断连轮#29(≥95.0h,锚09-09 16:12Z): 三直证同串@15:11-13(active positionRisk fapi SERVFAIL on 100.100.100.100+main/trend ctx income null+balance伪零双载具);ws活证(main评估流183币recv=183/183@15:12+trend TUT评估/CAP收K@15:12);feed183/3/0无重播种=无重启=#89(c49c555)未部署;audit尾1808/1807零无主;config零漂移双载具(main cs五键扁平直读全对+lcp0.15/scp0.05/trailing1.0/1.2/be1/bl16/etw""/ao=false,trend lcp0.149/pct0.05/mcp3/buy);真窗n0(839实行全≤09-09 14:56,幻影2008/2847零增);ROUTE v1.6 plan={}41连零/quarantine19/desired_bl22=#88一致/aging trend三币;S31宽度0.268(49/183)OFF档(0.426N→0.268,振荡带下界更新0.268-0.607);S33冻结KEEP-armed零动;宏观FGI61 Greed/BTC77102−0.40%/mcap−4.25%未触(较12:1x−4.55%回升,−6%线watch续);trending∩main池={PONS,PENGU,PUMP,MET,JUP,PENDLE,FIL};刹车未触(零成交);保证金0.55✓;决策=HOLD 0原子包;probe×3 re-arm 15:57/16:57/17:57(恢复即落#88+复核三项,交接18:1x cron);TG=续催宿主resolver+#89部署(≥95h) |
+> 瘦身注(指针@09-13 21:1x归并): 断连#29(15:1x)全文+#30后probe#1-3注记(18:5x/19:5x/20:5x)=git 973f1b3版行。
 > 瘦身注(指针@09-13 18:1x归并): 断连#28(12:1x)全文+#29后probe#1-3注记(15:5x/16:5x/17:5x)=git f8cf733版行。
 > 瘦身注(指针@09-13 15:1x归并): 断连#27(09:1x)全文+#28后probe#1-3注记(12:5x/13:5x/14:5x)=git 7e776b7版行。
 > 瘦身注(指针@09-13 12:1x归并): 断连#26(06:1x)全文+#27后probe#1-3注记(09:5x/10:5x/11:5x)=git f723121版行。
