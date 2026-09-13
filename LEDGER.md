@@ -302,6 +302,7 @@
 | short双窗负 | 0维持(逐笔配对为主口径)〔git 6a93e93〕 | 08-06 | 新增空头亏损事件逼近4.6c门→评估 |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
+| 2026-09-13 17:5x | 注记: 断连probe#3 miss(同串SERVFAIL@17:57,≥97.8h;ws活证CROSS评估@17:57;末次);session probe预算尽,交接18:1x cron |
 | 2026-09-13 16:5x | 注记: 断连probe#2 miss(同串SERVFAIL@16:57,≥96.8h;ws活证main IDLE 183/183@16:57);probe#3@17:57候(末次) |
 | 2026-09-13 15:5x | 注记: 断连probe#1 miss(同串SERVFAIL@15:58,≥95.8h;ws活证CLANKER评估@15:58);probe#2@16:57候 |
 | 2026-09-13 15:1x | 断连轮#29(≥95.0h,锚09-09 16:12Z): 三直证同串@15:11-13(active positionRisk fapi SERVFAIL on 100.100.100.100+main/trend ctx income null+balance伪零双载具);ws活证(main评估流183币recv=183/183@15:12+trend TUT评估/CAP收K@15:12);feed183/3/0无重播种=无重启=#89(c49c555)未部署;audit尾1808/1807零无主;config零漂移双载具(main cs五键扁平直读全对+lcp0.15/scp0.05/trailing1.0/1.2/be1/bl16/etw""/ao=false,trend lcp0.149/pct0.05/mcp3/buy);真窗n0(839实行全≤09-09 14:56,幻影2008/2847零增);ROUTE v1.6 plan={}41连零/quarantine19/desired_bl22=#88一致/aging trend三币;S31宽度0.268(49/183)OFF档(0.426N→0.268,振荡带下界更新0.268-0.607);S33冻结KEEP-armed零动;宏观FGI61 Greed/BTC77102−0.40%/mcap−4.25%未触(较12:1x−4.55%回升,−6%线watch续);trending∩main池={PONS,PENGU,PUMP,MET,JUP,PENDLE,FIL};刹车未触(零成交);保证金0.55✓;决策=HOLD 0原子包;probe×3 re-arm 15:57/16:57/17:57(恢复即落#88+复核三项,交接18:1x cron);TG=续催宿主resolver+#89部署(≥95h) |
