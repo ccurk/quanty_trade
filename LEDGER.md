@@ -304,8 +304,6 @@
 | 2026-09-14 14:5x | **恢复轮(episode结案118.6h)**: owner docker重启修复DNS(14:4x);恢复直证14:51(active[]+balance87.34U+fe=none);#88抢窗落地全绿(stop poll1→PATCH bl22单键复读✓_exp未动→start running);feed卫生rotate remove15(隔离13+CAP,USELESS;200→185残留双零);恢复复核✓(closed窗0行复常/income fe=none无缺口/断连窗无自发重启);S31 store重热警戒期N;trend feed3✓退役壳stopped✓;probe#1-2 miss注记(12:5x/13:5x)全文=git 0f076c6版行;probe#3撤销;S33 KEEP-armed不动;下轮15:1x cron照常(重点=恢复后首窗逐笔+S31重热+#89催部署) |
 | 2026-09-14 12:2x | 断连轮#36(≥116.2h,锚09-09 16:12Z): 直证@12:20-24(active positionRisk fapi SERVFAIL on 100.100.100.100+main ctx income同串+balance伪零);ws活证(main recv LDO序号9008@12:21:05+trend USELESS序号10269@12:21:01,双载具评估正常);feed183/3/0无重播种=无重启=#89(c49c555)未部署;audit尾1808/1807零无主;config零漂移双载具(main cs五键扁平conf_sizing_*全in位+lcp0.15/scp0.05/pct0.08/mcp200/trailing1/1.2/be1/bl16/etw""/ao=false,trend lcp0.149/pct0.05/mcp3/buy/池TUT,USELESS,CAP);真窗n0(实行839全≤09-09 14:56,幻影2008零增);ROUTE v1.6 plan={}48连零/quarantine19∩feed∅/desired_bl22=#88一致/aging trend三币;S31宽度0.519(95/183)NEUTRAL(0.388→0.519回升,N两连);S33冻结KEEP-armed零动;宏观FGI57 Greed/BTC77885+1.40%/mcap−0.52%未触;trending∩main池={PONS,LIT,PUMP,PENDLE,SPX,ENA};刹车未触(零成交);保证金0.55✓;决策=HOLD 0原子包;probe×3 re-arm 12:57/13:57/14:57(恢复即落#88+复核三项:income补记/feed重播种/窗内重启+S31档位复核,交接15:1x cron);TG=续催宿主resolver+#89部署(≥116h) |
 > 瘦身注(指针@09-14 15:0x归并): 断连#35(09:1x)全文=git 0f076c6版行。
-> 瘦身注(指针@09-14 12:2x归并): 断连#34(06:1x)全文+#35后probe#1-3注记(09:5x/10:5x/11:5x)=git 9137f71版行。
-> 瘦身注(指针@09-14 09:1x归并): 断连#33(03:1x)全文+#34后probe#1-3注记(06:5x/07:5x/08:5x)=git 19130f2版行。
-> 瘦身注(指针@09-14 06:1x归并): 断连#32(00:1x)全文+#33后probe#1-3注记(03:5x/04:5x/05:5x)=git e9b12ca版行。
+> 瘦身注指针: 断连#34+probe(09-14 09:5x-11:5x)=git 9137f71;#33+probe(06:5x-08:5x)=19130f2;#32+probe(03:5x-05:5x)=e9b12ca。
 > 瘦身注(指针@09-14 03:1x归并): 断连#31(21:1x)全文+#32后probe#1-3注记(00:5x/01:5x/02:5x)=git 3f6d7a6版行。
 <!-- §7瘦身史指针集v2=git e9b12ca版§7注原文(09-14 00:1x及更早全部归并注逐hash在内,含前v1集8729d22) -->
