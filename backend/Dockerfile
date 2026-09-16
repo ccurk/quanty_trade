@@ -14,7 +14,13 @@ RUN go mod download
 COPY backend/ ./
 
 # Build the application
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o main cmd/main.go
+# 原先写作 `-o main cmd/main.go`:单文件构建只编译 main.go 一个文件,同包的
+# logrotate.go / shutdown.go 被排除在外,newRotatingWriter / logMaxSizeMB /
+# shutdownContext / serveUntilShutdown 全部 undefined —— 自 acc80c3、438ccf0
+# 把 main 拆成三个文件之后,docker build 就再没成功过(本地 `go build ./...`
+# 能过是因为包级构建会带上同目录全部文件,掩盖了这个问题)。
+# 改成 `./cmd` 走包构建;输出名仍是 main,下面的 COPY/CMD 不受影响。
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o main ./cmd
 
 # Final Stage
 FROM python:3.11-alpine
