@@ -131,18 +131,9 @@ func (m *Manager) tpslGuardTick() {
 	}
 
 	for uid, rows := range byOwner {
-		posList, err := bx.FetchPositions(uid, "active")
-		if err != nil {
-			continue
-		}
-		activeBySymbol := map[string]exchange.Position{}
-		for _, p := range posList {
-			if p.Amount > 0 {
-				activeBySymbol[strings.ToUpper(p.Symbol)] = p
-			}
-		}
 		// 该 owner 的实例集,供 strategy_id 解析不到时按 symbol 兜底(与 scanROILimits 一致):
 		// 策略被停/删后其在持仓的交易所止损仍需维护,否则无人再补挂(CR P2)。
+		// 提到 FetchPositions 之前:查持仓失败时也要有一个实例可用于上报(见下)。
 		var ownerInsts []*StrategyInstance
 		m.mu.RLock()
 		for _, in := range m.instances {
@@ -151,6 +142,28 @@ func (m *Manager) tpslGuardTick() {
 			}
 		}
 		m.mu.RUnlock()
+
+		posList, err := bx.FetchPositions(uid, "active")
+		if err != nil {
+			// 原先这里是裸 continue —— 查不到持仓就当作"没有仓位需要保护",不留任何痕迹。
+			// 2026-09-09 起断连 118.6 小时,守护器每 15s 静默跳过一次,事后无法区分
+			// "仓位确实没裸"和"根本没看成"(台账 §5 就是据此误判为全程空仓零风险的)。
+			// 改成按 owner 限流上报:不掩盖问题,也不刷屏。
+			if m.shouldLogTPSLGap(uid, "") {
+				var rep *StrategyInstance
+				if len(ownerInsts) > 0 {
+					rep = ownerInsts[0]
+				}
+				emitStrategyLog(rep, "error", fmt.Sprintf("查询交易所持仓失败,本轮止盈止损守护跳过 owner=%d err=%v", uid, err))
+			}
+			continue
+		}
+		activeBySymbol := map[string]exchange.Position{}
+		for _, p := range posList {
+			if p.Amount > 0 {
+				activeBySymbol[strings.ToUpper(p.Symbol)] = p
+			}
+		}
 		for _, row := range rows {
 			active, ok := activeBySymbol[strings.ToUpper(row.Symbol)]
 			if !ok {

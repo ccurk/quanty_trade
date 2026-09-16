@@ -24,6 +24,7 @@ import (
 	"quanty_trade/internal/conf"
 	"quanty_trade/internal/database"
 	"quanty_trade/internal/equity"
+	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
 	"quanty_trade/internal/secure"
 )
@@ -1443,11 +1444,14 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 
 		px, _ := strconv.ParseFloat(resp.Price, 64)
 		avgPx, _ := strconv.ParseFloat(resp.AvgPrice, 64)
-		origQty, _ := strconv.ParseFloat(resp.OrigQty, 64)
 		executedQty, _ := strconv.ParseFloat(resp.ExecutedQty, 64)
 
 		if status != "filled" || avgPx == 0 || executedQty == 0 {
-			if refreshed, err := b.waitUSDMOrderFinal(cred, sym, clientID, orderID); err == nil && refreshed != nil {
+			refreshed, werr := b.waitUSDMOrderFinal(cred, sym, clientID, orderID)
+			if werr != nil {
+				logger.Errorf("[BINANCE] 开仓单成交状态确认失败，按未成交处理 symbol=%s client_order_id=%s order_id=%s err=%v",
+					sym, clientID, orderID, werr)
+			} else if refreshed != nil {
 				status = strings.ToLower(refreshed.Status)
 				if v, err := strconv.ParseFloat(refreshed.AvgPrice, 64); err == nil && v > 0 {
 					avgPx = v
@@ -1455,19 +1459,15 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 				if v, err := strconv.ParseFloat(refreshed.ExecutedQty, 64); err == nil && v > 0 {
 					executedQty = v
 				}
-				if v, err := strconv.ParseFloat(refreshed.OrigQty, 64); err == nil && v > 0 {
-					origQty = v
-				}
 				if refreshed.UpdateTime > 0 {
 					resp.UpdateTime = refreshed.UpdateTime
 				}
 			}
 		}
 
-		aq := origQty
-		if executedQty > 0 {
-			aq = executedQty
-		}
+		// executedQty 未确认成交时保持 0，不再用 origQty（下单量）冒充成交量——
+		// 那会把"已下单"错记成"已成交"，是台账 #174 数据失真的根因。
+		aq := executedQty
 		if avgPx > 0 {
 			px = avgPx
 		}
@@ -1544,6 +1544,15 @@ type usdmOrderFinal struct {
 	UpdateTime  int64  `json:"updateTime"`
 }
 
+// usdmOrderFinalMaxAttempts/usdmOrderFinalPollInterval bound the total polling
+// budget (kept at the pre-existing 30*200ms=6s worst case so a flaky query
+// doesn't drag out the order-placement path). Vars (not consts) so tests can
+// shrink them instead of sleeping for real.
+var (
+	usdmOrderFinalMaxAttempts  = 30
+	usdmOrderFinalPollInterval = 200 * time.Millisecond
+)
+
 func (b *BinanceExchange) waitUSDMOrderFinal(cred binanceCred, symbol string, clientOrderID string, orderID string) (*usdmOrderFinal, error) {
 	if b.market != "usdm" {
 		return nil, nil
@@ -1553,7 +1562,9 @@ func (b *BinanceExchange) waitUSDMOrderFinal(cred binanceCred, symbol string, cl
 	}
 
 	var last usdmOrderFinal
-	for i := 0; i < 30; i++ {
+	haveLast := false
+	var lastErr error
+	for i := 0; i < usdmOrderFinalMaxAttempts; i++ {
 		params := url.Values{}
 		params.Set("symbol", symbol)
 		if strings.TrimSpace(clientOrderID) != "" {
@@ -1564,20 +1575,36 @@ func (b *BinanceExchange) waitUSDMOrderFinal(cred binanceCred, symbol string, cl
 
 		body, _, err := b.signedRequest(context.Background(), cred, http.MethodGet, "/fapi/v1/order", params)
 		if err != nil {
-			return nil, err
+			lastErr = err
+			logger.Warnf("[BINANCE] 查询订单终态失败，重试 %d/%d symbol=%s client_order_id=%s order_id=%s err=%v",
+				i+1, usdmOrderFinalMaxAttempts, symbol, clientOrderID, orderID, err)
+			time.Sleep(usdmOrderFinalPollInterval)
+			continue
 		}
 
 		var parsed usdmOrderFinal
 		if err := json.Unmarshal(body, &parsed); err != nil {
-			return nil, err
+			lastErr = err
+			logger.Warnf("[BINANCE] 解析订单终态响应失败，重试 %d/%d symbol=%s client_order_id=%s order_id=%s err=%v",
+				i+1, usdmOrderFinalMaxAttempts, symbol, clientOrderID, orderID, err)
+			time.Sleep(usdmOrderFinalPollInterval)
+			continue
 		}
 		last = parsed
+		haveLast = true
+		lastErr = nil
 
 		st := strings.ToLower(parsed.Status)
 		if st == "filled" || st == "canceled" || st == "rejected" || st == "expired" || st == "partially_filled" {
 			return &parsed, nil
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(usdmOrderFinalPollInterval)
+	}
+
+	if !haveLast {
+		logger.Errorf("[BINANCE] 查询订单终态彻底失败，%d 次轮询全部报错 symbol=%s client_order_id=%s order_id=%s err=%v",
+			usdmOrderFinalMaxAttempts, symbol, clientOrderID, orderID, lastErr)
+		return nil, lastErr
 	}
 
 	return &last, nil
@@ -2072,7 +2099,11 @@ func (b *BinanceExchange) ClosePositionOrder(symbol string, ownerID uint) (*Orde
 		UpdateTime:  resp.UpdateTime,
 	}
 	if strings.ToLower(final.Status) != "filled" || strings.TrimSpace(final.AvgPrice) == "" || strings.TrimSpace(final.ExecutedQty) == "" {
-		if refreshed, err := b.waitUSDMOrderFinal(cred, target, resp.ClientOrderID, orderID); err == nil && refreshed != nil {
+		refreshed, werr := b.waitUSDMOrderFinal(cred, target, resp.ClientOrderID, orderID)
+		if werr != nil {
+			logger.Errorf("[BINANCE] 平仓单成交状态确认失败 symbol=%s client_order_id=%s order_id=%s err=%v",
+				target, resp.ClientOrderID, orderID, werr)
+		} else if refreshed != nil {
 			final = refreshed
 		}
 	}
