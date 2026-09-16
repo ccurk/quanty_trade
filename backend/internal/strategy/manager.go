@@ -1743,6 +1743,21 @@ func (m *Manager) UpdateStrategyConfig(id string, config map[string]interface{})
 }
 
 func (inst *StrategyInstance) readStdout() {
+	// trace 模式(log_level=debug / debug=true / log_trace=true)下,策略日志
+	// **只广播、不落库**。
+	//
+	// 起因(2026-09-16):线上一个 log_level=debug 的实例每根 K 线都打日志 ——
+	// 43 个 symbol × 每分钟回放 200 根历史 = 143 条/秒,实测 148 条/秒,
+	// 合 12.8M 行/天 ≈ 5GB/天;而 db-log-retention.sh 每天只跑一次、单次上限
+	// 8M 行(400×20000),追不上 → 磁盘净增约 1.9GB/天,7.3G 空闲约 4 天见底。
+	//
+	// 这一档的语义本来就是"我要盯实时流"(见 strategy_start.go applyLogLevelPreset
+	// 对 debug 档的说明),逐根 K 线属于瞬时观测,没有事后追溯价值。让它走
+	// BroadcastJSON(前端实时)和 logger(容器日志)即可,DB 留给决策/下单/成交/
+	// 错误这些低频、需要回溯的日志。非 trace 档位完全不受影响。
+	traceOn := getBool(inst.Config["debug"]) || getBool(inst.Config["log_trace"]) ||
+		strings.ToLower(strings.TrimSpace(getString(inst.Config["log_level"]))) == "debug"
+	persist := !traceOn
 	scanner := bufio.NewScanner(inst.stdout)
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -1752,12 +1767,14 @@ func (inst *StrategyInstance) readStdout() {
 			if txt == "" {
 				continue
 			}
-			database.DB.Create(&models.StrategyLog{
-				StrategyID: inst.ID,
-				Level:      "info",
-				Message:    txt,
-				CreatedAt:  time.Now(),
-			})
+			if persist {
+				database.DB.Create(&models.StrategyLog{
+					StrategyID: inst.ID,
+					Level:      "info",
+					Message:    txt,
+					CreatedAt:  time.Now(),
+				})
+			}
 			inst.hub.BroadcastJSON(map[string]interface{}{"type": "log", "data": txt, "id": inst.ID})
 			continue
 		}
@@ -1768,12 +1785,14 @@ func (inst *StrategyInstance) readStdout() {
 		if strings.TrimSpace(logMsg) == "" {
 			continue
 		}
-		database.DB.Create(&models.StrategyLog{
-			StrategyID: inst.ID,
-			Level:      "info",
-			Message:    logMsg,
-			CreatedAt:  time.Now(),
-		})
+		if persist {
+			database.DB.Create(&models.StrategyLog{
+				StrategyID: inst.ID,
+				Level:      "info",
+				Message:    logMsg,
+				CreatedAt:  time.Now(),
+			})
+		}
 		inst.hub.BroadcastJSON(map[string]interface{}{"type": "log", "data": logMsg, "id": inst.ID})
 	}
 
