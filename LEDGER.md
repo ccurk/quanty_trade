@@ -26,22 +26,22 @@
 
 - **08-03(交互)核心使命+20U废除直令**: 核心使命=稳定收益×高频×快速周转。**20U 单笔名义底线(07-22)废除**,代之以【费用覆盖红线】=单笔均净额(逐笔口径)≥2×来回手续费才允许提频/扩仓,未覆盖只修不扩(入 prompt 硬边界#1)。连锁: 并发阶梯资金门(255/355/800U)作废,升档门=业绩(30笔正净额)+结构(首升须S18+FIX keep+双转正)+费用覆盖;物理下限=交易所最小名义+引擎 conf_sizing_min_notional_usdt(现21,自主调);频率阶梯 cd 1800→900→600→300 同规则。旧 LADDER-MAINT 的 20U 复算逻辑随之退役。
 
-- **08-03 16:5xZ(交互)mcp=3 用户直令确认+新平台事实**: 16:46Z 巡检发现 mcp 2→3 无 audit 变更;用户确认"是我改的,保持3"(平台UI手动)。→ ①mcp=3 为用户越阶直令,**18:1x 起各轮禁回滚**;并发阶梯自 3 起算,升 4 门槛照旧(S18上线+FIX结案keep+双转正+当档30笔正净额+费用覆盖) ②⚠️新平台事实(实锤): **平台 UI 改 config 不写 strategy audit**(15:1x轮核验mcp2→16:46Z mcp3,audit 00:18Z后零条目)——今后无主改动巡检先经 TG/交互问所有者,再评估回滚 ③风险知情注记: S18 穿刺修复未上线期间三槽并发=闪跌多一记穿刺敞口,用户已知情选择 | 权威登记 |
+- **08-03 16:5xZ(交互)mcp=3直令+平台事实**: mcp3 owner UI改禁回滚(已被08-05 mcp10/09-14 mcp10取代);**平台UI改config不写audit**(实锤,存续);全文git 7ee5ca0版§1。
 
 - **08-03 17:0xZ(交互)杠杆上限直令**: 硬边界 leverage [2,5]→**[2,20]**(用户直令;prompt 硬边界#2 待用户同步改行,改行前 cron 仍按 prompt 现值执行)。基线2不变;杠杆阶梯 2→3→5→8→12→20 逐档,每档门=当档≥30笔正净额+费用覆盖+预注册。**物理护栏(任何档强制)**: 清算距离≥1.5×SL距离 ⇒ lev ≤ 100/(3.75×池内max ATR%) ⇒ 升杠杆档必须同步收紧 max_atr_pct_for_trade(例: lev20→ATR%≤1.33/lev8→≤3.3/lev5→≤5.3);违反即该档不可用。风险知情: 20x 清算距≈5%,与 2.5×ATR 止损带重叠,高杠杆档=低波动币专用,用户已获物理冲突说明。
 
 - **08-05 17:1xZ(交互)币池直令**: select_limit 50→**100** owner UI改,禁回滚;select_limit仅启动时读(strategy_start.go:230);#22系已结案;全文git 766c7d9。
 
-- **08-05 17:4xZ(交互)三解锁直令**: owner连发"方向和冷却解锁"+"不要限制下单数量" → sides=[buy,sell]+cd1800→900+mcp3→**10(硬边界顶格)**当轮落地(S17代码gate同步apply移除,tpl477→534)。**取代**08-03并发阶梯逐档pacing与"mcp≥5前相关性控制"前置条款(owner自令自废);硬边界mcp≤10仍不可越。风险已书面呈报:逐币cd900×meme池相关性→burst可同窗多仓同向(08-01七币同窗爆亏同型),极端1h估≈−10%钱包;看护=6h/24h刹车线+_exp short单侧回刹线(-11.8U)+宽度门0.70拒逆势空+S14 CB,事后接管,owner知情。cd下一档600候owner再令或30笔档门。
+- **08-05 17:4xZ(交互)三解锁直令**: sides双向+cd1800→900+mcp3→10当轮落地(S17 gate移除tpl534);取代08-03并发pacing;风险呈报存档;全文git 7ee5ca0版§1。
 
 - **08-05 17:4xZ(交互)代码入库+模板保留3版直令**: 策略代码不再只存DB——每次apply后上线代码推git仓库(confident-fermi分支 strategies/ 快照目录,git=全史档案);DB StrategyTemplate 只保留最新3版(=当前+2步rollback深度;retention patch M通道候部署)。owner索要此流程prompt块已交付(见08-05交互记录)。
 
 - **08-06 02:4xZ(交互)冷却处置直令**: cd→180预授权(owner"按照你说的来";0越界不采,硬边界#2下限);已执行cd180全组现值;全文git 766c7d9。
 
-- **08-06 09:2xZ(交互)二次解锁直令**: owner UI自改**mcp200+re3**禁回滚;**mcp200>硬边界#2≤10张力**=物理上限≈14-15仓(avail×pct递减+21U地板)看护成立,硬边界行待owner改文本;解锁包sides双向+cd180同窗落地;全文git 766c7d9。
+- **08-06 09:2xZ(交互)二次解锁直令**: owner UI mcp200+re3禁回滚(已被09-14 mcp10取代);全文git 7ee5ca0版§1。
 
 
-- **08-09 15:2x-16:4xZ(交互)策略组+WS实时管理直令**: owner 四连令 ①"策略组模式,每策略适配一些币种;cron入口不变,变成优化多个策略+币种适配路由" ②"WS实时监控仓位,实时调整止盈止损委托/加仓/加杠杆"(本次交互豁免教练模式) ③"不只2个,要多个适配策略,按币种指标抽象几个原型,数量你定" ④"代码修改之后,再给我一个新的prompt"。当轮落地: 5载具编队+引擎补丁 claude/dev-strategy-group-ws@6dd3cf0(跨策略同币互斥闸+WS标记价加速[5s→1s]+赢家金字塔[roi≤0硬拒=马丁禁区],候部署)+v3 prompt交付 ops/prompt_v3_group.md。**裁决要点**: 加仓=只赢家金字塔(硬边界#4不动);中途加杠杆=不做(清算距离物理护栏冲突,金字塔替代);trailing/BE系7月已部署引擎能力config即生效(strategy_exit.go核实)。**追令'选币不能固定,要动态增删'→ops/route_pools.py 期望态对账器上线**(逐笔→期望池→实际池→rotate差分;生命周期发现→晋升→降级→隔离→rehab;阈值预注册于头注,改阈值走ROUTE _exp;churn≤4/轮隔离不限;互斥三层)。**owner拍板@17:0x**: ①fade启(越双转正门,自动保险=段6h净≤−6U停) ②lowvol删除('编制≠全员出动'owner知情)。**再追令@17:1x'每一个都要对不同的模板'→S24(trend)/S25(fade)/S26(breakout新内核)三连发当轮上线**(全部py_compile+6符号+字节diff+烟雾过;归档5ae2d15;弃用机制False-guard在场)。⚠️候证:apply期间main feed 86→100重播种(apply疑全局restart)〔rotate实战数字与apply细节见git 121e975本行〕
+- **08-09 策略组+WS实时管理直令(交互)**: 已被09-14单策略直令取代(5载具/S24-S26/route_pools对账器/金字塔只赢家/owner拍板fade启·lowvol删);全文git 7ee5ca0版§1。
 
 - **08-11 02:38Z(交互)停机直令·全组owner-gated**: owner令全停(后端报错窗,Cloudflare 522/000);gating基础已被08-12两直令逐步取代;全文git 766c7d9
 
@@ -51,11 +51,12 @@
 
 - **08-22 04:1x(交互)低波解锁优化直令**: owner"现在开始优化"→双载具三值包(trend/v2低波解锁);后续=trend包#69回滚@08-25、v2退役@08-28,低波解锁线关闭;全文git 766c7d9+a2e845f。
 
-- **08-26 17:07Z(交互)提频直令**: owner live终端令**"增加频率"**。教练框架: 组瓶颈=main空头信号供给(cd180地板/mcp200/择优在位,门=唯一活杠杆);普查7.17h=0.600档411线/195episode/84币被浮点误杀(0.55+0.05=0.6000000000000001>canonical 0.6,历史零conf0.600成交) vs 0.56档=低波折扣档(tpl806 n16−1.00已证伪不重走)。落地: ①main scp 0.05→**0.049**(门0.599收0.600档;v2 08-22同款config epsilon先例→后tpl823入码永久化)+_exp预注册(评08-27 18Z或档n≥15;劣化线=档累净≤−3U或档n≥20且净<0立即回滚) ②ROUTE#52同窗执行(VELVET移v2)。**08-19'main两侧epsilon未修=批准现状'就此部分更新**: 短侧按本直令收档,多侧关闸(lcp0.35=#61c终裁)不动。0.56档不收=频率不以质量换。
+- **08-26 17:07Z(交互)提频直令**: "增加频率"→main scp0.05→0.049收0.600档+ROUTE#52;后被08-28终裁rollback;全文git 7ee5ca0版§1。
 
 | 2026-08-29 | **提频直令(live会话)**: "不是不是,现在需要提升频率了"——现场覆盖08-03费覆红线"未覆盖=只修不扩"锁;红线降级为评判/回滚指标(非前置门)。同轮追问确认方向="不影响准确性的提频:改策略+按行情动态判多空"。执行=当轮2原子包(EXP多头闸重开+FLEET breakout复活);**追令@16:5x(live)"搞一个动态的"+"给我一个prompt我来更新"**=①动态化立为常备使命(关键门槛从静态数字→行情状态函数,S31为首件)②费覆红线降级入prompt硬边界#1改行=owner后示落定③prompt v3.2当轮交付owner自更(脱敏档ops/prompts/prompt_v3.2_20260829_redacted.txt;12处手术清单见§7行) |
 | 2026-09-03 | **扩仓+提频直令(live,两连)**: ①"增加一下开仓数量。目前盈利太少，亏损单太多。这不合理。"→E9 rider(pct0.08→0.10;#58门被覆盖;回滚=24h组净≤−8U或费覆连🔴48h∧段净<0→0.08) ②"增加开仓数量和频率"→FREQ rider(select_limit100→150,feed89→138)+trend #65(lcp0.149);拒拧: 攒批窗(落选≈0)/cd<180(硬边界)/阈值下调(wr63<be68=垃圾档) |
 | 2026-09-14 | **单策略回归+进攻直令(live会话,断连恢复后10分钟)**: owner原话"目前这个策略不行…一直不交易…切回以前单策略模式的版本。结合现在我们的经验 1、新prompt单策略 2、同时开10单 3、进攻是最好的武器,必须要交易 4、代码优化,直接master修改你上线,ssh mycloud"。教练对质(证据):零交易119h=DNS断连非策略(断连前日频43/50/28/46/45);执行=①FLEET stop trend(非劣化,勿auto-start)+池3币并轨main ②mcp200→10+pct0.08→0.075(公式0.75顶格) ③进攻一档lcp0.15→0.10带_exp劣化线(段净≤−4U或多头均净<−0.512→回0.15) ④prompt v4单策略稿交付ops/prompts/(安装权owner) ⑤master推送/ssh部署=硬边界#6保留+本容器无ssh凭证,策略代码走apply通道,后端#89由owner一键部署。"结合我们的经验"=护栏与回滚线全保留。 |
+| 2026-09-17 | **DeepSeek 双执行体协同直令(live会话,07:3x-08:0x;定时轮被owner中断改任务)**: owner三连 ①"我增加了一个 deepseek 的定时模型优化 你们配合着来,你看一下最新的代码 给我一个最新的 prompt" ②"我切换了模型 重新分析"(本会话模型→Fable 5.1;平台侧零变化) ③"在服务上我创建了一个文件 你们通过这个交流 /tmp/ai_task 只保留最近几天就好"。取证: DeepSeek=宿主cron ops/deepseek_optimize.py(experiment_hold冻结键)+ops/qt_breaker.py(熔断器),不在git仅存宿主;admin#1身份PATCH config(audit 1812-1827,09-16 13:33起);只动config不动代码(current_code 100KB S11..S33锚点全在);Go侧strategy_autotune.go(LLM整码重写器)enabled=false与之无关但apply=true/dry_run=false上膛;_exp已被DS接管为锁/实验注册表。交付: prompt v5.0(协同协议9条:actor身份/命名空间_exp=DS只读·_exp_cc=CC·留言板_ai_task_cc↔_ai_task_ds↔宿主/tmp/ai_task 3天/写冲突/Go热vsPython重启/两套刹车取严/评判权/越界纠回清单/Go重写器保持关/留言板每轮)+changelog+ops/ai_task_bridge.py(owner装DS侧);脱敏归档ops/prompts/prompt_v5_20260917.md;可粘贴版经会话交付。/tmp/ai_task容器不可达(无ssh;docker卷不含宿主/tmp)→经config键桥接。同轮BRAKE见§7。 |
 
 ## 1.5 策略组注册表（08-09 起;池归属与载具状态权威节;roster 有变当轮必更）
 
@@ -63,17 +64,12 @@
 |---|---|---|---|---|---|
 
 > 维护注 08-29 17:4xZ：#76 **落地结案删行**——17:36自查点retry#2逢全账户空仓窗:brk stop[poll1即stopped无幻影卡]-PATCH六键+_exp尾注FIX伴随-start✓running✓复读mode=percent_balance/cs_en=true/floor21/0.6-1.4-0.55全落库;→rotate add BAS,NIL(斜杠)brk feed4→6✓;main remove BTR残留✓专家残留0互斥恢复;分界前brk段n8/−0.56全5U。
-| main 通才 | 8eb182b6 | 通才(S18-S23栈) | auto·**feed188@09-14 15:1x(单池并轨+TUT,USELESS,CAP;隔离∩feed∅✓;feed史git 13edbef/68e804b)** | running | **pct0.075+mcp10@09-14(V4;公式0.75顶格;史pct0.08 E9 ROLLBACK/mcp200 owner特例 git)** sides=[buy,sell] **bl19@09-14 15:0x(bl22−trend3币并轨;TradFi6在;bl史git)** **select_limit200=FREQ2 KEEP@09-08(禁再扩面;verdict=ops/exp_archive/freq2_verdict_20260908.json)** **scp=0.05@08-28 09:33(EXP提频终裁rollback)** **lcp0.10门0.65@09-14(V4进攻一档_exp;史0.15@08-29 git)** tpl998(S33资费下修)@09-08 09:3x(史tpl990 S32关guard@09-03);**trailing(act1.0/cb1.2%)+BE(1.0)=基线几何(#49KEEP)**;**_exp=open·V4进攻一档@09-14 15:05(lcp0.15→0.10+mcp200→10+pct0.075+池并轨;eval 2026-09-16T15:00Z;劣化线=段净≤−4U或多头均净<−0.512→lcp回0.15;S33回滚门继承入rollback字段)**;史_exp=S33资费疫苗下修@09-08 09:3x(温和+0.20→+0.10,深+0.10→+0.05;劣化线=S33段多头n≥15且滚动净劣于基线−0.512→rollback回tpl990;注册全文=config._exp权威副本+git dd4326e)****;S33裁决@09-11 09:30Z=KEEP-armed(冻结cohort n12/−0.334 vs 基线−0.512,劣化线未触→_exp保持open成常设回滚门,终审=段多头n≥15;框架+执行全文git 06df9f1/8fcded3版行)**;verdict归档=ops/exp_archive(FREQ2 KEEP@09-08/FREQ KEEP@09-05/E9 ROLLBACK/S32 ROLLBACK→main_exp_closed_20260907.json;S31 KEEP→s31_verdict_20260902.json);S30 KEEP@09-01史git 0940c62;RECOVER 6h空≤−8U继承;#11观察(§4) |
-
-| qt-trend-long | 827ffe8c | 趋势动量多 | **TUT+USELESS+CAP三币**(BULLA降级出池@09-07闭环全绿+晋升降级全史git 838122c/47753ae/93637cd;CAP晋升@09-05规则A/USELESS晋升@09-02规则B细目git e6f5b0f;种子PATCH同窗落库=重启免疫;出池=滚动nL≥6∧L净<0;COTI/ACE史git f43756c) | **stopped@09-14 15:0x(owner单策略直令;非劣化;勿auto-start;复活=owner令)** | **tpl575(S24)** pct0.05 mcp3 buy trailing on **lcp0.149@09-03(#65 epsilon修复;裁决KEEP@09-04段n5/−0.314未触线+conf=0.7000边界直证1例;verdict=config._exp;史0.15)**;**_exp=closed(现值=#65 verdict KEEP@09-04;前史连开解锁PASS-KEEP@09-01 verdict=audit+git)**;mces史git b12d7d9;低波解锁线维持关闭,重开须新regime证据;**常驻保险=滚动6h净≤−5U→stop(继承)**;aging_watch[TUT,CAP,USELESS]advisory@09-09(失格≠出池,出池线=滚动nL≥6∧L净<0未触;watch进出史git 0097bd7/c6a9c02版行)按对账器头注线(滚动nL≥6∧L净<0)独立看护(USELESS解压史git dd4326e);三值包全史git 8a1d995/f71d825/5df52d2/492779a |
-| ~~qt-breakout-follow-v2~~ | 3b646bf4 | 突破追动量·退役@08-29 21:1xZ评判FAIL | — | stopped(gated,勿auto-start)·RETIRED/USDT占位@08-29 22:21Z落地(§5维护注08-29) | **_exp=closed·FLEET复活评判FAIL@08-29 21:1x(段n15/毛净−1.90/wr13%;假设证伪:病根=币非原型,隔离网才是对的工具;verdict全文config._exp)**;退役落地@22:21Z全绿(尾步细节§5维护注08-29;末3笔遗仓BTR多/NIL空双盈+NIL竞态多hunger平);**遗仓币记账收养仍活@09-01(#79双行,BTR三案,详§6)**;复活=新壳FLEET;双写/种子写回/翻案全史git 6093c9f版行 |
-| ~~qt-fade-short-v2~~ | 7583727a | 冲高回落空·退役@08-28 21:2xZ终裁auto-C | — | stopped(gated,勿auto-start)·RETIRED/USDT占位@audit1780 | **_exp=closed·双维度FAIL(verdict全文config._exp;细目git 8af6490链)**;tpl887+谱系存git;复活=新壳FLEET;全史git 6093c9f/830a46c→a2e845f |
-| ~~qt-fade-short~~ | 21519f1b | 停机@08-16劣化线·退役归档@08-21 | — | stopped(gated,勿auto-start)·RETIRED/USDT占位@audit1773 | **_exp=closed·FIX终裁PASS@08-28 18:25Z(占位封收养向量成立;verdict全文config._exp)**;#72纵深防御候部署,复发判据§6;复活=新壳FLEET(tpl576+S25存git);全史git 766c7d9/f43756c |
-| ~~qt-breakout-follow~~ | 2111f5f9 | owner删除@08-15 15:5x(评判FAIL史+S26+tpl577存git;#47复活=新壳FLEET) | — | deleted | ⚖️翻案@08-18:幽灵可验证成交=0;#53修复候部署=卫生项;详git 766c7d9+95e4c9f |
+| main 通才(平台名 Meme_合约信号计算引擎_1) | 8eb182b6 | 通才(S4..S23+S30+S31+S33;S32关guard) | auto·feed待复核(09-14 188;DS重启重播种史未知) | running | **09-17 07:52Z 刹车态: lev2(CC BRAKE,史10)/pct0.05(DS熔断锁 lock-1789626222-breaker eval 09-18 06:23Z)/cd1800(DS)/mcp6(DS 09-16 22:10改;owner直令10;待裁)/min_conf0.45(DS 09-17 04:09)/lcp0+scp0(admin 09-16清零;v4进攻一档lcp0.10 _exp被覆盖)/tp0.25+sl0.12 ROI口径+use_exchange_tpsl=true(DS 09-16 15:57 owner令)/atr_tp4.5+atr_sl2.5仍在疑非主导** sides=[buy,sell] bl19(TradFi6在) select_limit200 etw"" tpl998(S33) trailing(1.0/1.2%)+BE1.0 hunger45m(0.08/0.05) max_hold60 cs五键在位;**_exp=DS锁 frozen_keys=[leverage,order_amount_pct](leverage由CC append@07:52,cc_note在)**;**_exp_cc=BRAKE lev10→2 eval 09-17 14:00Z(metric 6h/24h钱包净+SL穿刺占比+均净;expect 6h>−8%∧穿刺<40%;rollback=双转正后2→3→5→8→12→20)**;_ai_task_cc首条@08:02Z;史_exp(V4进攻一档/S33 KEEP-armed)已被DS覆盖,原文git 7ee5ca0版 |
+| ~~退役壳×4~~ trend 827ffe8c/breakout-v2 3b646bf4/fade-v2 7583727a/fade 21519f1b | — | — | — | **已从平台删除**(09-15~16 owner/迁移;/api/strategies仅main 1行@09-17 07:3x实证) | 谱系tpl/verdict/遗仓收养全史=git 7ee5ca0版§1.5;复活=新壳FLEET预注册+owner令;qt-breakout-follow 2111f5f9 owner删@08-15同上 |
 
 - 隔离区【19】=规则类(≤−4U∧n≥4)【13】: 4/CYS/TST/龙虾/BMT/BTW/H/APR/AIO/BICO/BEAT/XNY/ACE(血统git bb3b883/8a797ec/bb2e系)＋**TradFi类【6】@09-10 04:1x: GPRO(直证-4411@09-09 13:39拒空0.72)/KODEX200/SOXS/CSOPSAMSUNG2L/CSOPSKHYNIX2L(类证=币安官宣TradFi永续名单)/HK0992(港股代码形态自证)——币安美股/ETF永续,USDM下单须owner签TradFi-Perps协议;隔离理由双重=签约闸+crypto模板未验证资产类;解禁≠rehab规则,须owner签约∧专项原型预注册;arg4隔离表自本轮含19项**。**池列值=快照,权威=每轮对账器输出**。**对账器v1.6权威副本=quanty-ledger分支ops/route_pools.py@09-10**(v1.6=防御性48h close_time输入过滤,阈值零改动,污染事故见§3陈旧行条;谱系v1.5←v1.4←v1.3;v1.0默认分支禁跑)。**arg4隔离表必须X/USDT形态**(08-15实证:裸名norm不match feed键→漏移)。出池只认头注规则或隔离,失格=aging_watch advisory;brk/lowvol出池阈值未注册(#42)前无自动出口。**币级watch集:MAGMA/KOMA/PORTAL已解除(判据git bf52ca3/c6a9c02);MARSCOIN留main(条款git 838122c/e6f5b0f);AKE watch n3/−2.13@09-08(复挂=n≥4∧≤−4U)**;对账史(09-01清扫/08-30/08-29链)=git b12d7d9版行;#51-#58史git 9957041/1ae847c/91b3276/830a46c/188af33/66048a9
-- 保证金: Σ_running=main 0.075×10=**0.75≤0.75✓顶格**(09-14 单策略;trend停;史0.55@09-03)
-- 互斥不变式@09-09 03:2x复核: feed层=main189/trend3(TUT,USELESS,CAP)∩∅∧隔离13∩feed∅;bl现值16随main行;宕机窗无重启rotate态存活直证(#87);退役三壳RETIRED占位=交易/feed层收养封闭,记账归属层仍漏(#79详§6);fade壳seed5与main auto理论重叠=停机态无违例(不变式限running载具,owner UI复活须先重划池);#20=bl闸交易级非feed级;隔离币零成交✓;重播种法医学+违例史git 93637cd前链(§3签名条不动)
+- 保证金: Σ_running=main **0.05×6=0.30**@09-17(刹车态;目标态0.075×10=0.75顶格;史0.15×10=1.5越界87min@09-16 14:30-15:57 admin)
+- 互斥不变式: 单载具后退化为 隔离∩feed=∅ + bl=隔离区;多载具时代不变式与违例史git 7ee5ca0版§1.5。
 - lowvol(ad37d337)已删@08-09 17:0x owner拍板(无交易史,原型设计存git f970704 create_low.json可重建)
 - 载具归档目录: strategies/quicktrade-<id前8位>/ 一载具一目录(协议不变)
 
@@ -231,6 +227,14 @@
 - **logs?q=检索选择性=LIKE短路(08-27 21:2x实证)**: q子串扫描按limit短路——高频子串(0.600/IDLE/币名)秒回;稀有子串(触发开仓/32.48/时间戳前缀)=全表扫>30s超时code000,与中英文编码无关(ASCII稀有串同样挂)。回溯稀有行正解=拉高频伴生子串宽窗后本地grep(触发行含conf数值故q=0.600可达);重启后每币~200预热行会吃掉币名q的limit窗。
 - **[新增 08-28 00:3xZ] 高价币最小手数静默拒单=MVLL型定谳(#75;源码闭环+双案)**: 单枚价>sizing名义的币,最小手数凑整后名义超sizing上限→引擎静默拒单零日志;候部署#75加日志行;验证轨=部署后grep最小手数凑整;池内高价币(>20U/枚)受影响。全文+源码链git 9957041版行(§3本条09-01瘦身压缩)
 
+### 双执行体(09-17 起)
+- **DeepSeek管线事实**: 宿主cron ops/deepseek_optimize.py(experiment_hold冻结键)+ops/qt_breaker.py(熔断: 净≤−4U 或 wr<45%∧净<0→单向砍pct,锁24h每触发续期,自到期);admin#1;节拍≈3h(audit 16:12/19:09/22:10/04:09)+熔断(06:18/06:23)+探针(05:04 _probe_running_check 写+null删);只动config不动代码;改动史09-16 13:33起: lev10×2/pct0.15(越#8 87min→0.075自纠)+sl0.12+tp0.25(owner令"一次性修改完毕上线")/cd300→600→1200→1800/mcp10→6/min_conf0.45/pct0.05(熔断)。_exp schema: id(lock-*/exp-*)/status/changed/frozen_keys/eval_after/prior_exp(嵌套保留上一实验)/mechanism/why。
+- **热PATCH实证@09-17 07:4x(CC探针 _probe_cc_running_check 写+null删 http200 param_version v17→v18,策略running不变)**: 部署后端接受running PATCH;仓库main manager.go:1737 "cannot update config while strategy is running"线上不存在=**部署版≠仓库版**。但strategy_start.go:306-317 config仅启动时argv+env STRATEGY_CONFIG_JSON注入Python,manager.UpdateStrategyConfig只改Go内存无push→**Python侧键须重启**(min_confidence/premium/best_pick/warmup/volume_ratio/breadth/atr门);Go侧键热生效(lev/pct/mcp/tp_pct/sl_pct/hunger/max_hold/trailing/BE/bl交易级);cooldown_sec归属未核实。键归属表待首轮建立(§5 DS-5)。
+- **有效门槛反推法**: 日志"置信度动态仓位 symbol=… conf=… mult=… pct=…"=逐单成交置信度;09-17 07:xx见conf 0.40/0.44成交→有效门槛≤0.40(config min_conf0.45,lcp/scp 0)。
+- **Go侧LLM重写器(strategy_autotune.go)**: enabled=false不跑;apply=true/dry_run=false上膛;模型链 config auto_optimize_model→conf AI.Optimizer→env AI_OPTIMIZER_MODEL(默认anthropic/claude-opus-4.8-fast via OpenRouter);会让模型重写全码→仅校验def run(+py_compile→发版换绑→StopStrategy/StartStrategy;不校验S锚点/6符号→若被打开=S谱系风险;runs表strategy_optimization_runs(末行06-03)。
+- **命名空间**: _exp=DS(CC只读,刹车frozen_keys append例外);_exp_cc=CC预注册(+watch_ds);_ai_task_cc(CC→DS)/_ai_task_ds(DS→CC)各保3天≤8KB;宿主/tmp/ai_task=owner可读合并日志,经ops/ai_task_bridge.py桥接(owner装DS侧)。
+- **单笔风险恒等式**: SL亏损=余额×pct×sl_roi(杠杆约掉;09-17 114×0.05×0.12≈0.68U/次);杠杆只改SL价距(噪声穿刺频率)与名义/手续费规模。
+
 ## 4. 假设库·候选队列（v2 迁移注记 @08-01 16:40Z：本节与 §6 观察计数合并为【假设库】，内容全量保留；prompt v2 起执行门槛=逐笔证据标准[≥20 笔同型死法或机制落到源码行为]，旧 v12 Step 4.6c 门槛作历史参照）
 - **[候选·连开cap全组重校 @08-28 03:4x]** 证据=§3连开条(main VELVET×5/TAC×1热币压制,v2 BTR×4);main改mces待08Z档评后_exp空;08-28 06:2x新证=v2 VELVET入场连开=0复位BTR计数(多币池自愈实证)→重校范围收窄:多币池载具(main/v2)cap3可自愈非死锁,仅单币池致死(trend已修),main改mces必要性下调,候选降权窗(candidate 3→6,CB栈不动);v2随21Z auto-C后重启设计携带;不对称论:亏损面CB已隔离,cap独占保护仅混合结果连开,热币原型恰需连开〔依据链详§3+git本轮〕
 
@@ -269,6 +273,11 @@
 
 | # | 类型 | 内容（含完整意图） | 登记轮 | 状态 |
 |---|---|---|---|---|
+| DS-1 | owner裁决 | mcp现值6(DS 09-16 22:10)vs owner直令10——两边不动,候owner一句话;裁定后同步_exp/_exp_cc注记 | 09-17 | open |
+| DS-2 | owner裁决(需重启) | 质量门恢复Step0: min_confidence 0.45→0.55+lcp 0→0.10+scp 0→0.05(Python侧键,stop→PATCH→start空仓窗一气呵成);病根=conf≤0.40成交×1.2%价格SL噪声带×10x(6h穿刺61%);owner另令则改 | 09-17 | open |
+| DS-3 | owner安装 | ops/ai_task_bridge.py装进DeepSeek侧cron(桥接/tmp/ai_task↔_ai_task_cc/_ai_task_ds);装前留言板仅config键半通(CC已写首条) | 09-17 | open |
+| DS-4 | owner保险 | auto_optimize_dry_run=true(Go侧重写器上膛保险);或owner明示保持现状 | 09-17 | open |
+| DS-5 | 首轮任务(CC) | 键归属表(Go热/Python重启;grep backend/+current_code)+tpsl主导出场核实(strategy_tpsl_monitor.go vs atr_*)登记§3 | 09-17 | open |
 > 维护注指针集: #87/#86=git 805a115;#84=git dd4326e;#83=git 09-05 06:2x版;#82=09-04 07:3x版;#81/#78=git 4be520c;#74=2aa13b1;#70=17251a9;#68=0940c62。
 > 维护注(落地结案@09-14 14:52Z): #88全绿——恢复窗14:51确认(owner docker重启修复DNS;active[]+balance87.34U+ctx fe=none)→stop poll1沉降→PATCH symbol_blacklist bl22单键(_exp未动,复读bl_n=22/TradFi6全进/S33 open保持)→start running;伴随feed卫生rotate remove15(隔离13+CAP,USELESS互斥;feed重播种200→185,残留双零复核✓);probe#3(14:57)撤销;登记原文=git 9137f71版§5行。
 
@@ -280,6 +289,7 @@
 | 幻影行post-fix观察 | **+1@08-29 17:0x(TAC空short 14:50→15:16无pnl,与14:52apply/15:30重启窗重叠;史SCRT@08-25;累计n=2)** | 08-28 18:1x | 再现累计;n≥3或含实亏→升§4 |
 | epsilon边界放行观测(v2域;#65永久化伴生) | n=5/类净+0.027(HANA×3细目git 91b3276;VELVET−0.175;+MELANIA 16:45入0.600边界→60m超时+0.186@08-28) | 08-28 18:2x | 累计n≥5∧类净≤−2U→复议(远离门);premium加距源码判死+main0.600档scp0.049史=git 91b3276 |
 |---|---|---|---|
+| **09-17 刹车基线读数(BRAKE lev2起点)** | 24h n934腿 wr43.9% realized−40.56 comm−26.18 净≈−66.9U(TRANSFER+109.27入金);12h realized−21.96 comm−12.03;6h 净−41.5U(36%钱包);3h −13.9U;1h 26腿 1W25L −6.6U;6h逐笔 n70 wr38.6% gross−32.20 avg−0.46 SL穿刺43/−53.36 TP-trailing27/+21.16 long41/−15.48 short29/−16.72 hold中位4.9m p25 1.8 <3m 25笔;失血榜 AVA−9.77/BR−6.65/ONE−4.84/LSK−2.97/BULLA−2.56;钱包114.07 | 09-17 07:5x | eval _exp_cc @14:00Z: 6h净>−8%∧穿刺<40%→KEEP并候双转正;劣化(6h≤−8%仍)→加禁方向/停机候owner |
 | main断流观测(三闸交集关门) | main笔数0/24h@09-10 21:1x=断连首全零轮(30.2h零成交;史2@12:2x/16@04:1x;微差双胞纪律留档git 2596a9a) | 09-08 18:1x | 判据不变:再现6h+零笔且池ATR中位≥0.5→查管道;每轮记main笔数 |
 | rotate has_open_position判定条件观测 | n=2矛盾@08-23(15:16 COLLECT持仓中remove未被拒)〔全文git 0940c62〕 | 08-23 | 再现1例→定性(疑判定=本载具视角);影响=互斥窗口期 |
 | apply重启作用域观测 | **定案@08-24 12:4x n=2→升§3**(tpl823+tpl887双证,他载具feed/IDLE计数连续) | 08-24 12:4x | 已定案;反例(他载具feed跳回种子全集)即回§6重开 |
@@ -300,6 +310,7 @@
 | short双窗负 | 0维持(逐笔配对为主口径)〔git 6a93e93〕 | 08-06 | 新增空头亏损事件逼近4.6c门→评估 |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
+| 2026-09-17 07:3x-08:1x | **交互轮(owner三连令;定时轮首步后被中断改任务)**: 管道活(active 2仓→1仓VTHO;fe=none;钱包114.07);取证DS管线+Go重写器+热PATCH探针(§1/§3);**BRAKE@07:52Z: lev10→2热PATCH复读✓+_exp.frozen_keys append leverage✓(cc_note)+_exp_cc BRAKE预注册✓ eval 14:00Z**;TG🆘#9632含🎓;病根=conf≤0.40成交×1.2%SL噪声带×10x(6h穿刺61%,多空同亏);交付prompt v5.0+changelog+ops/ai_task_bridge.py(归档ops/prompts/脱敏);§1.5改单行(壳×4已删);§1瘦身5条→指针;§5 DS-1..5 open;**DS段: 其09-16~17 PATCH 16条/越界2(pct0.15 87min自纠;mcp10→6待裁)/在飞lock-1789626222-breaker frozen=[leverage,order_amount_pct]/留言板_ai_task_cc首条已写@08:02Z,_ai_task_ds空(桥接未装)**;下轮=14:00Z评BRAKE+Step0候owner+DS-5键归属表+读_ai_task_ds+mcp提醒 |
 | 2026-09-14 15:1x | **owner直令pivot落地全绿**: FLEET stop trend(poll1沉降,15s复核stopped;_exp FLEET注记closed)→main窗口(stop poll1→PATCH mcp10/pct0.075/lcp0.10/bl19/_exp V4进攻一档→复读✓→start running)→rotate(+TUT −隔离13;首发打在starting态no-op=新平台事实,复发生效)feed188(TUT/CAP/USELESS入,隔离∩feed∅✓);保证金0.075×10=0.75顶格;15:00后端二次重启(502,trend被引擎恢复+feed重播种,首stop丢失)原因未知→§6重启观测;prompt v4稿=ops/prompts/prompt_v4_20260914.md+changelog(脱敏),可粘贴版经会话文件交付owner;master/ssh=硬边界#6保留+容器无ssh凭证;#89部署续催;TG报备✓;下轮=恢复后首窗逐笔+V4档位首读 |
 | 2026-09-14 14:5x | **恢复轮(episode结案118.6h)**: owner docker重启修复DNS(14:4x);恢复直证14:51(active[]+balance87.34U+fe=none);#88抢窗落地全绿(stop poll1→PATCH bl22单键复读✓_exp未动→start running);feed卫生rotate remove15(隔离13+CAP,USELESS;200→185残留双零);恢复复核✓(closed窗0行复常/income fe=none无缺口/断连窗无自发重启);S31 store重热警戒期N;trend feed3✓退役壳stopped✓;probe#1-2 miss注记(12:5x/13:5x)全文=git 0f076c6版行;probe#3撤销;S33 KEEP-armed不动;下轮15:1x cron照常(重点=恢复后首窗逐笔+S31重热+#89催部署) |
 | 2026-09-14 12:2x | 断连轮#36(≥116.2h,锚09-09 16:12Z): 直证@12:20-24(active positionRisk fapi SERVFAIL on 100.100.100.100+main ctx income同串+balance伪零);ws活证(main recv LDO序号9008@12:21:05+trend USELESS序号10269@12:21:01,双载具评估正常);feed183/3/0无重播种=无重启=#89(c49c555)未部署;audit尾1808/1807零无主;config零漂移双载具(main cs五键扁平conf_sizing_*全in位+lcp0.15/scp0.05/pct0.08/mcp200/trailing1/1.2/be1/bl16/etw""/ao=false,trend lcp0.149/pct0.05/mcp3/buy/池TUT,USELESS,CAP);真窗n0(实行839全≤09-09 14:56,幻影2008零增);ROUTE v1.6 plan={}48连零/quarantine19∩feed∅/desired_bl22=#88一致/aging trend三币;S31宽度0.519(95/183)NEUTRAL(0.388→0.519回升,N两连);S33冻结KEEP-armed零动;宏观FGI57 Greed/BTC77885+1.40%/mcap−0.52%未触;trending∩main池={PONS,LIT,PUMP,PENDLE,SPX,ENA};刹车未触(零成交);保证金0.55✓;决策=HOLD 0原子包;probe×3 re-arm 12:57/13:57/14:57(恢复即落#88+复核三项:income补记/feed重播种/窗内重启+S31档位复核,交接15:1x cron);TG=续催宿主resolver+#89部署(≥116h) |
