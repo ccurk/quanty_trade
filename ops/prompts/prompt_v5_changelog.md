@@ -23,3 +23,24 @@
 14. 同轮执行（非 prompt 变更但入台账）：BRAKE leverage 10→2 @07:52Z（24h≥30% 防御档）；leverage append 进 _exp.frozen_keys；_exp_cc 预注册 eval 14:00Z；TG🆘 #9632。
 
 未做/待 owner：mcp 6 vs 10 裁决；Step0 质量门恢复（需重启）；ops/ai_task_bridge.py 安装到 DeepSeek 侧；auto_optimize_dry_run=true 保险；可选 /api/admin/ai-task 端点（需 docker 卷挂载宿主 /tmp/ai_task）。
+
+# prompt v5.1 增量（vs v5.0）@2026-09-17 — owner 直令"增加现货策略。下单，写到 prompt 中"
+
+取证基础（当轮源码，行号可自查）：
+- market 是进程级：exchange/binance.go:129-141 从 conf/env BINANCE_MARKET 读一次（默认 spot，生产 usdm）；Manager.GetExchange() 单例（manager.go:1867），ctx/positions/dashboard 全走它 → 现货只能是第二个后端进程；同库会混账（positions/orders 无 market 列）。
+- 现货可用：市价买入 /api/v3/order（binance.go:1339-1425）；市价卖出平仓 closeSpotPosition（strategy_execution.go:478-540）；本地逐仓 TP/SL 监控（strategy_position.go:859-973，2s 轮询 1m 收盘价）。
+- 现货不可用：饥饿/max_hold（quick_trade_monitor.go:41）、ROI 监控（strategy_roi_monitor.go:72）、交易所侧 TP/SL·追踪·保本（strategy_tpsl_monitor.go:105）、WS 守卫（strategy_ws_guard.go:42）、收养（strategy_lifecycle.go:251）、余额比例/置信度 sizing（strategy_position.go:107-112）；非 usdm "数量<10 跳过"地板（:118-124）；信号路径无反转平仓且 allowed_sides 门在前（strategy_signal.go:821）→ 出场只有 TP/SL。
+- 下单量：python _emit_signal 发 amount=cfg.trade_amount（静态 300）→ 现货会被当基础币数量下单 → 需 S34 改为名义/现价。
+- 部署 env 映射：conf.go:522-530 支持 BINANCE_MARKET / BINANCE_BASE_URL / BINANCE_WS_BASE_URL 覆盖 conf_pro.yaml 的 fapi 硬编码；server_deploy_docker.sh 支持 BACKEND_PORT/DB_NAME/REDIS_DB/REDIS_PREFIX 覆盖。
+
+变更：
+1. 标题 v5.1；核心使命第 1 条改为"主载具 main（USDM）＋现货载具 qt-spot-long（候部署→canary；DeepSeek 未接入，config 由 Claude 独管）"。
+2. 新增【现货载具】节：引擎事实（可用/不可用清单带行号）/部署配方（第二容器 env 覆盖、独立 DB/Redis、现货权限、划转、自检）/载具规格（FLEET 预注册 config 模板：buy-only、spot_notional_usdt=12、mcp=3、cd300、min_conf 0.60、atr_tp 3.0/atr_sl 1.5、hunger off、use_exchange_tpsl off）/S34 规格（SPOT_MODE、只发多头、名义/现价换算、数量<10 抬名义、funding/ls 固定 0）/超时缺口两条处置（M 候选 dev-spot-maxhold；部署前 cron 巡检持仓龄≥180m）/起跑条件、现货费覆 0.2% 来回、劣化线（段净≤−3U 或 n≥10 且 wr<35% → stop）、现货刹车 6h≥5% → stop、现货硬边界。
+3. 环境节新增 BACKEND_SPOT / SPOT_USER / SPOT_PASS / SPOT_ID（空＝候部署跳过）。
+4. 每轮节奏新增 1b 现货管道、5b 现货逐笔（两本账分开）。
+5. 硬边界新增 #11 现货载具专属（只买不卖空、名义≤现货钱包 25%/仓、mcp≤3、不卖非本载具持仓、划转/部署只属 owner、禁混算钱包）。
+6. TG 报告新增 🪙现货行。
+7. 改代码纪律：S34 预留给 spot fork，main 下一个新锚点 S35；spot fork 谱系＝main 全锚点+S34。
+8. 直令快照加 09-17 现货直令。
+
+未做/待 owner：部署 quanty-spot 第二进程＋现货钱包划转＋填 BACKEND_SPOT/SPOT_ID；决定 canary 起跑是否等 main 双转正；M 候选 dev-spot-maxhold 是否要（无它则现货持仓只靠 TP/SL 出场）。
