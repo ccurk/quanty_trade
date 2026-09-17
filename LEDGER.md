@@ -294,7 +294,7 @@
 ## 6. 假设库·观察计数（v2 迁移注记 @08-01 16:40Z：并入假设库，与 §4 合称；跨轮累计；9 秒日志窗单次未观测 ≠ 零，以本节跨轮增量为准）
 
 | 计数项 | 读数 | 更新轮 | 备注 |
-| backend→Binance REST DNS断连 | **episode结案@09-14 14:4xZ(owner docker重启修复): 09-09 16:12Z→14:4x≈118.6h,全程零成交(REST封死)+空仓零市场风险;恢复直证14:51(active[]真空数组+balance87.34U+fe=none);恢复复核三项✓: closed48h窗过滤复常(0行)+income通道fe=none(空仓窗零条目=无补记缺口)+断连窗内无自发重启(feed183/3序号连续至末端,末端重启=owner修复动作本身);probe史全档git链→0f076c6** | 09-14 14:5x | 结案留档:特征=fapi SERVFAIL(resolver 100.100.100.100=Tailscale MagicDNS);伪影族全谱git ecec3b0;**§3复发向量n=2条不动,#89(c49c555)根修推荐不变(docker重启=治标,宿主resolver向量仍在)**;复发判据=同串SERVFAIL再现→重开本条计episode n+1 |
+| backend→Binance REST DNS断连 | episode结案@09-14 14:4xZ(118.6h零成交;owner docker重启修复);全文=git 6b41621版§6 | 09-14 14:5x | 复发判据=fapi SERVFAIL再现→重开计episode n+1;#89(c49c555)根修推荐不变 |
 | TradFi嫌疑币watch | BYD/AXTI/INTW/MVLL/MEGA(零史+名形存疑,无直证) | 09-10 04:1x | 任一现-4411或官宣名单确认→即隔离(不限流);MEGA大概率MegaETH(低嫌) |
 | 幻影行post-fix观察 | **+1@08-29 17:0x(TAC空short 14:50→15:16无pnl,与14:52apply/15:30重启窗重叠;史SCRT@08-25;累计n=2)** | 08-28 18:1x | 再现累计;n≥3或含实亏→升§4 |
 | epsilon边界放行观测(v2域;#65永久化伴生) | n=5/类净+0.027(HANA×3细目git 91b3276;VELVET−0.175;+MELANIA 16:45入0.600边界→60m超时+0.186@08-28) | 08-28 18:2x | 累计n≥5∧类净≤−2U→复议(远离门);premium加距源码判死+main0.600档scp0.049史=git 91b3276 |
@@ -304,7 +304,7 @@
 | rotate has_open_position判定条件观测 | n=2矛盾@08-23(15:16 COLLECT持仓中remove未被拒)〔全文git 0940c62〕 | 08-23 | 再现1例→定性(疑判定=本载具视角);影响=互斥窗口期 |
 | apply重启作用域观测 | **定案@08-24 12:4x n=2→升§3**(tpl823+tpl887双证,他载具feed/IDLE计数连续) | 08-24 12:4x | 已定案;反例(他载具feed跳回种子全集)即回§6重开 |
 | 重启后速开仓观测(crash loop伴生) | **n=6/亏2@08-28**(ARIA恢复后4m填单−0.186错位−11.7%=危险变体;PROM/COLLECT被TP/SL护栏拒=safe;史git) | 08-28 03:4x | ≥5例且亏单≥3→议重启后静默期;现6/2未达;非重启窗错位再现→独立升级 |
-| 收养错归属亚型(#57族;§4#72) | **n=2@08-29·亚型B首例**:BTR main开仓被收养到退役v2名下(跨owner域陈旧orderMeta兜底抢归属→closed回填错标;机制全文git 6093c9f版行);**#72b=553c8c3(陈旧兜底15m闸)+4385fc3同分支候部署**;史n=1(向量封闭仍成立) | 08-29 06:2x | 新判据:#72/#72b部署后再现任何载具sid错归属行→重开源码勘察;**部署前main交易ex-fade币再错标=预期噪声**,逐笔归因继续按池+开仓日志链裁决,错配守护风险有界(本案距v2 max_hold60m差9m近失) |
+| 收养错归属亚型(#57族;§4#72) | n=2@08-29(亚型B首例BTR);#72b=553c8c3+4385fc3候部署;全文=git 6b41621版§6 | 08-29 06:2x | 判据: #72/#72b部署后再现任何载具sid错归属行→重开源码勘察 |
 | main行零归属(空sid;§3 closed回填缺口) | 新行我踏马来了闭+BAS活跃行均空sid@08-28 12:3x=结构性签名维持(#58解锁条件未变) | 08-28 12:3x | 无P&L实害;判据:crash loop根因修复后仍空sid→升M通道close-sync候修;每轮扫main池closed行空sid计数 |
 | closed平仓行消失观测(≤48h短窗) | +2再证@08-28(09:14的48h拉漏VELVET/MAGMA行,09:30的4h重拉均已现=懒生成方向铁证,行集随拉取波动非丢失);计数与形态史git 17251a9/eaf1bcd | 08-28 09:3x | 纪律:窗内行少≠没交易,income n为准;长窗>120h禁用作逐笔 |
 | 已结案·终态归档集(18项瘦身@08-26 12:4x) | UTC早晨段(bce1b1d)/pick_lose(全史git)/信号转化0(bce1b1d)/WS断连(3dd071b)/单币失血11币(add4230)/long双窗(bce1b1d)/15-60m桶(b1bd082)/穿刺亚型c(2873d28)/S20拉升拒空(541a2bc)/#20hunger_tp(数字§3)/S21急再入(d1400b2)/fade0.60墙(766c7d9)/追跌空→#30/长侧穿刺→#34/统计汇总→#37取代/S23影子(8897832,重开=#37后)/连开拦截(f71d825)/CB熔断→#35/DB挂死结案@08-27(f0e03bf,复发判据=health非200或login>5s即报)/0.600档rollback@08-28(11d9c50,重开=#75部署+池ATR回升) | 08-26 | 各项终态读数与重开条件见git指针 |
@@ -314,7 +314,7 @@
 | #79·closed行sid旧绑定继承(#77族) | 双行/壳行裸奔形态与判别特征全文=git e9d1b17版§6;退役壳已从平台删除@09-15~16→向量关闭待复核 | 09-01 | 复发判据=新closed行strategy_id≠main∧symbol在main池 |
 | S31·regime动态方向偏置(结案KEEP@09-02) | 上线tpl988@09-01;评判KEEP(段n22 ON档多n3均+0.73 vs N/OFF n5净−1.99);verdict=ops/exp_archive/s31_verdict_20260902.json;全文git e9d1b17版§6 | 09-02 | 锚点§2 S31 |
 | funding磁铁·他币再现watch | S30上线@08-29/S33下修@09-08;era史n2/−2.83;全文git e9d1b17版§6 | 08-27 | watch=疫苗效果验证 |
-| 硬超时磨损类(震荡磨到max_hold;09-09 12:2x轮首居亏类榜首) | **48h滚动@09-10 04:1x今拉: 磨损类n13/-5.79@09-10 21:1x(行集波动史n10/−3.94@04:1x,n18/−3.72@09-09 15:2x);门n≥20远离;断连窗计数只衰减** | 09-09 15:2x | **预注册行动门: 48h滚动hold≥40m类 n≥20∧类净≤−3U→升§4候选原子包(方案空间=max_hold60→45 或 hunger_after45→30;裁决先做T+1 vision反事实[45m中价 vs 60m实平价逐笔],不盲拧);执行窗=S33评期后(main单_exp纪律);反面证据在案:59m翻正赢单哈基米+0.562/AIA+0.504=截尾有代价;TAC×4超时=S14CB已内部隔离,币级线(−4U∧n4)现−1.94未及** |
+| 硬超时磨损类 | 48h滚动n13/−5.79@09-10 21:1x;全文=git 6b41621版§6 | 09-09 15:2x | 行动门: hold≥40m类n≥20∧类净≤−3U→升§4(方案max_hold60→45或hunger45→30;先做T+1 vision反事实) |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
 | 2026-09-17 10:1x-10:3x | **BRAKE续·对账轮**: 管道活(active4空头21U地板;fe=none;avail78.82);五窗income净 1h−2.0/3h−7.2/6h−23.6/12h−41.7/24h−67.3U(24h TRANSFER−50待owner认→DS-8);逐笔48h n333 wr48% −41.49;**post-BRAKE(open≥07:52)n14 wr57% 毛+0.19 穿刺0(pre段6h穿刺25/51 −21.02)→止血成立,死法转饥饿收割45m 4/−2.78**;有效门槛反推=START 09-16 04:33Z min_conf0.35/cd180s,成交conf最低0.36→**DS的min_conf0.45/cd1800未生效(Python侧未重启)**;conf桶join(§4新行):≥0.60桶净−28.79=段亏67%→Step0原样不推荐;**DS段: PATCH 1(08:30 breakeven_trigger_atr 1.0→0裸改,节拍外)/越界0/在飞lock-1789626222-breaker frozen=[leverage,order_amount_pct]/熔断态/留言板_ai_task_ds空(桥接未装)**;执行=①rotate remove11隔离币(feed200→189,∩=∅✓)②PATCH _exp_cc(+watch_ds be-atr eval 20:30Z+worsen禁多线+ds_effective_note)+_ai_task_cc第2条,复读✓他键零漂移;刹车=6h≥8%已由07:52降档满足,不原地重复,HOLD候14:00Z评;宏观FGI50/BTC+0.4%/mcap−1.8%未触;trending∩feed=TRUMP,NEAR,ARB,SYN,LIT,PONS,VVV,UNI;§5 DS-5结案/DS-8,DS-9新增;现货候部署;下轮=14:00Z评BRAKE(metric 6h/24h钱包净+穿刺占比+均净)+watch_ds be-atr 20:30Z+mcp提醒+读_ai_task_ds |
