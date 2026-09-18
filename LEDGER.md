@@ -61,6 +61,8 @@
 
 | 2026-09-18 | **杠杆 10x 直令(live 08:0x)**: owner原话"你这下单数量和杠杆太谨慎了。增大 10x"。执行(Go热 v37 复读✓): leverage 2→10 ‖ mcp 4→10(admin 06:30:06 裸改 10→4=协议7越界,纠回) ‖ hunger_stop_loss_pct 0.025→0.125 + hunger_take_profit_pct 0.08→0.40(ROI口径键随lev×5换算,价格距离不变1.25%/4%) ‖ conf_sizing_max_mult 1.4→1.0(CC-5预注册:首次升档启用)。名义 21U地板→105×0.05×10×[0.6,1.0]=32~53U(5×);单笔风险=名义×2.5×ATR%≈0.6~2.6U;出场ATR口径不随杠杆变(P2)。order_amount_pct 尊重DS锁至12:37Z→到期升0.075(顶格0.075×10)。物理护栏: lev10需max_atr_pct≤2.67(Python侧→重启窗,现6;全仓假设下清算为账户级)。防御线保留: 24h≥20%→lev回2(降敞口不问,TG);劣化反应=换策略杠杆不降频。教练对质: ROI口径键(hunger_*)与旧SL同病,升档必须同步换算,否则45m饥饿刀在10x下=0.25%价格。 |
 
+| 2026-09-18 | **单笔上限直令(live 10:2x)**: owner原话"是不是用百分比比较好一些，如果百分比超过最大500u那就取500u下单数量"。答复: 下单本就是 percent_balance(保证金=avail×pct×mult 夹[0.05,0.75],名义=保证金×lev,地板21U);lev2 期全单21U是地板效应非固定额。owner 10:27:59Z 以 admin 自落 max_initial_margin_usdt=50(=单笔保证金上限50U⇒名义上限50×lev: lev10=500U/lev2=100U;strategy_execution.go:127),CC 10:28 同值 PATCH 撞车仅落 _exp_cc.p4_cap 注记;上限在 avail>1000U(pct0.05)/667U(0.075)才生效=护栏。要点: pct0.05 时引擎 pct 地板夹紧使 conf mult(0.6~1.0)无效(0.78×0.05=0.039→夹回0.05),全单=5%保证金×10=56U;mult 要起作用需 pct≥0.083>硬边界#8 顶格0.075(mcp10)→取舍交 owner。 |
+
 ## 1.5 策略组注册表（08-09 起;池归属与载具状态权威节;roster 有变当轮必更）
 
 | 载具 | id | 原型 | 池 | 状态 | 门/备注 |
@@ -335,6 +337,7 @@
 | 硬超时磨损类 | 48h滚动n13/−5.79@09-10 21:1x;全文=git 6b41621版§6 | 09-09 15:2x | 行动门: hold≥40m类n≥20∧类净≤−3U→升§4(方案max_hold60→45或hunger45→30;先做T+1 vision反事实) |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
+| 2026-09-18 10:2x-10:3x | 交互轮·owner问"百分比+500U上限": 已是percent_balance;owner自落 max_initial_margin_usdt=50@10:27:59(admin)=500U名义上限@lev10,CC同值撞车只落_exp_cc.p4_cap;P3段(open≥08:12)n23 244笔/日 wr52% 毛+3.94 均+0.171 avgW+0.68/avgL−0.38 名义中位54U 多+3.24/空+0.69(AKE +2.96 4m);杠杆对齐lev=10 逐单✓;pct0.05 夹紧⇒conf mult无效(登记§1);CC-8 12:37Z pct→0.075 不变;TG 简报 |
 | 2026-09-18 10:1x-10:3x | **RECOVER 首评轮(cron)**: 管道活(active 2: SYN多/STRK空;avail113.5 钱包≈119);五窗income净 1h+2.32/3h+2.28/6h+4.39(+3.9%)/12h+3.28/24h−2.44(−2.2%),刹车线无触;DS对账: 08:12后audit 0条(07:xx/10:0x节拍静默)/_ai_task_ds空/lock至12:37Z frozen[pct,lev]✓;**评判**: P1/P2(ATR口径)n≥30先到→KEEP 3/3(n32 193笔/日 均+0.137 SL均亏≤2×赢均);P3 lev10 首读 n20 +4.27 均+0.213 wr50%(交易所SL 3/−2.11·TP 2/+4.30·trail 7/+3.03)expect 4/4在轨;FIX hunger_sl 0.025 结案(等价并入P3);max_hold240 watch 子集n7/+1.22 未触;**改动(Go热 v38/v39 复读✓)**: ROUTE bl+哈基米(48h n8/−4.01∧-4028 lev invalid)→bl24 + rotate remove BR/哈基米→feed184 隔离∩feed=∅ ‖ FIX sl_ratio0.03/tp_ratio0.06(重启兜底陷阱 §3) ‖ _exp_cc 重写(P3顶层+cc8预注册+prev_verdict) ‖ 留言板#10(裁至7条6803B);**源码发现**: Go clamp SL≤0.3/lev(3%@lev10)=物理护栏内置→CC-7结案;有效门槛复核 conf min0.36=config0.35✓ cs_mult≤1.00✓;频率仪表 24h 66笔/日 均+0.027🔴 北极星+1.8 / 6h 136笔/日 均+0.155🟢 +21 / P3 226笔/日 均+0.213🟢 +48;宏观FGI56/BTC+2.2%/ETH+3.1%/trending∩池 ARB NEAR PONS PUMP RENDER UNI;现货候部署;send_later 12:40Z(CC-8 pct0.075) + 14:15Z(P3终裁+max_hold);§4两行结案,§5 CC-3/5/6/7结案 CC-10落地;下轮=12:40Z执行CC-8→14:15Z裁P3 |
 | 2026-09-18 08:0x-08:2x | 交互轮·owner直令"增大 10x"(P3 v37 lev10/mcp10纠回/hunger ROI换算/cs_mult1.0;CC-8 12:37Z排期)全文=git 5d2c77a版行 |
 | 2026-09-18 06:1x-06:3x | 交互轮·owner直令"不要不下单/改变策略"(P1 sides双向+mcp10 / P2 tp-sl pct→0 ATR口径 / 钉回min_conf0.35 cd180;prompt v5.2交付)全文=git 5d2c77a版行 |
