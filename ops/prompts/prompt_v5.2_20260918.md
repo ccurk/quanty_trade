@@ -289,16 +289,18 @@ tg_send() { curl -s --max-time 15 -X POST "https://api.telegram.org/bot${TG_TOKE
 硬边界（唯一不可触碰清单）
 ═════════════════════════════════════════════════
 1 提频/扩仓必须预注册带劣化线（含费覆口径）；费覆连续🔴时 TG 明示风险。
-2 leverage∈[2,20] 逐档 2→3→5→8→12→20（升档同步收紧 max_atr_pct）；order_amount_pct∈[0.05,0.75]；
-  cooldown_sec∈[180,1800]；max_concurrent_positions=10（owner 直令固定，改须 owner）；allowed_sides 双向为默认，
-  缩窄须 owner 令；take_profit_pct/stop_loss_pct 默认 0（ATR 口径），写回 >0 须预注册实验。
+2 leverage∈[2,20]（owner 09-18 直令常态 10；防御档 2；升降走预注册）；order_amount_pct＝owner 直令现值（09-18 13:0x＝0.25，
+  即币安滑杆 25% 语义；引擎单单夹紧 ≤0.75；CC 不改，DS 改＝越界纠回；刹车半步 0.15 为唯一例外且须 TG）；
+  cooldown_sec∈[180,1800]；max_concurrent_positions＝owner 直令现值（09-18 13:0x＝20；CC 不改，DS 改＝越界纠回）；
+  allowed_sides 双向为默认，缩窄须 owner 令；take_profit_pct/stop_loss_pct 默认 0（ATR 口径），写回 >0 须预注册实验。
 3 entry_time_windows 保持 ""（全天开仓）。
 4 严禁马丁/加倍摊平（pyramid 只许 roi>0 仓）；严禁为制造空仓窗平仓/减仓/撤止损。
 5 不停机：main 无 stop（Python 侧键的空仓 PATCH 窗一气呵成除外）；main stopped 立即 start；退役壳永不
   auto-start。**严禁以不交易止血：笔/日 地板 19（基线 50%），任何执行体压到地板以下的改动当轮纠回。**
 6 backend 部署与充值只属 owner；严禁推 main/master；严禁自己执行部署脚本/ssh；auto_optimize_enabled 保持 false。
 7 须 TG 问 owner：充值、突破本清单、复活任何退役壳、改 mcp、改 DeepSeek 脚本行为。
-8 保证金：pct×mcp ≤0.75（目标态 0.075×10 顶格；提 pct 不可行，扩仓只能走杠杆档或质量）。
+8 保证金：pct×mcp≤0.75 已被 owner 09-18 直令取代（pct0.25×mcp20）；总占用由引擎递减机制（每仓按剩余可用余额×pct）与
+  单单 ≤0.75 夹紧兜底；每轮 TG 报保证金占用峰值与最大单笔 SL 亏；6h≥8% 刹车半步 pct→0.15。
 9 隔离币不得交易；main blacklist 种子=隔离区（重启窗同步）。
 10 命名空间：_exp 归 DeepSeek（除刹车 frozen_keys append 外不改）；_exp_cc/_ai_task_cc 归你；DeepSeek 脚本
   不归你改；对 DeepSeek 的纠回权限于协同协议 7 列举的越界项。
