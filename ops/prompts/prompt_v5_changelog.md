@@ -58,3 +58,16 @@
 9.（同日 08:2x 增补）owner 直令"下单数量和杠杆太谨慎了。增大 10x"：核心使命加"杠杆"条（lev10 常态档；ROI 口径 hunger_* 键随杠杆换算；conf_sizing_max_mult 1.0；pct 目标 0.075；防御线 24h≥20%→lev2；物理护栏 max_atr_pct≤2.67 重启窗落）；快照加 09-18 08:0x 条。同轮落地 PATCH v37：leverage 2→10 / mcp 4→10（纠回 admin 06:30 裸改）/ hunger_stop_loss_pct 0.125 / hunger_take_profit_pct 0.40 / conf_sizing_max_mult 1.0。
 10.（同日 13:2x 增补）owner UI 自改 pct 0.25（滑杆 25% 语义）/ mcp 20 / max_consecutive_entries_per_symbol 100 / max_trades_per_day 5000 / warmup_bars 50 并重启：硬边界 #2 的 mcp=10 与 #8 的 pct×mcp≤0.75 改为"owner 直令现值，CC 不改，DS 改＝越界纠回"；总占用由引擎递减机制兜底；刹车半步 pct→0.15 为唯一例外。风险陈述与 DS breaker 阈值冲突见台账 §1 13:0x 行。
 11.（同日 13:4x 增补）owner "硬边界#8 是多余的"+"去掉了"：删除全部自动缩表条款——核心使命④改为"不自动缩表"；协同协议 5 改为只报警＋DS 砍值即恢复；每轮节奏 4 改为报警＋换策略杠杆；硬边界 #2 去掉半步例外、#8 改为无 CC 侧上限；TG 报告刹车行改报警行。保留：6h≥8%/24h≥20% TG 报警、24h≥30% TG🆘、avail<1U cancel-orders。
+
+# prompt v5.3 变更清单（vs v5.2 848966c）@2026-09-18 13:4xZ — owner"止损止盈收紧…高频开仓只抓能看到的收益"＋"给我一个最新的 prompt 我直接粘贴"
+1. 核心使命重排为 09-18 直令集：owner 值优先条（pct/mcp/lev/sides/select_limit/max_price 由 owner 界面设定，CC 不改，DS 改＝纠回）；不下单不是解决方案；不自动缩表；新增【出场哲学】条（紧出场高周转包为默认：信号 TP 2.0×ATR/SL 1.5×ATR、trailing 0.5×ATR/0.6%、保本 0.5×ATR、饥饿 20m 10%/5% ROI、max_hold 60）。删除"防御线/双转正/pct 目标 0.075/物理护栏 max_atr_pct≤2.67"（review A1、C10）。
+2. 授权声明：apply 内部 force stop（源码 optimize_handlers.go:843-847/strategy_lifecycle.go:199），代码与 Python 侧键改动不再等空仓窗（review C8 按推荐落定"准"）。
+3. 协同协议 7 越界清单：删"pct×mcp>0.75"，改为"pct/mcp/lev/sides/select_limit/max_price ≠ owner 现值"＋"tp/sl pct 写回>0"＋"出场包 9 键偏离且无预注册"（review A2）。协议 4 增"进程有效值推断法＝最近 Symbol select start 时间＋当时 config"。
+4. 【频率阶梯】节改为【质量与频率杠杆】：删 RECOVER 杠杆阶梯与 v4 常态阶梯的过时数字（review A3/B6），保留一轮 ≤2 原子包（review C9 按推荐保留）、地板 19。
+5. 引擎语义速查：出场层次与单笔风险公式按紧出场包更新（review B5）；下单公式补 max_initial_margin_usdt=500 与递减机制。
+6. 每轮节奏：2 加 owner 界面漂移巡检（无 audit 变化＝owner 值，登记不纠回）；3 改为不等空仓窗＋10 分钟自查点；4 改名"报警"。
+7. 硬边界：#2 改 owner 值条；#4 改"严禁手动平掉策略持仓"；#5 改"重启只为 Python 侧键/代码 apply"；#7 删"改 mcp"；#8 无 CC 侧上限；#11 canary 劣化到线＝TG 报 owner 拍板（不自动停）。
+8. 现货节：canary 起跑门去掉"双转正"，改 owner 明示；atr 倍数对齐 2.0/1.5；标注参数为 09-17 稿待部署时复核（review D11）。
+9. 能力清单 E 加 q=Symbol%20select%20start / q=EXIT_AUDIT；B 加 429 瞬时；H 加 resolveUSDMOrderAmount/lifecycle force；J 改重启路径；O 加重启重播种复核。
+10. 快照加 09-18 六条直令；环境节凭证占位符（脱敏）；可粘贴版经会话文件交付 owner。
+同轮已落地（PATCH v49 复读✓）：atr_tp_mult 4.5→2.0 / atr_sl_mult 2.5→1.5（Python 侧，owner 重启生效）；trailing_activation_atr 1→0.5 / trailing_callback_pct 1.2→0.6 / breakeven_trigger_atr 1→0.5 / hunger_after_minutes 45→20 / hunger_take_profit_pct 0.40→0.10 / hunger_stop_loss_pct 0.125→0.05 / max_hold_minutes 240→60（Go 热）。预注册 _exp_cc.p6_exit_tight，eval 09-19 00:00Z 或段 n≥40。
