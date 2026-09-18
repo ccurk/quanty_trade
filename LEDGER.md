@@ -67,13 +67,15 @@
 
 | 2026-09-18 | **仓位直令·owner UI自改(live 13:0x;"界面上选择25%仓位,保证金就是25%…为什么我们这个会锁住")**: owner经UI(无audit)改 order_amount_pct 0.075→**0.25**(=币安滑杆25%语义,strategy_execution.go:139注释07-20直令) / max_concurrent_positions 10→**20** / max_consecutive_entries_per_symbol 3→100 / max_trades_per_day 2000→5000 / warmup_bars 30→50,并重启@13:08:57Z(Symbol select 300 同参)。CC同刻PATCH pct0.25撞车(值已同)只落 _exp_cc.p5_pct 预注册+_exp cc_note+留言板;裁留言板8360→5531B。**硬边界#2(mcp=10)与#8(pct×mcp≤0.75)自此被owner值取代: mcp/pct=owner直令现值(本节权威),CC不改;DS改=越界纠回。风险一次性陈述(已TG): pct0.25×mcp20递减序列合计≈99.7%余额入保证金,10x下名义≈10×钱包;单仓SL(2.5×ATR≈2~5%价)≈5.5~14U(5~12%钱包);全池同向−3%≈−30U(25%);cross清算≈全池−10%。刹车线保留: 6h≤−8%→pct半步0.15(降敞口不问+TG);24h≤−20%→lev2;24h≤−30%且已防御→🆘。DS breaker −4U 阈值在此配置下几小时必触并砍pct→与owner令冲突,已留言板请owner侧改成钱包比例。** |
 
+| 2026-09-18 | **去掉自动缩表刹车直令(live 13:4x)**: owner原话"prompt 里的硬边界第 8 条 这个边界是个傻逼"→CC确认#8多余(引擎按剩余可用余额×pct递减,总占用天然≤100%,#8只是保守偏好)并问是否同去 6h≤−8%降pct半步/24h≤−20%降lev2 两条→owner"去掉了"。执行: _exp_cc.owner_no_autocut 登记+p3/p5 worsen 改为只报警(v48 复读✓);prompt v5.2 删自动缩表条款(核心使命④/协同协议5钱包线/每轮节奏4/硬边界#2半步例外/#8/TG刹车行)。**自此 CC 任何轮次不得自动降 pct/lev/mcp/sides**;保留=TG 报警(6h≥8%/24h≥20%)+24h≥30% TG🆘+avail<1U cancel-orders;DS breaker 砍 pct/lev→按 owner 值恢复并 TG。后果一次性陈述(已TG): 账户唯一硬刹车=交易所强平(cross,全池≈−10%)。首单0.25实证: DRIFT 13:13 空 名义300U 保证金30U=avail120×0.25✓。 |
+
 ## 1.5 策略组注册表（08-09 起;池归属与载具状态权威节;roster 有变当轮必更）
 
 | 载具 | id | 原型 | 池 | 状态 | 门/备注 |
 |---|---|---|---|---|---|
 
 > 维护注 08-29 17:4xZ：#76 **落地结案删行**——17:36自查点retry#2逢全账户空仓窗:brk stop[poll1即stopped无幻影卡]-PATCH六键+_exp尾注FIX伴随-start✓running✓复读mode=percent_balance/cs_en=true/floor21/0.6-1.4-0.55全落库;→rotate add BAS,NIL(斜杠)brk feed4→6✓;main remove BTR残留✓专家残留0互斥恢复;分界前brk段n8/−0.56全5U。
-| main 通才(平台名 Meme_合约信号计算引擎_1) | 8eb182b6 | 通才(S4..S23+S30+S31+S33;S32关guard) | auto·feed184@09-18 10:2x(隔离∩feed=∅) | running | **09-18 13:1xZ owner UI自改+重启: sides=[buy,sell] mcp20 lev10 pct0.25(滑杆25%) max_init_margin500 max_consec100 max_trades5000 warmup50 tp/sl pct=0(ATR口径) hunger45m 40%/12.5%ROI cs_mult[0.6,1.0] max_hold240(DS watch) trailing1.0/1.2% BE1.0 cd180/min_conf0.35 select_limit300 max_price1e12 bl24 feed≈283; _exp_cc.p5_pct eval 20:00Z或n≥30(worsen 6h≤−8%→pct0.15;24h≤−20%→lev2); leverage留frozen_keys(=DS勿动)** _exp_cc=cc8 pct0.075 in-flight(eval 18:45Z或n≥30;劣化线段净≤−6U或6h≤−8%→0.05) carry p3_lev10 KEEP 4/4@12:4x, prev P1/P2 KEEP 3/3@10:2x; 刹车链史=git e94a8b0版行; 10:2x态=git 56a5311版行 |
+| main 通才(平台名 Meme_合约信号计算引擎_1) | 8eb182b6 | 通才(S4..S23+S30+S31+S33;S32关guard) | auto·feed184@09-18 10:2x(隔离∩feed=∅) | running | **09-18 13:1xZ owner UI自改+重启: sides=[buy,sell] mcp20 lev10 pct0.25(滑杆25%) max_init_margin500 max_consec100 max_trades5000 warmup50 tp/sl pct=0(ATR口径) hunger45m 40%/12.5%ROI cs_mult[0.6,1.0] max_hold240(DS watch) trailing1.0/1.2% BE1.0 cd180/min_conf0.35 select_limit300 max_price1e12 bl24 feed≈283; _exp_cc.p5_pct eval 20:00Z或n≥30(owner 13:4x 去掉自动缩表: worsen=只报警;劣化反应=换策略杠杆); leverage留frozen_keys(=DS勿动)** _exp_cc=cc8 pct0.075 in-flight(eval 18:45Z或n≥30;劣化线段净≤−6U或6h≤−8%→0.05) carry p3_lev10 KEEP 4/4@12:4x, prev P1/P2 KEEP 3/3@10:2x; 刹车链史=git e94a8b0版行; 10:2x态=git 56a5311版行 |
 | qt-spot-long(现货) | 未建 | main fork+S34(spot) | auto select_limit100 现货USDT对;bl=隔离区19 | **候部署@09-17(owner:第二进程quanty-spot BINANCE_MARKET=spot+独立DB/Redis+划转;cron:建壳→S34→烟雾→canary)** | 规格=prompt v5.1【现货载具】节(buy-only/spot_notional_usdt12/mcp3/cd300/mc0.60/atr_tp3.0/atr_sl1.5/hunger off/use_exchange_tpsl off);起跑门=spot自检✓∧现货钱包≥30U∧(main双转正∨owner令);劣化线段净≤−3U∨n≥10∧wr<35%→stop;现货刹车6h≥5%→stop;超时缺口=M候选dev-spot-maxhold(quick_trade_monitor.go:41去usdm门)或cron巡检持仓龄≥180m;DeepSeek未接入 |
 | ~~退役壳×4~~ trend 827ffe8c/breakout-v2 3b646bf4/fade-v2 7583727a/fade 21519f1b | — | — | — | **已从平台删除**(09-15~16 owner/迁移;/api/strategies仅main 1行@09-17 07:3x实证) | 谱系tpl/verdict/遗仓收养全史=git 7ee5ca0版§1.5;复活=新壳FLEET预注册+owner令;qt-breakout-follow 2111f5f9 owner删@08-15同上 |
 
@@ -283,7 +285,7 @@
 | 11 | 全文=git 9d56e10版 | | |
 | 47 | FLEET候选 | S27突破追动量复活版 | **已兑现@08-29=FLEET复活brk-v2(tpl973=S26内核+S27),本行让渡§1.5 brk行与_exp** | — | 结案→§1.5 |
 | 55 | E7类(trend) | **EXP:trend prem降档候选——watch结案@08-21不改**:真凶=atr_discount非S24;全文git(已自证@08-21 12:18 COTI破荒)或EXP降门;费覆红线内只登记不动〔分带演化+ACE三条件全史git 044907d/92fb9c3〕 | 机制级(gate) | 0/2 | 候选(需求已减:破荒后活性恢复) |
-| 65 | 代码缺陷(组共病;v2/trend活性) | 信号门浮点边界:score与门槛精确等值被静默丢弃 | 活体证据08-22 COLLECT六行;机制=浮点算术直证 | n=6行/1夜 | **修复executed@08-22(config:v2 scp0.049+trend lcp0.149)→epsilon代码级永久化@08-23 21:24(v2域随S28 apply,ss≥thr−1e-9);trend域曾靠lcp0.149→**回退@08-25→重修executed@09-03(owner频率直令窗顺手lcp0.149+_exp预注册,trend域恢复;main两侧维持不修)**;main两侧维持不修(短侧意外保护+长侧0.90反向安全,owner'先这样'批准);全文git a2e845f系** |
+| 65 | 全文=git e39ddee版 | | |
 | 66 | 代码候选(v2原型正确性;批2) | S28-fade衰竭签名直入重写 | v2壳已退役@08-28,S28随葬;复活=新壳FLEET时重估;设计全文git | n/a | 冻结(宿主退役) |
 | 58 | E9类(main扩仓) | E9扩仓rider(0.08→0.10)兑现@09-03 | 直令+rider全文config._exp史;门史git f3c6469 | n=12段(史) | **结案;E9裁决=ROLLBACK@09-03 21:2x(24h−9.03∧段n21/−9.42;pct回0.08);全文git 64ede74版行** |
 | 52 | 全文=git 9d56e10版 | | |
@@ -327,7 +329,7 @@
 | 幻影行post-fix观察 | 累计n=2(SCRT@08-25/TAC@08-29);全文=git 6b41621版§6 | 08-28 18:1x | n≥3或含实亏→升§4 |
 | epsilon边界放行观测(v2域) | n=5/类净+0.027;全文=git 6b41621版§6 | 08-28 18:2x | 累计n≥5∧类净≤−2U→复议 |
 |---|---|---|---|
-| **09-18 P3 lev10 段终裁=KEEP 4/4(RECOVER)** | @12:4x 段(open≥08:12:09Z) n35 186笔/日 净+5.62 均+0.161 wr49% 赢均+0.750 亏均−0.396;expect 笔/日≥38.7✓ 均净≥0✓ 交易所SL均亏−0.811≤2×0.750✓ 6h+3.8%✓;死法: 交易所SL 7/−5.68(SL距≈1.2~2.4%价) 饥饿1/−0.76 其它亏9/−0.36 ‖ TP 4/+7.54(AKE/CROSS×2/UNI) trail 11/+3.56 guard_sl 2/+0.99 sl_crossed 1/+0.33;多14/+1.98 空21/+3.64;名义均53.8;费覆 0.161 vs 3×费0.161=临界🟡;24h tape n72 均+0.089 wr58%;income 6h净+3.92(+3.8%) 24h +1.59(+1.6%)。首读@10:2x(n20 +4.27)与09-17刹车基线史=git 56a5311/5d2c77a版§6 | 09-18 12:4x | 防御线保留(24h≤−20%→lev10→2整包);cc8段另计 |
+| **09-18 P3 lev10 段终裁=KEEP 4/4(RECOVER)** | 全文=git e39ddee版 | | |
 | main断流观测(三闸交集关门) | main笔数0/24h@09-10 21:1x=断连首全零轮(30.2h零成交;史2@12:2x/16@04:1x;微差双胞纪律留档git 2596a9a) | 09-08 18:1x | 判据不变:再现6h+零笔且池ATR中位≥0.5→查管道;每轮记main笔数 |
 | rotate has_open_position判定条件观测 | n=2矛盾@08-23(15:16 COLLECT持仓中remove未被拒)〔全文git 0940c62〕 | 08-23 | 再现1例→定性(疑判定=本载具视角);影响=互斥窗口期 |
 | apply重启作用域观测 | **定案@08-24 12:4x n=2→升§3**(tpl823+tpl887双证,他载具feed/IDLE计数连续) | 08-24 12:4x | 已定案;反例(他载具feed跳回种子全集)即回§6重开 |
@@ -345,6 +347,7 @@
 | 硬超时磨损类 | 48h滚动n13/−5.79@09-10 21:1x;全文=git 6b41621版§6 | 09-09 15:2x | 行动门: hold≥40m类n≥20∧类净≤−3U→升§4(方案max_hold60→45或hunger45→30;先做T+1 vision反事实) |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
+| 2026-09-18 13:1x-13:3x | 交互轮·owner"#8傻逼"+"去掉了": _exp_cc owner_no_autocut+p3/p5 worsen→只报警(v48复读✓);prompt v5.2 删自动缩表条款+changelog#11;首单0.25=DRIFT 300U/30U保证金✓ avail120→90;§1登记;TG 一次性后果陈述 |
 | 2026-09-18 13:0x-13:2x | 交互轮·owner UI自改(pct0.25/mcp20/max_consec100/max_trades5000/warmup50)+重启13:08:57;CC PATCH撞车只落p5_pct预注册+cc_note+留言板(裁至5531B);硬边界#2/#8被owner值取代(§1登记);风险一次性陈述已TG;首单13:01-13:05仍旧pct(6.3~8.5U保证金),0.25首单待核;DS段: 零PATCH/lock已过期/_ai_task_ds空;prompt v5.2 #2/#8 改行+changelog#10 |
 | 2026-09-18 12:5x-13:0x | 交互轮·owner自改重启: 12:56快照stopped/空仓→12:57:07 Symbol select 300(mode=filter min_price0 max_price1e12 min_vol1)→running;config diff vs10:28: select_limit300/max_price1e12/pct0.075;代码同(tpl998);CC: rotate remove17(feed283 ∩=∅✓)+max_initial_margin_usdt 50→500(v44复读✓,owner澄清=保证金口径);首单PLAY 89U/AIA 83.7U(保证金8.4~8.9U=avail111×0.075);§3纠正: 09-17 02:25另有重启,log q搜索最旧优先;§5 CC-8落地,CC-10 owner裁保证金%;TG简报 |
 | 2026-09-18 10:2x-10:3x | 交互轮·owner问"百分比+500U上限": 已是percent_balance;owner自落 max_initial_margin_usdt=50@10:27:59(admin)=500U名义上限@lev10,CC同值撞车只落_exp_cc.p4_cap;P3段(open≥08:12)n23 244笔/日 wr52% 毛+3.94 均+0.171 avgW+0.68/avgL−0.38 名义中位54U 多+3.24/空+0.69(AKE +2.96 4m);杠杆对齐lev=10 逐单✓;pct0.05 夹紧⇒conf mult无效(登记§1);CC-8 12:37Z pct→0.075 不变;TG 简报 |
