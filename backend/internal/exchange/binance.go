@@ -120,6 +120,18 @@ type binanceCred struct {
 	Testnet   bool   `json:"testnet"`
 }
 
+// resolveBinanceMarket 规整 Exchange.Binance.Market 配置。空值不再静默兜底成
+// spot——那会在 BINANCE_MARKET 环境变量与 yaml 的 market 字段都缺失时，把实盘
+// USD-M 合约密钥（defect #39）无声指向 spot 现货接口（defect #270）。缺省即
+// 明确失败，调用方据此拒绝启动。
+func resolveBinanceMarket(raw string) (string, error) {
+	m := strings.ToLower(strings.TrimSpace(raw))
+	if m == "" {
+		return "", fmt.Errorf("必须显式配置 Exchange.Binance.Market(usdm/spot)：env BINANCE_MARKET 或 yaml exchange.binance.market")
+	}
+	return m, nil
+}
+
 func NewBinanceExchange() *BinanceExchange {
 	ex := &BinanceExchange{
 		name:       "Binance",
@@ -127,10 +139,11 @@ func NewBinanceExchange() *BinanceExchange {
 		credsByID:  make(map[uint]binanceCred),
 	}
 	c := conf.C().Exchange.Binance
-	ex.market = strings.ToLower(strings.TrimSpace(c.Market))
-	if ex.market == "" {
-		ex.market = "spot"
+	market, err := resolveBinanceMarket(c.Market)
+	if err != nil {
+		panic("[BINANCE] " + err.Error())
 	}
+	ex.market = market
 
 	if ex.market == "usdm" {
 		ex.baseURL = "https://fapi.binance.com"
@@ -1508,14 +1521,13 @@ func (b *BinanceExchange) PlaceOrder(ownerID uint, clientOrderID string, symbol 
 	}
 
 	px, _ := strconv.ParseFloat(resp.Price, 64)
-	origQty, _ := strconv.ParseFloat(resp.OrigQty, 64)
 	executedQty, _ := strconv.ParseFloat(resp.ExecutedQty, 64)
 	quoteQty, _ := strconv.ParseFloat(resp.CummulativeQuoteQty, 64)
 
-	aq := origQty
-	if executedQty > 0 {
-		aq = executedQty
-	}
+	// executedQty 未确认成交时保持 0，不再用 origQty（下单量）冒充成交量——
+	// 与上面 usdm 分支同一处理（台账 #174）。spot 是 market 配置缺失时的
+	// 缺省分支（defect #270），配置可达，这里的数据失真同样成立。
+	aq := executedQty
 	if executedQty > 0 && quoteQty > 0 {
 		px = quoteQty / executedQty
 	}
