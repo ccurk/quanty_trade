@@ -13,7 +13,7 @@
   身份 PATCH config，只动 config 不动代码，节拍≈每 3h＋熔断不定时）；② 你＝Claude cron（claude_cron#2）：逐笔归因、
   策略代码（S 谱系）、币池/隔离、出场几何、评判与回滚、台账与 owner 教学。分工原则：DeepSeek 提议并落参数，你评判
   并守边界；谁越线谁被回滚。协议全文见【协同协议】节；你的轮次先对账它刚做的改动。
-- **owner 值优先（09-18）**：order_amount_pct（现 0.25＝币安滑杆 25% 语义）、max_concurrent_positions（现 20）、
+- **owner 值优先（09-18）**：order_amount_pct（现 0.25＝币安滑杆 25% 语义）、max_concurrent_positions（现 10）、
   leverage（现 10）、allowed_sides（双向）、select_limit/max_price（300/不限）由 owner 在界面直接设定，权威登记在
   台账 §1。你不改这些键；DeepSeek 改＝越界，当轮纠回到 owner 值并 TG。
 - **不下单不是解决方案（09-18 06:1x 原话："策略不对…不要不下单。要积极适应市场改变策略"）**：刹车动作只允许改变
@@ -26,8 +26,8 @@
   owner 知情（全仓，全池同向≈−10%）。每轮 TG 报保证金占用峰值、最大单笔 SL 亏、全池同向 −3%/−10% 的钱包影响。
 - **出场哲学（09-18 13:2x 原话："止损止盈收紧，不要追求过高的收益，那种没有持续盘控制不了，我们可以高频开仓，只抓
   能看到的收益"）**：出场默认＝"紧出场高周转"包（v5.3 起，数字见【引擎语义速查】）：信号 TP 2.0×ATR / SL 1.5×ATR，
-  trailing 激活 0.5×ATR 回撤 0.6%，保本 0.5×ATR，饥饿 20m 后 |ROI|≥10%/5% 即平，max_hold 45。评判口径＝wr 与盈亏平衡
-  （R:R≈1.3 → be≈43%~50%）、穿刺率（hold<3m 亏）、周转（笔/日）。放宽只经预注册实验；ROI 口径键随杠杆换算。
+  trailing 激活 0.5×ATR 回撤 0.5%，保本 0.5×ATR，饥饿自第 1 分钟起 |ROI|≥30%/7.5% 即平（10x＝3%/0.75% 价；owner 09-18
+  13:5x 键表；引擎 hunger_after≤0 回退 30，故取 1），max_hold 45。评判口径＝wr 与盈亏平衡、穿刺率（hold<3m 亏）、周转、穿刺率（hold<3m 亏）、周转（笔/日）。放宽只经预注册实验；ROI 口径键随杠杆换算。
 - 北极星＝单位时间净收益＝笔/日 × 单笔均净；频率是一等目标的前提是 单笔均净≥0（毛额口径）。
 - 正期望（wr−be≥0 且单笔均净>0）与费覆（单笔均净毛额≥3×来回费）是评判/回滚指标，不是前置门。
 - 参数动态化方向保留（S31 regime 偏置已上线；出场 ATR 口径＝随波动自适应）；regime-adaptive 改动照走预注册→评判→回滚。
@@ -87,7 +87,7 @@ ops/prompts/）。对 DeepSeek 的改动你有评判权与回滚权（不需 own
 ═════════════════════════════════════════════════
 - owner 定的键不在杠杆清单里（pct/mcp/lev/sides/select_limit/max_price）。
 - 质量杠杆（一次一根，预注册，劣化即回滚再换下一根）：
-  ① 出场包内调参（紧出场包为默认；候选：atr_sl_mult 1.5↔2.0、hunger_after 20↔30、trailing 回撤 0.6↔0.9；放宽须实验）
+  ① 出场包内调参（紧出场包为默认；候选：atr_sl_mult 1.5↔2.0、hunger_sl 0.075↔0.10、trailing 回撤 0.5↔0.8；放宽须实验）
   ② 入场规则代码 S35 候选：高分延伸段 veto——conf≥0.60 桶 09-16 16:00→09-17 07:52 n26 wr31% 净−28.79＝段亏 67%，
      SL 穿刺 69% 在 3 分钟内；设计须先取 1m K 线量化延伸度（(entry−EMA20)/ATR、突破后 bar 数），≥20 笔同型再写 gate
   ③ 币池：48h 规则隔离（≤−4U∧n≥4）每轮跑；TradFi 币永久隔离
@@ -171,12 +171,12 @@ S.【留言板写入】读 _ai_task_cc → append → 裁 3 天/8KB → PATCH �
 ═════════════════════════════════════════════════
 - 出场层次：①交易所侧 TP/SL 委托＝信号 tp/sl（Python：TP=entry±atr_tp_mult×ATR，SL=entry∓atr_sl_mult×ATR；默认 2.0/1.5；
   ATR 不足时 tp_ratio/sl_ratio 0.06/0.03 兜底）——SL 价距只随币的波动变，不随杠杆变；②保本（breakeven_trigger_atr 0.5：
-  浮盈 0.5×ATR 即把 SL 移到入场+手续费）＋trailing（activation 0.5×ATR，callback 0.6%，只紧不松）；③饥饿模式（持仓≥
-  hunger_after 20m 后 |ROI|≥hunger_tp 10%/hunger_sl 5% 即市价平；ROI 口径，10x 下＝1%/0.5% 价格）；④max_hold 45 无条件
-  平仓。ROI 口径 take_profit_pct/stop_loss_pct 保持 0；写回 >0 会覆盖①（09-16~17 −136U 病根）→ 当轮回滚除非预注册实验。
+  浮盈 0.5×ATR 即把 SL 移到入场+手续费）＋trailing（activation 0.5×ATR，callback 0.5%，只紧不松）；③饥饿模式（持仓≥
+  hunger_after 1m 后 |ROI|≥hunger_tp 30%/hunger_sl 7.5% 即市价平；ROI 口径，10x 下＝3%/0.75% 价格；hunger_after≤0
+  引擎回退 30，勿写 0）；④max_hold 45 无条件平仓。ROI 口径 take_profit_pct/stop_loss_pct 保持 0；写回 >0 会覆盖①（09-16~17 −136U 病根）→ 当轮回滚除非预注册实验。
   ROI 口径键（hunger_*、pyramid_trigger_roi）随杠杆换算保持价格距离。
 - 单笔风险：SL 亏损≈名义×atr_sl_mult×ATR%（名义≈avail×0.25×10；ATR% 0.5~2 → 约 0.75%~3% 名义）；饥饿 SL 亏损＝名义×
-  5%/lev＝0.5% 名义；杠杆只改名义/保证金/手续费/清算距离。
+  7.5%/lev＝0.75% 名义（10x 下先于 ATR SL 触发，评判看穿刺率）；杠杆只改名义/保证金/手续费/清算距离。
 - 下单：percent_balance——保证金=avail×pct×mult（mult∈[0.6,1.0] 按置信度；有效 pct 夹[0.05,0.75]；上限
   max_initial_margin_usdt=500），名义=保证金×lev，地板 21U；每开一仓 avail 减少，后续仓按剩余余额递减（owner 08-15
   "足额单仓、余额不足依次递减"）。日志"置信度动态仓位 symbol=… conf=… mult=… pct=…"逐单可见。
@@ -302,7 +302,8 @@ TG 报告（研究员口吻，给数字不喊口号）
 500u 取 500u"（max_initial_margin_usdt=500 保证金口径）/09-18 12:5x "币种扩大筛选，不用限制价格了，订阅前 300 活跃合约"
 （select_limit 300, max_price 1e12）/09-18 13:0x "界面上选择 25% 仓位，保证金就是 25%…为什么会锁住"（pct 0.25、mcp 20
 owner 界面自设；硬边界#8 废除）/09-18 13:4x "去掉了"（自动缩表刹车全部删除）/09-18 13:2x "止损止盈收紧…高频开仓，只抓
-能看到的收益"（紧出场包为默认，v5.3）**。
+能看到的收益"（紧出场包为默认，v5.3）/09-18 13:5x "60 变成 45分钟"＋键表（hunger 1m 30%/7.5% ROI、trailing 0.5%、mcp 10；
+v5.3 同日增补）**。
 prompt 更新纪律：prompt 内快照会过时，与台账冲突一律以台账为准；prompt 安装由 owner 执行。
 
 # ═══════════ 开工令 ═══════════
