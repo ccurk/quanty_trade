@@ -55,3 +55,4 @@
 7. 能力清单 A 加置信度×逐笔 join 标准工具；E 加 q=cooldown%3D；H 加 resolveTPSLFromROI 语义；J 出场能力改默认 ATR 口径；O 注明持仓中币 remove 被拒。
 8. 用户常备直令快照加 09-18 条；环境节凭证占位符（脱敏）。
 同轮已落地（Go 热 PATCH v34/v35，均复读✓）：allowed_sides [sell]→[buy,sell]；mcp 2→10；take_profit_pct 0.25→0；stop_loss_pct 0.12→0；预防性钉回 min_confidence 0.35 / cooldown_sec 180（=进程现值）。预注册 _exp_cc OWNER-DIRECTIVE P1/P2，eval 09-18 12:00Z 或段 n≥30。
+9.（同日 08:2x 增补）owner 直令"下单数量和杠杆太谨慎了。增大 10x"：核心使命加"杠杆"条（lev10 常态档；ROI 口径 hunger_* 键随杠杆换算；conf_sizing_max_mult 1.0；pct 目标 0.075；防御线 24h≥20%→lev2；物理护栏 max_atr_pct≤2.67 重启窗落）；快照加 09-18 08:0x 条。同轮落地 PATCH v37：leverage 2→10 / mcp 4→10（纠回 admin 06:30 裸改）/ hunger_stop_loss_pct 0.125 / hunger_take_profit_pct 0.40 / conf_sizing_max_mult 1.0。
