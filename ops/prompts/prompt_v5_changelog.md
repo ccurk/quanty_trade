@@ -44,3 +44,14 @@
 8. 直令快照加 09-17 现货直令。
 
 未做/待 owner：部署 quanty-spot 第二进程＋现货钱包划转＋填 BACKEND_SPOT/SPOT_ID；决定 canary 起跑是否等 main 双转正；M 候选 dev-spot-maxhold 是否要（无它则现货持仓只靠 TP/SL 出场）。
+
+# prompt v5.2 变更清单（vs v5.1）@2026-09-18 06:2xZ — owner 直令"策略不对…不要不下单…要积极适应市场改变策略"＋"这个加到 prompt 中"
+1. 核心使命新增【不下单不是解决方案】条：刹车动作只允许改变"怎么交易"（出场几何/杠杆档/入场规则/币池/regime 化方向偏置）；禁方向、缩 mcp、cd 拉满、抬 min_confidence 不是刹车杠杆；频率硬地板＝笔/日 ≥ 基线 50%（19/日）任何状态适用；亏损轮必须换一根打在病根上的杠杆并预注册；唯一缩表例外＝6h≥20% 或 avail<1U 紧急止血且同轮带策略改动、下轮复飞。教训原文：09-17 07:52→09-18 06:14 刹车链 lev10→2→禁多→mcp2，笔/日 256→112→26→20。
+2. 协同协议 4 新增"进程有效值 ground truth＝START 行"（logs q=cooldown%3D）：config≠进程＝未生效，评判以进程为准，未生效的 Python 侧键须钉回进程值（09-18 教训：DeepSeek 写的 cd1800/min_conf0.45 从未生效却可被任何重启静默激活）；协议 5/7 把"禁方向/缩 mcp/压频率到地板以下"列为越界（当轮纠回）。
+3. 频率阶梯：刹车态不再"阶梯暂停"，改为"先修质量"的杠杆清单（①出场 ATR 口径 ②S35 高分延伸 veto 候选 ③conf_sizing_max_mult 1.4→1.0 升档时启用 ④48h 规则隔离）；RECOVER 门只管杠杆升档，不再管 sides/mcp；劣化反应永远是"换杠杆"不是"缩表"。
+4. 引擎语义速查重写出场层次：默认 ATR 口径（take_profit_pct=stop_loss_pct=0 → resolveTPSLFromROI 原样用信号 tp/sl＝2.5×ATR SL / 4.5×ATR TP），SL 价距随波动不随杠杆；ROI 口径 pct 写回 >0＝当轮回滚除非预注册；单笔风险公式改为 名义×atr_sl_mult×ATR%。
+5. 硬边界 #2 加"allowed_sides 双向为默认、tp/sl pct 默认 0"；#5 加"严禁以不交易止血：笔/日地板 19"；#11 注明现货 canary 是唯一允许"停"的载具。
+6. 每轮节奏 2 加读 START 行；4 改为"刹车＝换策略杠杆"；5 加置信度桶 join；7 优先级加"频率地板"。
+7. 能力清单 A 加置信度×逐笔 join 标准工具；E 加 q=cooldown%3D；H 加 resolveTPSLFromROI 语义；J 出场能力改默认 ATR 口径；O 注明持仓中币 remove 被拒。
+8. 用户常备直令快照加 09-18 条；环境节凭证占位符（脱敏）。
+同轮已落地（Go 热 PATCH v34/v35，均复读✓）：allowed_sides [sell]→[buy,sell]；mcp 2→10；take_profit_pct 0.25→0；stop_loss_pct 0.12→0；预防性钉回 min_confidence 0.35 / cooldown_sec 180（=进程现值）。预注册 _exp_cc OWNER-DIRECTIVE P1/P2，eval 09-18 12:00Z 或段 n≥30。
