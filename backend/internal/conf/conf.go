@@ -169,7 +169,7 @@ func defaultConfig() Config {
 				APIKey:    "",
 				APISecret: "",
 				Testnet:   false,
-				Market:    "spot",
+				Market:    "",
 				BaseURL:   "",
 				WsBaseURL: "",
 				WsAPIURL:  "",
