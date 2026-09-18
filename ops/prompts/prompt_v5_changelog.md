@@ -71,3 +71,4 @@
 9. 能力清单 E 加 q=Symbol%20select%20start / q=EXIT_AUDIT；B 加 429 瞬时；H 加 resolveUSDMOrderAmount/lifecycle force；J 改重启路径；O 加重启重播种复核。
 10. 快照加 09-18 六条直令；环境节凭证占位符（脱敏）；可粘贴版经会话文件交付 owner。
 同轮已落地（PATCH v49 复读✓）：atr_tp_mult 4.5→2.0 / atr_sl_mult 2.5→1.5（Python 侧，owner 重启生效）；trailing_activation_atr 1→0.5 / trailing_callback_pct 1.2→0.6 / breakeven_trigger_atr 1→0.5 / hunger_after_minutes 45→20 / hunger_take_profit_pct 0.40→0.10 / hunger_stop_loss_pct 0.125→0.05 / max_hold_minutes 240→60（Go 热）。预注册 _exp_cc.p6_exit_tight，eval 09-19 00:00Z 或段 n≥40。
+11.（同日 13:5x 增补）owner "60 变成 45分钟"＋键表（"我这边分类器拦死，只能你落"）：max_hold 45；hunger_after 表写 0→引擎 ≤0 回退 30，按意图落 1（自首分钟起用饥饿区间）；hunger_take_profit_pct 0.30（3% 价@10x）、hunger_stop_loss_pct 0.075（0.75% 价；owner："0.5% 太噪声"）、trailing_callback_pct 0.5、max_concurrent_positions 20→10（owner 表）。PATCH v50/v51 复读✓。核心使命出场哲学条、引擎语义速查③、质量杠杆①、快照同步更新。风险注记：0.75% 固定止损自第 1 分钟起优先于 ATR SL，评判以穿刺率为主。

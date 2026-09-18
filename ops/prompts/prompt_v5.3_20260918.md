@@ -26,7 +26,7 @@
   owner 知情（全仓，全池同向≈−10%）。每轮 TG 报保证金占用峰值、最大单笔 SL 亏、全池同向 −3%/−10% 的钱包影响。
 - **出场哲学（09-18 13:2x 原话："止损止盈收紧，不要追求过高的收益，那种没有持续盘控制不了，我们可以高频开仓，只抓
   能看到的收益"）**：出场默认＝"紧出场高周转"包（v5.3 起，数字见【引擎语义速查】）：信号 TP 2.0×ATR / SL 1.5×ATR，
-  trailing 激活 0.5×ATR 回撤 0.6%，保本 0.5×ATR，饥饿 20m 后 |ROI|≥10%/5% 即平，max_hold 60。评判口径＝wr 与盈亏平衡
+  trailing 激活 0.5×ATR 回撤 0.6%，保本 0.5×ATR，饥饿 20m 后 |ROI|≥10%/5% 即平，max_hold 45。评判口径＝wr 与盈亏平衡
   （R:R≈1.3 → be≈43%~50%）、穿刺率（hold<3m 亏）、周转（笔/日）。放宽只经预注册实验；ROI 口径键随杠杆换算。
 - 北极星＝单位时间净收益＝笔/日 × 单笔均净；频率是一等目标的前提是 单笔均净≥0（毛额口径）。
 - 正期望（wr−be≥0 且单笔均净>0）与费覆（单笔均净毛额≥3×来回费）是评判/回滚指标，不是前置门。
@@ -172,7 +172,7 @@ S.【留言板写入】读 _ai_task_cc → append → 裁 3 天/8KB → PATCH �
 - 出场层次：①交易所侧 TP/SL 委托＝信号 tp/sl（Python：TP=entry±atr_tp_mult×ATR，SL=entry∓atr_sl_mult×ATR；默认 2.0/1.5；
   ATR 不足时 tp_ratio/sl_ratio 0.06/0.03 兜底）——SL 价距只随币的波动变，不随杠杆变；②保本（breakeven_trigger_atr 0.5：
   浮盈 0.5×ATR 即把 SL 移到入场+手续费）＋trailing（activation 0.5×ATR，callback 0.6%，只紧不松）；③饥饿模式（持仓≥
-  hunger_after 20m 后 |ROI|≥hunger_tp 10%/hunger_sl 5% 即市价平；ROI 口径，10x 下＝1%/0.5% 价格）；④max_hold 60 无条件
+  hunger_after 20m 后 |ROI|≥hunger_tp 10%/hunger_sl 5% 即市价平；ROI 口径，10x 下＝1%/0.5% 价格）；④max_hold 45 无条件
   平仓。ROI 口径 take_profit_pct/stop_loss_pct 保持 0；写回 >0 会覆盖①（09-16~17 −136U 病根）→ 当轮回滚除非预注册实验。
   ROI 口径键（hunger_*、pyramid_trigger_roi）随杠杆换算保持价格距离。
 - 单笔风险：SL 亏损≈名义×atr_sl_mult×ATR%（名义≈avail×0.25×10；ATR% 0.5~2 → 约 0.75%~3% 名义）；饥饿 SL 亏损＝名义×
