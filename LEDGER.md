@@ -254,8 +254,8 @@
 | **lev2态饥饿45m收割=主血(候反事实)** | 09-17 15:2x | post-BRAKE n35: 45m时roi≤−5%的11笔被饥饿SL收割−7.41U,带内12笔硬超时净+0.87,trailing赢8/+4.19;6%价格初始SL仅触2笔→lev2出场结构=45m前几乎无SL,45m一刀。反事实#1@09-18 00:2x(现货1m代理19/45): hunger_sl 0.05→0.025 覆盖集净−3.82→−1.70,0赢单误杀;45m后roi≤−2%的仓无一回头=赔率倒挂病根(n45 赢24均+0.35 vs 亏21均−0.64,wr53%<be64.5%)。**FIX预注册@01:19Z hunger_sl 0.025(Go热)**,劣化线在_exp_cc;全集复核=§5 CC-1;全文=git 955cb46版§4 | 逐笔n35+反事实19/45 | **FIX在飞(评判12:00Z或n≥10;首读@05:2x n3 见§6)** |
 | **lev×ROI口径出场耦合(候反事实)** | 09-18 05:2x | 交易所侧tp0.25/sl0.12为ROI口径(DS 09-16 16:00按lev10设=价格+2.5%/−1.2%);BRAKE lev10→2后同键=价格+12.5%/−6%→TP不可达、初始SL退化为"极少触但一触=−1.25U"(21U地板×6%);post-BRAKE n50: SL穿刺4/−5.01(均−1.25=赢单均+0.36的3.5×)为最大单笔类,带内漂>52m 21/+0.20=死时间(mcp2下压频率);今例SYN 02:35 空 conf0.44 entry0.17545 sl0.185977(+6.0%) 16m触 −1.196。候选杠杆(FIX评判后,一次一件): stop_loss_pct 0.12→0.06~0.08(价格−3~−4%,单笔−0.6~−0.85U)或改ATR口径(须核resolveTPSLFromROI路径);门槛=CC-1 futures 1m反事实(带内漂21笔MAE>3-4%的赢单误杀数;AVA 115m mae−1.9%存活)。注意:升lev档时同键自动收紧(lev5→sl2.4%价),恒等式SL亏=余额×pct×sl_roi不含地板效应,21U地板下实际=21×sl_roi/lev | 逐笔n50+日志已设置止盈止损 | 候选(不在飞;FIX优先) |
 | 80 | 全文=git 9f6379d版§4 | | |
-| 89 | M通道候部署(平台可用性;根修) | **DNS韧性补丁:binance REST/WS 系统解析失败→公共DNS(1.1.1.1/8.8.8.8;QT_FALLBACK_DNS可覆盖)直连解析重拨,TLS/SNI用原主机名;系统解析正常=零行为变化** | 机制落源码=默认net.Resolver全依宿主resolv.conf,SERVFAIL即全灭(§3复发条n=2);diff=6文件+143/−11(resilient_dialer.go新增+REST transport换DialContext+5处WS dial接线);build/vet/exchange包test绿 | n=2事故 | **候owner部署=claude/dev-dns-resilience c49c555**;部署验证=①ctx income/balance回真值②日志无dial失败③fallback未触时行为同旧;风险披露=断连窗内deploy若补丁有伏丢WS活腿(现活腿零交易能力,期望损有限);推荐=宿主resolver先修,补丁随下个自然部署窗与#77/#72b同上 |
-| 77 | 引擎候修(M通道;#57族新亚型C) | **同仓双写+双守护**: 一个交易所仓位在DB生成sid=brk与sid=main两行(open_time毫秒同),两实例ROI守护共管同一仓(main日志16:20-21 EXIT_AUDIT trailing_moved BTR实锤=main在管brk空单);副作用①stop被幻影副本卡死(§3)②rotate remove被卡(BTR skipped 16:4x)③FLEET实验45m+段被main饥饿档(5/8≠3/3)污染④双cancel/replace竞态 | 4对幻影行(踏马15:42/BTR16:11/16:18/16:30)+EXIT_AUDIT行;向量=main feed重播种含专家币时recorder双插(bl只闸交易不闸记账#20);#72b(15m陈旧闸)不覆盖同时双插 | n=4对@08-29 | **候owner部署引擎修复(记账层ownership单一化)**;止血=专家币出main feed(94@16:4x,BTR待强平后移)+bl20重启免疫;复现判据=专家币出feed后新仓仍双行→升级 |
+| 89 | 全文=git 9d56e10版 | | |
+| 77 | 全文=git 9d56e10版 | | |
 <!-- 瘦身@08-27 03:2x: closed/终态行删除(#9过时/#30/#37/#56/#57幂等闸/#60/#61/#63/#64/#69);§5维护注裁至2条(#67/#59指针在git),全文永在git c767c07^链 -->
 | 73 | M通道(平台稳定性) | db驱动级超时+健康探针=claude/dev-db-timeouts | **已部署@08-27≈18:55Z(ed0c160,行为实证)**;§3挂死条 | n=2事故 | 部署✓;复发判据§3 |
 |---|---|---|---|---|---|
@@ -271,13 +271,13 @@
 | 6 | E7 类 | 热点∩池内维度加权（择优批中 trending 币） | 热点∩池∩盈利连续8轮链+反例COTI/AKE热而亏³=榜首逆信号〔压缩@08-09 15:2x,全文见git e93a79e〕;§6计数行为准 | 0/2 | 观察（依据弱化第4轮） |
 | 7 | 观察 | CB 重犯加时（同币第 2 次隔离 ×2，S17 类） | CB throttle-not-eradicator 多币多轮观察;cb_consec_losses/cb_quarantine_min 均 config 可设(代码 line557-558);历史 RIF/BANK/BEAT/BULLA 全零新增归档 | 0/2 | 观察;判据=同币CB隔离期满重入再血达4.6c→升级;逐轮历史链〔压缩@08-07 16:1x,全文见git b1bd082〕 |
 
-| 11 | E8 类 | short跨币修补:`breadth_max_for_short` null→0.50设计定稿@08-15(config-only;宽度门L1713 veto;回滚=null;设计全文git d19c710前史) | 依据链git+§1.5#49终数;短侧n26/+0.04已打平 | 2/2达成→病灶消退 | **降级观察@08-16 18:2x**:08-09依据(24h空−15.20 burst)在#49基线几何下未再现→撤出候选队列;**重升门=main空侧24h≤−8U复现**(届时以#49段为基线重算keep线再上_exp);watch@09-03起空侧恶化三连后解压,**09-04 21:2x 24h空n12/+1.71转正首读**(链读细目git f477a04/4be520c版行);过门即重启#11(breadth_max_for_short null→0.50,以#49段为基线重算keep线上_exp);史读−2.41@08-21 |
+| 11 | 全文=git 9d56e10版 | | |
 | 47 | FLEET候选 | S27突破追动量复活版 | **已兑现@08-29=FLEET复活brk-v2(tpl973=S26内核+S27),本行让渡§1.5 brk行与_exp** | — | 结案→§1.5 |
 | 55 | E7类(trend) | **EXP:trend prem降档候选——watch结案@08-21不改**:真凶=atr_discount非S24;全文git(已自证@08-21 12:18 COTI破荒)或EXP降门;费覆红线内只登记不动〔分带演化+ACE三条件全史git 044907d/92fb9c3〕 | 机制级(gate) | 0/2 | 候选(需求已减:破荒后活性恢复) |
 | 65 | 代码缺陷(组共病;v2/trend活性) | 信号门浮点边界:score与门槛精确等值被静默丢弃 | 活体证据08-22 COLLECT六行;机制=浮点算术直证 | n=6行/1夜 | **修复executed@08-22(config:v2 scp0.049+trend lcp0.149)→epsilon代码级永久化@08-23 21:24(v2域随S28 apply,ss≥thr−1e-9);trend域曾靠lcp0.149→**回退@08-25→重修executed@09-03(owner频率直令窗顺手lcp0.149+_exp预注册,trend域恢复;main两侧维持不修)**;main两侧维持不修(短侧意外保护+长侧0.90反向安全,owner'先这样'批准);全文git a2e845f系** |
 | 66 | 代码候选(v2原型正确性;批2) | S28-fade衰竭签名直入重写 | v2壳已退役@08-28,S28随葬;复活=新壳FLEET时重估;设计全文git | n/a | 冻结(宿主退役) |
 | 58 | E9类(main扩仓) | E9扩仓rider(0.08→0.10)兑现@09-03 | 直令+rider全文config._exp史;门史git f3c6469 | n=12段(史) | **结案;E9裁决=ROLLBACK@09-03 21:2x(24h−9.03∧段n21/−9.42;pct回0.08);全文git 64ede74版行** |
-| 52 | 引擎候修(M通道) | **stop校验双洞+复活路径**:①validateStrategyCanStop把sid=""仓当不存在+auto池跳过交易所侧校验→带仓stop可过闸(修法=exchange侧用全量active仓判);②stop后≤40s自动回running复现机制未定(requestRestart候选);顺手项=stop回执真沉降或带async标注 | 源码strategy_lifecycle.go L233-270/strategy_runtime.go L135;案1-6(XNY/CAP/MARSCOIN/PORTAL/CAP/ZEST,main链全实锤+TP/SL守护覆盖实害0)细目=git 4be520c前链版行 | n=6(main) | 候选;dev分支走M通道部署权owner;先复现②再动手;**sid=""已系统化(48h窗42/58行全空归属)停逐案计数@09-04**,归因按池不受影响,候部署不变;运维注=sid=""行不卡stop(洞①反向便利) |
+| 52 | 全文=git 9d56e10版 | | |
 | 53 | 引擎候修 | DeleteStrategy斩草除根(无条件Kill) | 修复已推fa93736@08-16候owner部署;翻案@08-18幽灵成交=0→降卫生级 | n=1 | 候部署(卫生级);全史git |
 | 49 | 组共病(出场几何) | trailing(act1.0/cb1.2%)+BE(1.0)重构 | 72h n96基线赔率0.88;verdict全文config._exp+git 191b049 | n=30段 | **结案KEEP@08-16**=main基线几何 |
 | 57 | ROUTE病理(阈值候选) | **晋升证据不可移植**:跨模板方向净额不认,专家进池须机制同型证据(自身样本或该模板回测烟雾) | VELVET/BULLA晋升入fade后反亏实证链+债务激活史(v2建壳/MELANIA活测第3例)全文git f71d825/17251a9 | 病理级 | 登记@08-16;**S28批1已交付@08-23,阈值重设计=S28段证据到手后另行ROUTE预注册**('机制同型证据'现定义=衰竭签名适配性,须live段校准);**+MARSCOIN案@09-06 12:2x=同族新证**(双向币提名long-only池,执行层promo_hold,条款§1.5) |
