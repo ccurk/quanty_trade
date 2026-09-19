@@ -77,6 +77,12 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓:交易对在黑名单 symbol=%s", symbol))
 		return
 	}
+	// 连亏熔断在下单口复检：与上面理由相同，这里是所有开仓路径的唯一收口。
+	if banned, until, streak := symbolLossStreakBan(inst, symbol); banned {
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓:交易对连亏熔断中 symbol=%s %s",
+			symbol, lossStreakBanReason(streak, until)))
+		return
+	}
 	amount = clampOrderAmount(inst, amount)
 	if amount <= 0 {
 		return

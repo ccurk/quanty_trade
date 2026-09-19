@@ -362,6 +362,10 @@ func findGuardStrategyInstance(insts []*StrategyInstance, symbol string) *Strate
 		if isBlacklistedSymbol(inst, symbol) {
 			continue
 		}
+		// 连亏熔断同理：正在隔离的币不参与无主仓位收养，否则会把它的仓位错认过来。
+		if banned, _, _ := symbolLossStreakBan(inst, symbol); banned {
+			continue
+		}
 		if isAllowedSymbol(inst, symbol) {
 			return inst
 		}

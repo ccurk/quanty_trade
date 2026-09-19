@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"quanty_trade/internal/bus"
@@ -461,7 +462,6 @@ func (m *Manager) processSignalBatch(strategyID string) {
 	}
 
 	filtered := make([]bus.SignalMessage, 0, len(latestBySymbol))
-	timeMismatch := make([]string, 0, len(latestBySymbol))
 	now := time.Now()
 	for sym, sig := range latestBySymbol {
 		cAt := time.Time{}
@@ -492,33 +492,15 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		}
 		if ok {
 			filtered = append(filtered, sig)
-		} else if len(timeMismatch) < 8 {
-			baseText := "none"
-			if !baseAt.IsZero() {
-				baseText = baseAt.Format(time.RFC3339)
-			}
-			candleText := "none"
-			if !cAt.IsZero() {
-				candleText = cAt.Format(time.RFC3339)
-			}
-			seenText := "none"
-			if !seenAt.IsZero() {
-				seenText = seenAt.Format(time.RFC3339)
-			}
-			timeMismatch = append(timeMismatch, fmt.Sprintf("%s(gen=%s base=%s candle=%s seen=%s)", sym, sig.GeneratedAt.Format(time.RFC3339), baseText, candleText, seenText))
 		}
 	}
 	if len(filtered) == 0 {
-		if len(timeMismatch) > 0 {
-			emitStrategyLog(inst, "info", fmt.Sprintf("本批信号因时间窗不匹配被过滤 batch=%d latest_symbols=%d details=%s", len(batch), len(latestBySymbol), strings.Join(timeMismatch, "；")))
-		} else {
-			emitStrategyLog(inst, "info", fmt.Sprintf("本批信号因时间窗不匹配被过滤 batch=%d latest_symbols=%d", len(batch), len(latestBySymbol)))
-		}
+		// 本批没有可用的信号属于常态（一个 batch 全部因时间窗对不上被丢弃），
+		// 不是关键步骤 —— 不落库。需要排障时看下面的候选/开仓行。
 		return
 	}
 
 	pxCache := map[string]float64{}
-	noPriceSymbols := make([]string, 0, len(filtered))
 	type cand struct {
 		s                bus.SignalMessage
 		rr               float64
@@ -557,9 +539,6 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			px = pxCache[sym]
 		}
 		if px <= 0 {
-			if len(noPriceSymbols) < 8 {
-				noPriceSymbols = append(noPriceSymbols, sig.Symbol)
-			}
 			continue
 		}
 		rr := 0.0
@@ -604,11 +583,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		})
 	}
 	if len(cands) == 0 {
-		if len(noPriceSymbols) > 0 {
-			emitStrategyLog(inst, "info", fmt.Sprintf("本批信号未生成候选：缺少最新价格 symbols=%s", strings.Join(noPriceSymbols, ",")))
-		} else {
-			emitStrategyLog(inst, "info", fmt.Sprintf("本批信号未生成候选：filtered=%d latest_symbols=%d", len(filtered), len(latestBySymbol)))
-		}
+		// 「本批没生成候选」是常态，不是关键步骤 —— 不落库。
 		return
 	}
 
@@ -629,11 +604,8 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		}
 		return cands[i].s.Symbol < cands[j].s.Symbol
 	})
-	preview := make([]string, 0, len(cands))
-	for i := 0; i < len(cands) && i < 8; i++ {
-		preview = append(preview, fmt.Sprintf("%s(适配度=%0.4f,优先级=%0.4f,近期=%d,连开=%d,上一笔=%+.4f)", cands[i].s.Symbol, cands[i].rr, cands[i].score, cands[i].recentCount, cands[i].consecutiveCount, cands[i].lastPnL))
-	}
-	emitStrategyLog(inst, "info", fmt.Sprintf("同批信号排序完成，共%d个候选：%s", len(cands), strings.Join(preview, "，")))
+	// 「同批信号排序完成，共N个候选」是每批都刷的判断逻辑（Meme 一天上百批），
+	// 不是关键步骤 —— 不落库。真正开仓/被拦的行在下面各自打印。
 
 	maxPos := 1
 	if v := int(getNumber(inst.Config()["max_concurrent_positions"])); v > 0 {
@@ -707,7 +679,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 	}
 	availableSlots := maxPos - openCount
 	if availableSlots <= 0 {
-		emitStrategyLog(inst, "info", fmt.Sprintf("跳过本批信号：当前已持仓%d个，达到最大并发仓位%d", openCount, maxPos))
+		logMaxPosSkipOnce(inst, openCount, maxPos)
 		return
 	}
 
@@ -796,14 +768,33 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		emitStrategyLog(inst, "info", fmt.Sprintf("候选开仓失败：%s 方向=%s 适配度=%0.4f", sig.Symbol, side, c.rr))
 	}
 	if selected == 0 {
-		emitStrategyLog(inst, "info", "本批信号未找到可开仓标的")
 		return
 	}
-	if selected < len(cands) {
-		emitStrategyLog(inst, "info", fmt.Sprintf("本批信号处理完成：已成交%d个，请求已提交%d个，剩余候选因仓位或条件限制被跳过", filledCount, pendingCount))
-	} else {
-		emitStrategyLog(inst, "info", fmt.Sprintf("本批信号处理完成：已成交%d个，请求已提交%d个", filledCount, pendingCount))
+	// 只在这一批真的动手了（成交或已提交）时才打批级小结。filled=0 且 pending=0
+	// 的批次「没找到可开仓标的」是常态，不是关键步骤 —— 不落库。
+	if filledCount+pendingCount > 0 {
+		if selected < len(cands) {
+			emitStrategyLog(inst, "info", fmt.Sprintf("本批信号处理完成：已成交%d个，请求已提交%d个，剩余候选因仓位或条件限制被跳过", filledCount, pendingCount))
+		} else {
+			emitStrategyLog(inst, "info", fmt.Sprintf("本批信号处理完成：已成交%d个，请求已提交%d个", filledCount, pendingCount))
+		}
 	}
+}
+
+// maxPosSkipLogged 记每个实例上次已打印过的「达到最大并发仓位」的持仓数，
+// 只在数值变化时再打一行。Meme 实测 24h 刷了 1213 行这种重复行，而它要表达的信息
+// （「满了，这轮不动手」）在持仓数不变时是完全重复的；持仓数一变（平掉一个 / 又开一个）
+// 就会再打一行，所以失活状态仍然看得见。
+var maxPosSkipLogged sync.Map // inst.ID -> int
+
+func logMaxPosSkipOnce(inst *StrategyInstance, openCount, maxPos int) {
+	if prev, ok := maxPosSkipLogged.Load(inst.ID); ok {
+		if p, isInt := prev.(int); isInt && p == openCount {
+			return
+		}
+	}
+	maxPosSkipLogged.Store(inst.ID, openCount)
+	emitStrategyLog(inst, "info", fmt.Sprintf("跳过本批信号：当前已持仓%d个，达到最大并发仓位%d", openCount, maxPos))
 }
 
 type candidatePlaceResult string
@@ -868,6 +859,13 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 	// 用于过去 60 天数据分析里证明持续亏钱的标的，独立于 symbols 白名单。
 	if isBlacklistedSymbol(inst, symbol) {
 		emitStrategyLog(inst, "info", fmt.Sprintf("跳过信号：交易对在 blacklist symbol=%s", symbol))
+		return
+	}
+	// 连亏熔断（真实成交口径）：最近连续 N 笔已平仓全亏 → 隔离 M 小时。
+	// 无状态，隔离期由「最后一笔亏损的平仓时间 + 窗口」推导，跨重启存活。
+	if banned, until, streak := symbolLossStreakBan(inst, symbol); banned {
+		emitStrategyLog(inst, "info", fmt.Sprintf("跳过信号：交易对连亏熔断中 symbol=%s %s",
+			symbol, lossStreakBanReason(streak, until)))
 		return
 	}
 	action := strings.ToLower(strings.TrimSpace(s.Action))
