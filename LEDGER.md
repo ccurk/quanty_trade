@@ -357,7 +357,7 @@
 | CC-20 | 评判 | FIX max_atr_pct 6→0.8 | 09-19 00:2x | **closed FAIL@03:3x→ROLLBACK 6; 全文=git c75a1c3 版§5** |
 | CC-21 | 评判 | p9 ATR 括号(03:41) | 09-19 03:4x | **closed@09-19 07:3x(段被 07:13 池切换封口; p9b n20 −32.95 饥饿 0.4% 刀 16/20; 括号未被公平检验); 全文=git c75a1c3 版§5** |
 | CC-22 | M候选(金额帽精确实现) | 全文=git 6b44db7版§5(要点不变) | 09-19 03:4x | open |
-| CC-23 | 管道(owner/M) | 429 级联=唯一裸奔路径(ZAMA 11:11 28s); REST 预算补丁 claude/dev-rest-budget 61631b0 候部署=第一优先; 实害计数(11:08 起) 主单丢 4+守护跳过 9+裸奔 1; 全文=git 4d0e7da 版§5 | 09-19 05:5x | open(候 owner; **@14:3x v40 自带 REST 拉取≈150 调用/min(首 12min)与下单同 IP → 429 风险源 +1; 14:11 后 Rate limited 仅 1(守护跳过); 列入 v40 EVAL worsen 线**) | @15:2x 429 since v40 共 4, tpsl_setup_failed 0 |
+| CC-23 | 管道(owner/M) | 429 级联=唯一裸奔路径(ZAMA 11:11 28s); REST 预算补丁 claude/dev-rest-budget 61631b0 候部署=第一优先; 实害计数(11:08 起) 主单丢 4+守护跳过 9+裸奔 1; 全文=git 4d0e7da 版§5 | 09-19 05:5x | open(候 owner; **@14:3x v40 自带 REST 拉取≈150 调用/min(首 12min)与下单同 IP → 429 风险源 +1; 14:11 后 Rate limited 仅 1(守护跳过); 列入 v40 EVAL worsen 线**; @15:2x 429 since v40 共 4(守护跳过 1/查 TPSL 3), tpsl_setup_failed 0) |
 | CC-24 | owner 裁决包 | ①hunger_sl(closed@11:06) ②空头 sides/scp ③mcp10 ④breaker 阈值改钱包比例 ⑤FORBIDDEN_EXACT 补键 ⑥宿主脚本同步 ⑦majors 08:01 start/+XRP 认领; 全文=git 29d8478 版§5 | 09-19 05:5x | open(①closed) |
 | CC-25 | watch_ds(裸改) | **Majors 被启动**(08:01:47Z UI 无 audit, 5 币 mcp5): 1m 止损距=来回费(ETH 0.082/BNB 0.085/XRP 0.216% vs 0.10%), 首 3 单 −0.78 全 SL | 09-19 08:2x | **closed@08:39Z: CC 不停壳, 改为 apply S35 bar聚合 15m(tpl1056)→评判转 CC-28; 08:01 start/+XRP/mcp5 认领仍候 owner(CC-24⑨)** |
 | CC-26 | 备用池机制 | _standby_cc 8 币 每轮回测评分→晋升/降回; 全文=git 8c71bb0 版§5 | 09-19 07:1x | open(回测非确定性 #59/#60→晋升暂停; 临时门候 owner=同窗 3 次符号一致∧中位>0; 根修=CC-29) |
