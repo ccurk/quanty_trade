@@ -9,7 +9,7 @@
 
 - **prompt v3.1 写入@08-15**: 11处手术对账;脱敏档ops/prompts/prompt_v3.1_20260815_redacted.txt;已被v3.2/v4/v5.1取代;全文git 7ee5ca0版§1。
 
-- **多仓位=足额单仓直令(2026-08-15 15:5x)**: owner原话要义——多仓位不是小仓,每仓按需足额(vol由引擎判),余额不足依次递减,无余额跳过等下次评估。**禁以缩pct换仓位数**(否决cron提出的0.08→0.05广度方案)。机制对应=conf_sizing(mult0.6-1.4按置信度)×percent_balance(逐仓自余额递减)×min_notional$21跳过——三段已实证在位,零改动;广度增长路径=信号门逐档(conf/长门)+池宽+载具数,仍按费覆红线门控。
+- **多仓位=足额单仓直令(2026-08-15 15:5x)**: 多仓位不是小仓, 每仓按需足额, 余额不足依次递减; **禁以缩pct换仓位数**; 机制=conf_sizing×percent_balance×min_notional 21 已在位; 全文=git 7ee5ca0 版§1。
 
 1. **单笔名义≥20U(07-22)**: 已被08-03费覆红线废除,后费覆降级为评判指标(08-29);全文git 7ee5ca0版§1。
 2. **全天开仓**（2026-07-19）：`entry_time_windows` 保持 `""`；恢复窗口属 🔴 提案须用户批准。
@@ -54,8 +54,8 @@
 | 2026-08-29 | 全文=git 848966c版 | | |
 | 2026-09-03 | 全文=git 848966c版 | | |
 | 2026-09-14 | 全文=git 848966c版 | | |
-| 2026-09-17 | **DeepSeek 双执行体协同直令(live,07:3x-08:0x)**: owner三连"我增加了一个 deepseek 的定时模型优化 你们配合着来…给我一个最新的 prompt"/"我切换了模型 重新分析"/"/tmp/ai_task 只保留最近几天"。取证: DS=宿主cron ops/deepseek_optimize.py+qt_breaker.py(admin#1只动config);Go侧autotune无关(enabled=false);_exp归DS。交付prompt v5.0(协同协议9条)+ops/ai_task_bridge.py;容器不可达/tmp→经config键桥接;全文git 7f578a7版§1 |
-| 2026-09-17 | **现货载具直令(live会话,08:2x)**: owner原话"增加现货策略。下单，写到 promt 中。"。源码取证与规格全文=prompt v5.1【现货载具】节/git b341694版§1(market进程级→第二后端进程+独立DB/Redis;出场只有本地TP/SL;S34改amount=名义/现价;超时缺口M候选dev-spot-maxhold;劣化线段净≤−3U∨n≥10∧wr<35%→stop;现货刹车6h≥5%)。状态=候部署(owner部署+划转后由cron建壳canary)。 |
+| 2026-09-17 | **DeepSeek 双执行体协同直令(live,07:3x-08:0x)**: owner "我增加了一个 deepseek 的定时模型优化 你们配合着来"+"/tmp/ai_task 只保留最近几天"; DS=宿主 cron ops/deepseek_optimize.py+qt_breaker.py(admin#1 只动 config); _exp 归 DS; 交付 prompt v5.0(协同协议 9 条)+ops/ai_task_bridge.py; 全文=git 7f578a7 版§1 |
+| 2026-09-17 | **现货载具直令(live会话,08:2x)**: owner "增加现货策略。下单，写到 prompt 中"; 规格=prompt v5.1【现货载具】节/git b341694 版§1; 状态=候部署(DS-6) |
 
 | 2026-09-18 | **09-18 直令归并指针**: lev10(08:0x)/单笔上限(10:2x)/币池300+不限价+保证金口径(12:5x)/仓位 owner UI 自改 pct0.25(13:0x)/出场收紧(13:2x)/max_hold45+键表(13:5x); 要点=lev10; mcp/pct=owner 值取代硬边界#2/#8; max_initial_margin 500; hunger_after1/tp0.30; 全文=git 70822bb 版§1 |
 | 2026-09-18 | **不下单不是解决方案直令(live 06:1x)**: owner "不要不下单。要积极适应市场改变策略"。**常备规则: 刹车＝换策略杠杆(出场几何→杠杆档→入场规则→币池)不＝停交易; 频率地板=基线50%(19/日); 禁方向/缩mcp/cd拉满/抬min_conf不是刹车杠杆**(缩表例外已被 13:4x 直令删除); prompt v5.2; 全文=git d19a237版§1 |
