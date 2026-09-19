@@ -895,6 +895,15 @@ func (m *Manager) runPositionTPStopMonitor(ctx context.Context, inst *StrategyIn
 	}
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	// REST 预算：下面的 USDMPositionInfo(/fapi/v2/positionRisk, 权重 5) 原先每 2s 一次，
+	// 每个持仓 150 权重/分，6 仓即 900/分，叠加 manager 同步/守护/开仓后曾把 IP 推到 429，
+	// 直接伤到出场路径（饥饿平仓失败、TP/SL 守护整轮跳过、开仓 tpsl_setup_failed 回滚）。
+	// 本地 K 线价判定仍每 2s 跑；交易所持仓 ROI 判定与"持仓已消失"探测降到每 10s 一次。
+	const restPollEvery = 10 * time.Second
+	var lastRestPoll time.Time
+	// 只信持仓建立之后收到的 K 线收盘价：lastCandleClose 只在新一根 1m K 线首个 tick 更新，
+	// 最多陈旧 59s；入场前一分钟内的急涨/急跌会让它落在 tp/sl 之外而误触本地平仓。
+	startedAt := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
@@ -906,7 +915,14 @@ func (m *Manager) runPositionTPStopMonitor(ctx context.Context, inst *StrategyIn
 		if inst.lastCandleClose != nil {
 			px = inst.lastCandleClose[sym]
 		}
+		var seenAt time.Time
+		if inst.lastCandleSeenAt != nil {
+			seenAt = inst.lastCandleSeenAt[sym]
+		}
 		inst.mu.Unlock()
+		if !seenAt.After(startedAt) {
+			px = 0
+		}
 		hit := false
 		reason := ""
 		if px > 0 {
@@ -930,7 +946,8 @@ func (m *Manager) runPositionTPStopMonitor(ctx context.Context, inst *StrategyIn
 				}
 			}
 		}
-		if !hit {
+		if !hit && time.Since(lastRestPoll) >= restPollEvery {
+			lastRestPoll = time.Now()
 			if bx, ok := inst.exchange.(*exchange.BinanceExchange); ok && bx.Market() == "usdm" {
 				if amt, entryPx, markPx, levUsed, err := bx.USDMPositionInfo(inst.OwnerID, sym); err == nil && entryPx > 0 && levUsed > 0 && amt != 0 {
 					seenPosition = true
