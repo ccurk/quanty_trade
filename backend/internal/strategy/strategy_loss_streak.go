@@ -150,14 +150,34 @@ func loadSymbolLossRuns(inst *StrategyInstance) map[string]symbolLossRun {
 	return computeSymbolLossRuns(rows)
 }
 
+// lossStreakTwinWindow 是判定"两条行是同一笔平仓的孪生记账"的平仓时间容差。
+//
+// 为什么需要容差、而不是一个相等的主键：孪生行（exchange_income / fill 双账路径）
+// 记录的 **open_time 并不相等**。2026-09-19 实测 APT/USDT：
+//
+//	id=3872 open=06:28:09.435 close=06:35:25 pnl=-0.6449 src=exchange_income
+//	id=3870 open=06:26:34.761 close=06:35:19 pnl=-0.6448 src=fill          ← open 差 94.7s
+//
+// 我第一版用 (symbol, open_time) 当去重键，**漏并**了这些对 ⇒ 同一笔亏损被记两遍。
+// 后果实测（1600 行窗口、threshold=3）：
+//   - 虚高：APT/USDT 报「连亏=5」真值 3；NEAR 6→5、STRK 5→4、牛来 5→3、CROSS 4→3 …
+//   - 虚低：AKE/DRIFT/PONS 报 2、真值 3 —— 因为某些孪生对里 fill 那条是【正】的
+//     （+0.5），没被合并进来 ⇒ 那条正的把连亏串提前打断了。**净效果是漏判 3 个 symbol**。
+//
+// 修法：只跨**记账来源**配对合并（同一来源的两条行绝不合并，那是两次真实平仓），
+// 且平仓时间相差在容差内。孪生对的 close_time 实测只差 6 秒，120s 留足余量。
+const lossStreakTwinWindow = 120 * time.Second
+
 // computeSymbolLossRuns 是 loadSymbolLossRuns 的纯函数内核（不碰 DB），便于单测。
 //
 // 两个必须做的数据卫生动作，出处是台账里已实测过的坑：
 //  1. pnl_source 为 ""/"unknown" 的行是【缺失值】而非 0（见 models.StrategyPosition
 //     的字段注释）。把它当 0 会让一笔未知盈亏冒充"打平"，白白打断连亏串。
-//  2. 孪生行（pnl_source 双账路径 exchange_income / fill）组内值差别很大，按
-//     (symbol, open_time) 取 MAX 去重 —— 否则同一笔亏损被记两遍，连亏串直接翻倍、
-//     提前触发熔断。
+//  2. 孪生行（pnl_source 双账路径 exchange_income / fill）按「同 symbol + 不同来源 +
+//     平仓时间邻近」配对合并，否则同一笔亏损被记两遍、连亏串翻倍、提前触发熔断。
+//     合并时先按来源可信度取优（exchange_income 是交易所自己结算的，最可信；fill 是
+//     本系统自算的），同一来源内再取 MAX。**不能无脑取 MAX**：一条 -1.0(exchange_income)
+//     和一条 +0.5(fill) 取 MAX 会得到 +0.5，让"最有利"的那条记账掩盖一笔真实亏损。
 func computeSymbolLossRuns(rows []models.StrategyPosition) map[string]symbolLossRun {
 	type posClose struct {
 		sym   string
@@ -165,8 +185,10 @@ func computeSymbolLossRuns(rows []models.StrategyPosition) map[string]symbolLoss
 		close time.Time
 		rank  int
 	}
+	// 按 symbol 分桶，桶内顺序扫描找可配对的孪生行。行已按 close_time desc 取回，
+	// 所以同一笔的两个孪生必然在桶内相邻位置附近，线性扫描足够。
+	bySym := make(map[string][]int, 64)
 	list := make([]posClose, 0, len(rows))
-	idx := make(map[string]int, len(rows))
 	for _, r := range rows {
 		sym := exchange.NormalizeSymbol(r.Symbol)
 		if sym == "" {
@@ -178,14 +200,20 @@ func computeSymbolLossRuns(rows []models.StrategyPosition) map[string]symbolLoss
 		if r.CloseTime.IsZero() {
 			continue
 		}
-		key := sym + "|" + r.OpenTime.UTC().Format(time.RFC3339Nano)
 		rank := pnlSourceRank(r.PnLSource)
-		if i, ok := idx[key]; ok {
-			// 孪生行是同一笔平仓的两条记账路径。先按来源可信度取优
-			// （exchange_income 是交易所自己结算的，最可信；fill 是本系统自算的），
-			// 同一来源内再取 MAX（组内值差别很大，重复计会把连亏串翻倍）。
-			// 不能无脑取 MAX：一条 -1.0(exchange_income) 和一条 +0.5(fill) 取 MAX
-			// 会得到 +0.5，让"最有利"的那条记账掩盖一笔真实亏损。
+		merged := false
+		for _, i := range bySym[sym] {
+			// 只跨来源配对：同来源的两条行是两次真实平仓，绝不合并。
+			if list[i].rank == rank {
+				continue
+			}
+			d := list[i].close.Sub(r.CloseTime)
+			if d < 0 {
+				d = -d
+			}
+			if d > lossStreakTwinWindow {
+				continue
+			}
 			switch {
 			case rank > list[i].rank:
 				list[i].pnl, list[i].rank = r.RealizedPnL, rank
@@ -195,9 +223,13 @@ func computeSymbolLossRuns(rows []models.StrategyPosition) map[string]symbolLoss
 			if r.CloseTime.After(list[i].close) {
 				list[i].close = r.CloseTime
 			}
+			merged = true
+			break
+		}
+		if merged {
 			continue
 		}
-		idx[key] = len(list)
+		bySym[sym] = append(bySym[sym], len(list))
 		list = append(list, posClose{sym: sym, pnl: r.RealizedPnL, close: r.CloseTime, rank: rank})
 	}
 

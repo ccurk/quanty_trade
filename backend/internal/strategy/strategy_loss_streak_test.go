@@ -205,3 +205,72 @@ func TestLossStreakConfigAccessors(t *testing.T) {
 		t.Fatal(`"true" string must enable`)
 	}
 }
+
+// TestLossStreakTwinRowMerging 锁死 2026-09-19 实测到的去重键缺陷。
+//
+// 背景：孪生行（exchange_income / fill 双账路径）的 **open_time 并不相等**，
+// 实测 APT/USDT 的两条行 open_time 差 94.7 秒、close_time 只差 6 秒。
+// 我第一版用 (symbol, open_time) 当去重键 ⇒ 漏并 ⇒ 同一笔亏损记两遍。
+// 两个方向都会错：
+//
+//	虚高：同一笔亏损数两遍，连亏串翻倍提早触发（APT 报 5、真值 3）
+//	虚低：孪生对里 fill 那条是正的时，没合并进来的正数会把连亏串提前打断
+//	      （AKE/DRIFT/PONS 报 2、真值 3）⇒ 该拉黑的没拉黑
+//
+// 所以这个测试同时覆盖"合并且不重复计数"和"负的孪生不能被正的那条洗白"。
+func TestLossStreakTwinRowMerging(t *testing.T) {
+	const sym = "APT/USDT"
+
+	// (1) 一笔亏损的两个记账路径，open_time 差 95 秒、close_time 差 6 秒
+	//     ⇒ 必须只算 1 笔，且取 exchange_income 的值。
+	rows := []models.StrategyPosition{
+		lp(sym, 0, 100*time.Second, -0.6449, "exchange_income"),
+		lp(sym, -95*time.Second, 94*time.Second, -0.6448, "fill"),
+	}
+	if got := runOf(t, rows, sym); got.Streak != 1 {
+		t.Fatalf("孪生行应合并成 1 笔，得 %d", got.Streak)
+	}
+
+	// (2) 两笔真实连亏，各带一个孪生 ⇒ 必须是 2，不是 4。
+	rows = []models.StrategyPosition{
+		lp(sym, 0, 100*time.Second, -0.64, "exchange_income"),
+		lp(sym, -95*time.Second, 94*time.Second, -0.64, "fill"),
+		lp(sym, -3*time.Hour, -3*time.Hour+100*time.Second, -1.36, "exchange_income"),
+		lp(sym, -3*time.Hour-64*time.Second, -3*time.Hour+94*time.Second, -1.36, "fill"),
+	}
+	if got := runOf(t, rows, sym); got.Streak != 2 {
+		t.Fatalf("两笔真实连亏+各自孪生 应得 2，得 %d", got.Streak)
+	}
+
+	// (3) 负的 exchange_income 不能被正的同笔 fill 洗白：
+	//     真实结果是一笔亏损，连亏串不能因为那条 +0.5 而中断。
+	rows = []models.StrategyPosition{
+		lp(sym, 0, 100*time.Second, -1.0, "exchange_income"),
+		lp(sym, -95*time.Second, 94*time.Second, +0.5, "fill"),
+		lp(sym, -3*time.Hour, -3*time.Hour+100*time.Second, -2.0, "exchange_income"),
+		lp(sym, -3*time.Hour, -3*time.Hour+100*time.Second, -2.0, "fill"),
+		lp(sym, -6*time.Hour, -6*time.Hour+100*time.Second, -3.0, "exchange_income"),
+		lp(sym, -6*time.Hour, -6*time.Hour+100*time.Second, -3.0, "fill"),
+	}
+	if got := runOf(t, rows, sym); got.Streak != 3 {
+		t.Fatalf("负孪生不得被正孪生洗白，应得 3，得 %d", got.Streak)
+	}
+
+	// (4) 同来源的两笔平仓即使时间很近也**不能**合并（那是两次真实平仓）。
+	rows = []models.StrategyPosition{
+		lp(sym, 0, 100*time.Second, -1.0, "exchange_income"),
+		lp(sym, 0, 101*time.Second, -1.0, "exchange_income"),
+	}
+	if got := runOf(t, rows, sym); got.Streak != 2 {
+		t.Fatalf("同来源邻近平仓应保持 2 笔，得 %d", got.Streak)
+	}
+
+	// (5) 超出容差的异来源两笔是两次独立平仓，不合并。
+	rows = []models.StrategyPosition{
+		lp(sym, 0, 100*time.Second, -1.0, "exchange_income"),
+		lp(sym, 0, 100*time.Second+lossStreakTwinWindow+time.Second, -1.0, "fill"),
+	}
+	if got := runOf(t, rows, sym); got.Streak != 2 {
+		t.Fatalf("超出孪生容差应保持 2 笔，得 %d", got.Streak)
+	}
+}
