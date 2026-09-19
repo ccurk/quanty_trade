@@ -1,0 +1,50 @@
+{
+  "action": "OBS+ROUTE @11:4xZ: owner 11:06Z 重置后新段观察(main symbols\"\"+max_price 1e12→strategy_start.go:240 filter 路径=300 池; hunger_mode_enabled=false; mcp3=DS 值留; majors mcp2; 双壳 11:08 重启) ＋ ROUTE bl42→45(+SOL/XRP 跨实例隔离=majors 池; +PROM 48h n4 −11.34 规则) + rotate remove 35(隔离∩feed=∅, feed 300→265; main∩majors=∅)",
+  "carry": "p3/p5/p6/p7/p9/cc20 终读指针=git 5096ca1/70822bb/b6b129a/d19a237 版 _exp_cc; 11:06 前完整 _exp_cc=exp_cc_20260919T1030Z.json",
+  "eval_after": "2026-09-19T18:00:00Z 或 n≥30 先到",
+  "expect": "n≥30: 费后均净≥0 ∧ hold<5m 亏单占比<30%(7 币段 6/12=50%) ∧ wr≥45%",
+  "h0919f": "括号锚在信号参考价非成交价: strategy_position.go:476 resolveTPSLFromROI(entryPx=成交价) 在 tp/sl pct=0 时 strategy_execution.go:305-307 原样返回信号 tp/sl, 仅 :485-494 SL 钳 [entry×(1∓0.3/lev)]; 实证 11:08 后 n11 逆向滑点中位 +0.06%, >1% 仅 2/11(ZAMA +1.71/SWARMS +1.39 追涨币) ⇒ 系统性偏移小, 尾部大; 候 n≥20 或 CC-31 Go 重锚补丁(owner 部署)",
+  "hypothesis": "饥饿 0.4% 刀关闭后交易所 2×ATR 括号成为唯一价格出场→hold<5m 刀死法应消失(7 币段 亏 6/6 全 hold<6m, 赢 6/6 全 ≥6m); 300 池+min_conf0.35 信号充足, 频率瓶颈=mcp3(且 majors 仓计入 main 计数: manager.go:312 symbols 空→isAllowedSymbol 恒 true)",
+  "last_round": "2026-09-19T13:26:28Z",
+  "metric": "段(open≥2026-09-19T11:08:43Z, main 非 majors 币): n ‖ 费后均净 ‖ wr ‖ hold<5m 亏单占比 ‖ 笔/日 ‖ mcp 跳过次数/h ‖ 429 次数/h",
+  "namespace_note": "_exp 归 DeepSeek(未改); _exp_cc/_standby_cc/_ai_task_cc 归 claude_cron",
+  "owner": "claude_cron",
+  "owner_no_autocut": "owner 直令 09-18 13:15:56Z: CC 不得自动降 pct/lev/mcp/sides; 保留 TG 报警(6h≥8%/24h≥20%)+24h≥30% TG🆘+avail<1U cancel-orders",
+  "prev_meme_core": "7 币段(07:21→11:08) 终读(DB 去重): n12 毛 +17.34 wr50% 多 11/12; 赢 6/6 hold≥6m +20.25; 亏 6/6 hold<6m −2.90(饥饿 0.4% 刀); 被 owner 11:06 重置封段(未到 n30) ⇒ 池成员可盈利, 刀=亏损来源(与 03:5x 反事实网格一致); 全文=quanty-ledger ops/exp_archive/exp_cc_20260919T1030Z.json",
+  "reads_1240": "git 7e0e2fe 版 _exp_cc(12:4x 读数)",
+  "reads_1316": "13:1xZ: 300 池段(main, DB) n10 毛 −1.62 wr40% 多 8/10(−2.59) 空 2/10(+0.96): 死法 SL 3(FHE −1.33/VVV −0.53/B2 −3.13=−4.99; B2 SL 距 4.33%=2×ATR, 第一波 6m 内 −4.3%) / 45m 超时 4(ZAMA −2.13/WCT −0.28/VELVET −0.71/VTHO +0.53=−2.59) / TP 3(HEI +1.49/SWARMS +1.30/CAP +3.17=+5.96); hold<2m 亏 0, hold<5m 亏 1/6(刀关后刀死法消失✓); 腿: 11:08 后新开 10/10 有 '已设置止盈止损'(VVV 走 '未成交→补设' 路径), majors 8/8; SL 距中位 1.5%, 3/10 >3%(SWARMS 3.77/CAP 4.06/B2 4.33: lev10 钳 0.3/lev=3% 会剪); 逆向滑点(信号锚反推) n10 中位 +0.06% max SWARMS +1.39(ZAMA +1.71 另计); 成交 conf 0.36-0.55 门槛 0.35✓; 429 12:24 后 1 次(守护跳过); mcp3 跳过 8 次(12:36-12:57, 12:46-12:53 '4个'=majors BNB 计入 main 槽位); income 1h −0.54/3h −3.37/6h +13.1/12h −40.1/24h −99.5(入金 +142 另列)🆘; 钱包 162.3(空仓→13:20 COTI 空 mv79); worsen(n≥15∧费后≤−6U) 未触(n10 费后≈−2.4); 48h 规则新增 0(M n3 −9.05/VVV n3 −5.71 n<4 watch)",
+  "restart_guard": "sl_ratio0.03/tp_ratio0.06 在位(main+majors); 任何重启窗前复核",
+  "rollback": {
+    "note": "池/hunger/mcp/lev/pct 均为 owner 或 DS 值, CC 不回滚",
+    "symbol_blacklist": "去 SOL/XRP/PROM + rotate add 回 feed(仅 owner 令)"
+  },
+  "status": "open",
+  "ts": "2026-09-19T11:33:35Z",
+  "watch_ds": {
+    "breakeven_trigger_atr": {
+      "status": "现值 0(关); owner 第一波直令 trailing/BE 关"
+    },
+    "hunger_stop_loss_pct": {
+      "status": "closed@11:06Z: hunger_mode_enabled=false(admin 批=owner 归属), 刀退场; 0.04 键值仍在但无效"
+    },
+    "leverage": {
+      "actor": "admin optimizer 10:09(裸改; owner 值 10)",
+      "eval_after": "2026-09-19T18:00:00Z 或 n≥10",
+      "line": "post 段(open≥10:09Z) n≥10: 段净≤−4U ∨ 费后均净劣于 pre 段 +1.43/笔 → DS-ROLLBACK 10 + TG",
+      "new": 5,
+      "old": 10,
+      "status": "closed-verdict@13:1x: 线破(形式): post 段(open≥10:09, main) n12 毛 −2.69 wr33% 费后≈−0.30/笔 < pre 段 +1.43(段净 −2.69>−4U 第一支未触). 不执行 DS-ROLLBACK 10, 理由: ①post 段被 owner 11:06 重置(7 币→300 池+hunger off)污染: 同 7 币池 lev5 样本仅 n2(DRIFT −0.52/G −0.55 皆饥饿刀 1-5m, 与 lev 无关), 300 池 n10 与 7 币 pre 段不可比 ⇒ 归因 lev5 证据不足 ②回 lev10=升敞口: RECOVER 门关(24h −99.5), v5.1 事前闸(升敞口不许自主 apply); 机制: lev10 钳 SL≤3%(300 段 3/10 括号 3.8-4.3% 会被剪, 违 owner 03:3x 'ATR 为单位设计止损'), 单笔 SL 亏翻倍(B2 −3.13→≈−6.3 越 3-5U 帽), 费翻倍 ⇒ 候 owner 一字令(恢复 10 / 认可 5 / 阶梯 5→8→10 每档 300 段费后均净≥0 为门)"
+    },
+    "max_concurrent_positions": {
+      "actor": "admin breaker 09:37(未声明, 协议7#3 第 7 次; owner 令 10)",
+      "new": 3,
+      "old": 6,
+      "status": "绑定@11:16-11:30 跳过 4 次(G/COTI/B2/ZAMA 候选); majors XRP 计入 main 计数; 不硬抢(429 预算: 5 仓已触 tpsl_setup_failed→裸奔窗 28s), TG owner 三选一(留 3 至 REST 预算补丁部署 / 恢复 10 / symbols 显式列表重启) ‖ @13:1x 12:46-12:53 再现 '已持仓4个≥3'(majors BNB 12:46 计入 main 槽位) 跳过 8 次/50min=频率上限=mcp3; 429 12:24 后仅 1 次(3-4 仓下配额够) ⇒ mcp 3→5 试探由 owner 一字令(429 复现即回 3)",
+      "ts": "2026-09-19T09:37:15Z"
+    },
+    "order_amount_pct": {
+      "status": "0.125=DS 07:08 砍(owner 值 0.25), lock-1789810634 冻结至 09-20 09:37Z; 不硬抢"
+    }
+  },
+  "worsen": "段 n≥15 ∧ 费后≤−6U → TG 建议回 7 币池(symbols=重启键, owner 拍板; CC 不自改池)"
+}
