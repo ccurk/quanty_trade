@@ -265,12 +265,10 @@
 - **[新增 09-19 05:5x] 空头无正期望取证(方法可复用)**: 现货 1m 对 24h 空单 n45 算入场前 r1..r30 与 ATR: 赢/输中位无差, BTC 平, 括号反事实 −16.2 vs 实际 −17.5 ⇒ 空头亏损=信号本身; 全文=git d19a237版§3。
 - **[新增 09-19 00:1x] DS 改动簿 #5**: 21:22:13Z breaker lock-1789766533(至 09-19 21:22) pct 0.25→0.125(声明)+mcp 10→6(未声明);CC 不硬抢(CC-9);**breaker 只要 24h 净<−4U 或 wr<45%∧净<0 即每次节拍再砍并续锁**→owner 侧改阈值前任何恢复都是乒乓。
 - **[新增 09-19 00:1x] 入场单类型=MARKET(taker)**: strategy_signal.go:745 price=0→binance.go:1372 仅 price>0 走 LIMIT GTC(无 GTX);双边 taker≈0.1% 来回(24h 手续费 40.59U/名义 40.5k 实证)→费率病根 M 候选 CC-19。
-- **[新增 09-19 00:1x] 入场 ATR% 反推法**: tpsl 日志 sl 距%/atr_sl_mult(00:25:26Z 前 2.5 后 1.5;钳 3% 时用 tp 距/atr_tp_mult)=Python calc_atr_pct 即 max_atr_pct 门同口径(code:1050)。
-- **[新增 09-19 01:1x] 硬过滤拒绝不落后端日志**: code:1155 reject_reason 只进 signal detail; 门是否生效以成交 ATR 分布为准; -1003 IP 限频(2400/min)可升级 418 封禁→报 owner; 全文=git d19a237版§3。
-- **[更新 09-19 00:25Z] Python 进程有效值**: 最近 START 00:25:21Z(CC force 重启,v5.3 §1 准;stop?force=true 旁路 validateStrategyCanStop, Go 侧 quick_trade/tpsl 监控为全局 DB 循环持续保护, running 收养 DOS)注入 max_atr_pct0.8/atr_tp2.0/atr_sl1.5/cd180/min_conf0.35/warmup50/select300/max_price1e12;feed 重播种 300→rotate remove 24 隔离币→276 ∩=∅。
+- **[09-19 00:1x] 入场 ATR% 反推法 / 硬过滤拒绝不落后端日志 / Python 进程有效值(00:25Z)**: 全文=git 6b44db7 版§3(要点: tpsl 日志 sl 距%/atr_sl_mult=Python ATR%; code:1155 reject_reason 只进 signal detail, 门是否生效以成交 ATR 分布为准; START 行=ground truth 但部署版 Python 日志不出 API→以注入 config 现值为准)。
 - **热PATCH实证@09-17 07:4x(CC探针 _probe_cc_running_check 写+null删 http200 param_version v17→v18,策略running不变)**: 部署后端接受running PATCH;仓库main manager.go:1737 "cannot update config while strategy is running"线上不存在=**部…〔全文git f0b0c0a〕
 - **有效门槛反推法**: 日志"置信度动态仓位 symbol=… conf=… mult=… pct=…"=逐单成交置信度;09-17 07:xx见conf 0.40/0.44成交→有效门槛≤0.40(config min_conf0.45,lcp/scp 0)。
-- **Go侧LLM重写器(strategy_autotune.go)**: enabled=false不跑;apply=true/dry_run=false上膛;模型链 config auto_optimize_model→conf AI.Optimizer→env AI_OPTIMIZER_MODEL(默认anthropic/claude-opus-4.8-fast via OpenRouter);会让模型重写全码→仅校验def run(+py_compile→发版换绑→StopStrategy/StartStrategy;不校验S锚点/6符号→若被打开=S谱系风险;runs表strategy_optimization_runs(末行06-03)。
+- **Go侧LLM重写器(strategy_autotune.go)**: enabled=false不跑; apply=true/dry_run=false上膛(main; majors 已 dry_run); 会让模型重写全码并 stop/start, 只校验 def run+py_compile, 不校验 S 锚点 ⇒ 若被打开=S 谱系风险(TG🆘+重拉 grep 锚点); 全文=git 6b44db7 版§3。
 - **命名空间**: _exp=DS(CC只读,刹车frozen_keys append例外);_exp_cc=CC预注册(+watch_ds);_ai_task_cc(CC→DS)/_ai_task_ds(DS→CC)各保3天≤8KB;宿主/tmp/ai_task=owner可读合并日志,经ops/ai_task_bridge.py桥接(owner装DS侧)。
 - **现货引擎事实@09-17(源码)**: 全文=prompt v5.1【现货载具】节◆引擎事实/git b341694版§3(market进程级→第二进程;可用=市价买卖+本地TP/SL;不可用=饥饿/max_hold/ROI/交易所TPSL/追踪/保本/收养/余额sizing;amount静态→S34改名义/现价;funding非usdm=0→S30/S33失活)。
 - **单笔风险恒等式**: SL亏损=余额×pct×sl_roi(杠杆约掉;09-17 114×0.05×0.12≈0.68U/次);杠杆只改SL价距(噪声穿刺频率)与名义/手续费规模。
@@ -364,9 +362,6 @@
 | 本地 TP/SL 监控陈旧价假触发 | n=1(ROBO 09-19 05:58:38, 429 挡下, 无实害) | 09-19 06:3x | 补丁 61631b0 候部署; 再现 1 例(成功平仓∧hold<60s∧pnl≈0)→催部署 |
 | 池宽度离线读数(1m EMA20/60, data-api.binance.vision 现货可核子集) | **0.31**(48/157 up; 272 池中 115 币无现货=样本偏向主流币)@09-19 05:4x | 09-19 05:5x | 引擎 S31/S13 读数不可见(统计汇总行自 09-16 12:24 缺失而 stats_log_interval_sec=60 在位→日志缺口候查);用途=校准 breadth_max_for_short/S31 阈值;判据: 连续 2 轮 ≥0.70 而空头仍开=S13 门失效→查源 |
 | backend→Binance REST DNS断连 | episode结案@09-14 14:4xZ(118.6h零成交;owner docker重启修复);全文=git 6b41621版§6 | 09-14 14:5x | 复发判据=fapi SERVFAIL再现→重开计episode n+1;#89(c49c555)根修推荐不变 |
-| TradFi嫌疑币watch | BYD/AXTI/INTW/MVLL/MEGA(零史+名形存疑,无直证);**FLNC@09-17 直证-4411×2→已隔离(bl20;规则"任一现-4411即隔离"首次生效)** | 09-17 15:2x | 任一现-4411或官宣名单确认→即隔离(不限流);MEGA大概率MegaETH(低嫌) |
-| 幻影行post-fix观察 | 累计n=2(SCRT@08-25/TAC@08-29);全文=git 6b41621版§6 | 08-28 18:1x | n≥3或含实亏→升§4 |
-| epsilon边界放行观测(v2域) | n=5/类净+0.027;全文=git 6b41621版§6 | 08-28 18:2x | 累计n≥5∧类净≤−2U→复议 |
 |---|---|---|---|
 | **09-18 P3 lev10 段终裁=KEEP 4/4(RECOVER)** | 全文=git e39ddee版 | | |
 | **09-18 p5/p6/p7 终读** | p5 KEEP 3/3; p6 封段 n71 −34.75; p7(hunger_sl 0.04) 终读 n46 179笔/日 毛+4.26 wr52% 饥饿SL 带 41% 费后 −0.23/笔 🔴 多35/−2.61 空11/+6.87; 全文=git c06ab72版§6 | 09-19 00:1x | |
@@ -376,11 +371,8 @@
 | main断流观测(三闸交集关门) | main笔数0/24h@09-10 21:1x=断连首全零轮(30.2h零成交;史2@12:2x/16@04:1x;微差双胞纪律留档git 2596a9a) | 09-08 18:1x | 判据不变:再现6h+零笔且池ATR中位≥0.5→查管道;每轮记main笔数 |
 | 已结案·终态归档集(18项瘦身@08-26 12:4x) | 18项终态读数与重开条件全文=git 8705b00版§6;触发即复活行 | | |
 | 终态归档集2(4项瘦身@09-17) | 全文=git f90d9dd版§6(含粉尘残量亚型 n=1@09-17 AVA);判据不变,触发即复活行 | | |
-| 终态归档集3(8项瘦身@09-19 08:4x) | 重启后速开仓观测 / closed平仓行消失观测(≤48h短窗) / main行零归属(空sid;§3 closed回填缺口) / 收养错归属亚型(#57族;§4#72) / rotate has_open_position判定条件观测 / apply重启作用域观测 / main无端重启重播种观测 / #79·closed行sid旧绑定继承(#77族) 全文=git 6b44db7 版§6; 判据不变, 触发即复活行(重启后速开仓判据已达=候议 warmup 静默 5~10m) | 09-19 08:4x | |
-| BICO资金费磁铁长侧 | 结案=已隔离@08-17(48h n8/−4.05;全文git bb3b883系) | 08-17 | 机制病留档;rehab按头注 |
+| 终态归档集3(8项瘦身@09-19 08:4x) | 重启后速开仓观测 / closed平仓行消失观测(≤48h短窗) / main行零归属(空sid;§3 closed回填缺口) / 收养错归属亚型(#57族;§4#72) / rotate has_open_position判定条件观测 / apply重启作用域观测 / main无端重启重播种观测 / #79·closed行sid旧绑定继承(#77族) 全文=git 6b44db7 版§6; 判据不变, 触发即复活行(重启后速开仓判据已达=候议 warmup 静默 5~10m) | 09-19 08:4x ‖ 再折 6 项@08:5x: TradFi嫌疑币watch / 幻影行post-fix观察 / epsilon边界放行观测(v2域) / 硬超时磨损类 / BICO资金费磁铁长侧 / funding磁铁·他币再现watch(TradFi 规则"任一 -4411 即隔离"存续; 全文=git 2ce79f1 版§6) | 09-19 08:5x | |
 | S31·regime动态方向偏置(结案KEEP@09-02) | 上线tpl988@09-01;KEEP;verdict=ops/exp_archive/s31_verdict_20260902.json;全文git e9d1b17版§6 | | |
-| funding磁铁·他币再现watch | S30@08-29/S33@09-08;全文git e9d1b17版§6 | | |
-| 硬超时磨损类 | 48h滚动n13/−5.79@09-10;全文=git 6b41621版§6;行动门 hold≥40m类n≥20∧类净≤−3U→升§4 | | |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
 | 2026-09-19 08:1x-08:5x | 定时轮(与 08:2x 检查轮并行, 其台账 bfc983d 已并入): 管道活(REST 200); 钱包 160.6(全平; 08:17 读 avail 144.2=XRP 保证金锁定时刻, 已对账); income 1h +8.0 / 3h −12.0 / 6h −39.6(−24.7%)报警 / 12h −61.7 / 24h 净 −95.9(REALIZED −39.0 费 −56.9; 入金 +142 另列)🆘; main 7 币池新段(07:21 起) n4 毛 +5.26(DRIFT/HEI TP, G 两次饥饿刀) 成交 conf 0.36-0.48 门槛 0.35 在位, 0 改动(直令 eval 18:00Z/n≥30); DS: 07:27 后 0 PATCH, _exp closed-owner-unlock, _ai_task_ds 空(桥接未装); 【majors】owner 08:01:47 UI 启动(无 audit; mcp5/+XRP/hunger off/bar_agg_minutes 15 预置)于 1m tpl998→08:03-08:20 3/3 空 SL 毛 −0.78(SL 距 0.08-0.22%=费尺度)→CC 08:39:38Z apply **S35 bar聚合 15m**(tpl1056; 基线 3e311e8b 复读一致; config diff=NONE; harness 6/6; smoke bt58 完成不崩; 归档 92327c4)→首个 15m 封口 08:46:31 即发 SOL 多(名义 156U, SL 距 0.88%/TP 1.01%; 种子预热实证); 预注册 majors _exp_cc(CC-28, eval 09-20 08:40Z/n≥15); 留言板 08:43Z(599 字); 宏观 FGI71 BTC +4.2% ETH +5.8% 市值 +1.3% trending∩池 ARB(+BTC/SOL∈majors); 下轮=majors S35 段读数(SL 距中位/首批结果)+main 新段+DS 10:0x 节拍对账(CC-27 :246 Σ≤0.75 若未删必再砍 pct) |
