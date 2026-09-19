@@ -86,7 +86,7 @@
 | qt-spot-long(现货) | 未建 | main fork+S34(spot) | auto select_limit100 现货USDT对;bl=隔离区 | **候部署@09-17(owner:第二进程 quanty-spot+划转;cron:建壳→S34→烟雾→canary)** | 规格=prompt v5.1【现货载具】节/git c06ab72版§1.5(buy-only/mcp3/cd300/mc0.60/atr_tp3.0/atr_sl1.5; 劣化线段净≤−3U∨n≥10∧wr<35%→stop; 现货刹车6h≥5%; 超时缺口=DS-7) |
 | ~~退役壳×4~~ trend 827ffe8c/breakout-v2 3b646bf4/fade-v2 7583727a/fade 21519f1b | — | — | — | **已从平台删除**(09-15~16 owner/迁移;/api/strategies仅main 1行@09-17 07:3x实证) | 谱系tpl/verdict/遗仓收养全史=git 7ee5ca0版§1.5;复活=新壳FLEET预注册+owner令;qt-breakout-follow 2111f5f9 owner删@08-15同上 |
 
-- 隔离区【bl42@09-19 07:2x】=规则类(≤−4U∧n≥4): 4/CYS/TST/龙虾/BMT/BTW/H/APR/AIO/BICO/BEAT/XNY/ACE(血统git bb3b883/8a797ec/bb2e系)＋BR/AVA/ONE@09-18 05:19Z(48h BR n14/−14.89·AVA n6/−9.54·ONE n5/−4.49;全文git 5d2c77a)＋**哈基米@09-18 10:1xZ(48h n8/−4.01;附证 09:18 -4028 "Leverage 10 is not valid"→引擎按现有杠杆继续下单=该币杠杆不可控;bl+rotate remove同轮复读✓)**＋**XTZ/AR/CROSS@09-19 07:2xZ(48h XTZ n4/−7.44·AR n9/−7.12·CROSS n14/−7.06, 亏损集中在 04:53 后 0.4% 刀段; bl39→42; manual 7 币 feed ∩=∅)**＋TradFi类【7】@09-10/09-17: GPRO/KODEX200/SOXS/CSOPSAMSUNG2L/CSOPSKHYNIX2L/HK0992/FLNC(-4411直证;签约闸+crypto模板未验证资产类;解禁须owner签约∧专项原型预注册;全文git 5d2c77a)。**池列值=快照,权威=每轮对账器输出**;对账器v1.6=quanty-ledger分支ops/route_pools.py(谱系与污染事故见§3);**arg4隔离表必须X/USDT形态**;出池只认头注规则或隔离;币级watch集/对账史/#51-#58史=git 5d2c77a版行。
+- 隔离区【bl42@09-19 07:2x】=规则类(≤−4U∧n≥4): 4/CYS/TST/龙虾/BMT/BTW/H/APR/AIO/BICO/BEAT/XNY/ACE(血统git bb3b883/8a797ec/bb2e系)＋BR/AVA/ONE@09-18 05:19Z(48h BR n14/−14.89·AVA n6/−9.54·ONE n5/−4.49;全文git 5d2c77a)＋**哈基米@09-18 10:1xZ(48h n8/−4.01;附证 09:18 -4028 "Leverage 10 is not valid"→引擎按现有杠杆继续…; 全文=git 81bfb23 版§1.5(bl45=42+SOL/XRP/PROM@11:32)。
 - 保证金: owner 13:0x 起 pct0.25×mcp10 递减序列(引擎按剩余 avail 逐仓扣减)理论峰≈94% 余额;实测并发峰 5仓/1147U名义/保证金≈115U(56% 钱包)@09-18 13:26;硬边界#8 已被 owner 值取代(§1 13:0x/13:4x 行)
 - 互斥不变式: 单载具后退化为 隔离∩feed=∅ + bl=隔离区;多载具时代不变式与违例史git 7ee5ca0版§1.5。
 - lowvol(ad37d337)已删@08-09 17:0x owner拍板(无交易史,原型设计存git f970704 create_low.json可重建)
@@ -294,7 +294,7 @@
 - **[候选·连开cap全组重校 @08-28 03:4x]** 结论=多币池载具cap3可自愈非死锁,仅单币池致死(trend已修),main改mces必要性下调,候选降权窗;依据链与全文=git f90d9dd版§4。
 
 | # | 类型 | 内容 | 依据 | 复现计数 | 状态 |
-| **H-0919f 括号锚在信号价非成交价(追涨滑点偏斜)** | 09-19 12:4x | 机制=源码: strategy_position.go:476 resolveTPSLFromROI(entryPx=成交价) 在 tp/sl pct=0 时 strategy_execution.go:305-307 原样返回信号 tp/sl(锚=Python 信号参考价), 仅 :485-491 SL 钳 [entry×(1−0.3/lev), entry]; 实证 11:08 后 n7 滑点(成交−信号价)/信号价 中位 +0.15%, ZAMA +1.71%(TP 距 4.6→2.88%/SL 3.7→5.34%, 45m 超时 −2.13 两腿均未触)/SWARMS +1.39%; 方案=Go 按成交价平移 tp/sl(CC-31, owner 部署) 或 Python 入场偏离门; 取舍=重锚恢复 2:2.5 几何但 SL 更近拉升回撤区 | 源码+逐笔 | n=2/7 | open(候 n≥20 或 CC-31) |
+| **H-0919f 括号锚在信号价非成交价(追涨滑点偏斜)** | 09-19 12:4x | 机制=源码: strategy_position.go:476 resolveTPSLFromROI(entryPx=成交价) 在 tp/sl pct=0 时 strategy_execution.go:305-307 原样返回信号 tp/sl(锚=Python 信号参考价), 仅 :485-491 SL 钳 [entry×(1−0.3/lev), entry]; 实证 11:08 后 n7 滑…; 全文=git 81bfb23 版§4 |。
 | **H-0919e bar聚合封口延迟/滑点(S36 候选)** | 09-19 09:2x | majors S35 信号时刻 08:46:31/09:01:31=15m 边界后 ≈91s(桶换号在新桶首根 1m 收盘时发生 +≈30s 管道; main 1m 信号亦落在 :31-:36s); 滑点=成交−信号价(信号价=SL+2×ATR, ATR=(TP−SL)/4.5): SOL +0.036%(0.08ATR)/BNB +0.128%(0.47ATR); S36 方案=新桶首个 tick 即封口(省 60s), 回滚=S35 原样 | tpsl 日志反推 | n2 | watch(门: n≥10 且滑点中位≥0.3×ATR→预注册 S36; CC-28 在飞期不动码) |
 | 85 | 观察(组死法·regime病理) | SL穿刺簇=当期唯一主失血道但无可行动修复族@09-06 21:1x(48h n19/−17.55多空对称;16/19深穿刺gap-through)全文=git 8705b00版§4 | 逐笔法医学 | n19 | 观察(lev2态后穿刺归零,见§6刹车基线读数) |
 | **conf≥0.60桶=延伸段入场(追高/追跌)** | 09-17 10:2x | 09-16 16:00→09-17 07:52 conf≥0.60 n26 wr31% 净−28.79(穿刺69%<3m,mult1.4放大)= S35 入场延伸veto候选(§5 CC-4;需1m K线量化 (entry−EMA20)/ATR ≥20笔同型);cs_mult 1.0 已落地@09-18 08:12;全文git 7f578a7版§4 | n26 | open(候S35) |
@@ -385,7 +385,7 @@
 | main断流观测(三闸交集关门) | main笔数0/24h@09-10 21:1x=断连首全零轮(30.2h零成交;史2@12:2x/16@04:1x;微差双胞纪律留档git 2596a9a) | 09-08 18:1x | 判据不变:再现6h+零笔且池ATR中位≥0.5→查管道;每轮记main笔数 |
 | 已结案·终态归档集(18项瘦身@08-26 12:4x) | 18项终态读数与重开条件全文=git 8705b00版§6;触发即复活行 | | |
 | 终态归档集2(4项瘦身@09-17) | 全文=git f90d9dd版§6(含粉尘残量亚型 n=1@09-17 AVA);判据不变,触发即复活行 | | |
-| 终态归档集3(8项瘦身@09-19 08:4x) | 重启后速开仓/closed行消失(≤48h)/main行零归属/收养错归属(#57族)/rotate has_open_position/apply重启作用域/无端重启重播种/#79 sid旧绑定 全文=git 6b44db7 版§6; 判据不变, 触发即复活行(重启后速开仓判据已达=候议 warmup 静默 5~10m) | 09-19 08:4x ‖ 再折 6 项@08:5x: TradFi嫌疑币watch / 幻影行post-fix观察 / epsilon边界放行观测(v2域) / 硬超时磨损类 / BICO资金费磁铁长侧 / funding磁铁·他币再现watch(TradFi 规则"任一 -4411 即隔离"存续; 全文=git 2ce79f1 版§6) | 09-19 08:5x | |
+| 终态归档集3(8项瘦身@09-19 08:4x) | 重启后速开仓/closed行消失(≤48h)/main行零归属/收养错归属(#57族)/rotate has_open_position/apply重启作用域/无端重启重播种/#79 sid旧绑定 全文=git 6b44db7 版§6;…; 全文=git 81bfb23 版§6 | 09-19 08:5x | |。
 | S31·regime动态方向偏置(结案KEEP@09-02) | 上线tpl988@09-01;KEEP;verdict=ops/exp_archive/s31_verdict_20260902.json;全文git e9d1b17版§6 | | |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
