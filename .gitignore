@@ -5,6 +5,8 @@ logs/
 .env.*
 !.env.example
 conf/marketmaker.json
+# 同上：marketmaker.json 的运行时备份（改配置前自动存一份），与本体同样含凭据
+conf/marketmaker.*.json
 
 # ops 运行时状态与备份：源码入库，状态不入库
 # (.qt_breaker.state.json 记 last_trip_ts/last_lock_until，入库会让"回滚代码"顺带回滚熔断状态)
@@ -14,3 +16,5 @@ ops/.qt_breaker.state.json
 ops/.qt_breaker.state.json.preverify
 ops/*.bak-*
 ops/*.bak
+# 部署脚本改前自动存的整份副本（deepseek_optimize.py / *.service / *.timer），同属状态不入库
+ops/backup/
