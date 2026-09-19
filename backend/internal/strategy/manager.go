@@ -262,8 +262,14 @@ func parseSymbolsValue(v interface{}) []string {
 		seen[k] = struct{}{}
 		dedup = append(dedup, s)
 	}
-	if len(dedup) > 20 {
-		dedup = dedup[:20]
+	// 上限原本是 20，且不截断也不报错 —— 超出的项被【静默丢弃】。
+	// 2026-09-19 实盘实测：Meme 实例的 symbol_blacklist 已配 45 项 ⇒ 第 21~45 项
+	// 全部失效，其中 10 项仍在正常交易、近 7 天合计为负（XTZ/MYX/STRK/USELESS/
+	// 牛来/SYN/PROM/PIEVERSE/MARSCOIN/LSK），SOL/USDT 与 XRP/USDT 的跨池去重也一并落空。
+	// symbols 白名单共用本函数，同样受这个 20 上限影响。
+	// 放宽到 500，仍留一个防止病态配置的边界。
+	if len(dedup) > 500 {
+		dedup = dedup[:500]
 	}
 	return dedup
 }
