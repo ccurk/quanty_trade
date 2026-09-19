@@ -73,6 +73,7 @@
 | 2026-09-19 | **第一波直令+优化知识登记(live 03:3x)**: owner 原话"现在拉一下从现在到昨天12点的历史仓位和对应行情数据。看起来我们的止盈止损设置的有问题，经不起第一波波动，就被干掉了。找到一个合理的数字。这个case你要记在，是你优化策略要知道的"。执行: 226 仓(open≥09-18 04:00Z)+81/83 币 1m 永续行情(Bitget68/Gate13; fapi 451, vision 日档未出)→206 笔路径反事实(§3 第一波机制/§6 网格)。**定数=ATR 缩放: atr_sl 2.0×/atr_tp 2.5×/45m 超时, 交易所 tp/sl pct 归 0, hunger 0.30/0.30 兜底, trailing 关, BE 关, max_atr_pct 回 6**(03:41 复读✓+force 重启 03:41:14Z)。owner 的 15~20% 止盈与 3-5U 金额帽在同批数据上为负(−40~−74U), 已如实呈报, 一字令可改回。**常备知识: 止损距离以 ATR 为单位设计; 固定%/固定金额刀在多币池上必然被第一波打掉。** |
 | 2026-09-19 | **/tmp/ai_task 双向论证直令(live 05:3x, 本会话两条)**: owner 原话"你和 deepseek的 更新优化 别忘记 /tmp/ai_task/ 交流 每次优化之后要同步这里，优化之前也需要看一下，不要把他的结论当作对的，要论证，得到最好的。"+"你要把你的意见等也可以写进去，让他读取"。**常备规则: 每轮优化前读 _ai_task_ds(=宿主 /tmp/ai_task 经桥接), 优化后写 _ai_task_cc(状态条+意见条), 对 DS 结论逐条论证不照单, 意见写明证据与可反驳点。** 事实: 容器无宿主文件系统(ls /tmp/ai_task 不存在), 桥接 ops/ai_task_bridge.py(quanty-ledger 分支)至今未在宿主运行(_ai_task_ds 自 09-17 始终为空)→已 TG 给 owner 安装 cron 行(DS-3)。本轮已写状态条+意见条各 1(05:34/05:35Z)。 |
 
+| 2026-09-19 | **多策略化直令(live 06:5x)**: owner"不能用一套策略盯所有 meme…变成多个策略: 一个池子专门做 btc eth bnb sol, 一个策略专门做 meme 固定的几个币"+备用池(不交易, 模拟下单, 好则加入)。执行: main→7 币 manual 池(G/BULLA/MAGMA/UAI/HEI/DRIFT/ARB; 72h 费后/笔≥−0.07∧n≥7) 07:13/07:21 重启(max_price 0 陷阱→1e12); 新建 Majors e725e31a(stopped; 1m 结构性负)+Sandbox ce84012b(备用池模拟, 永不 start, S34 tpl1055); _standby_cc 8 币。**08:01Z Majors 被 UI 启动(5 币含 XRP, mcp5)→首 3 单止损距 0.10~0.19%=费, CC-25 watch。** owner 07:2x"我让 deepseek 在做, 一会你检查一下"→08:2x 检查(§7)。 |
 ## 1.5 策略组注册表（08-09 起;池归属与载具状态权威节;roster 有变当轮必更）
 
 | 载具 | id | 原型 | 池 | 状态 | 门/备注 |
@@ -121,7 +122,8 @@
 | S32 | 2026-09-03 | **rolled-back@09-03 18:2x(tpl990 guard=False在场,复活须新预注册)** | **接刀冷却(不稳定窗veto记忆)**: 近10m内 S18 veto 或 RSI>70 ∧ A-bar 仍跌→拒多, W-bar 放行; 阈值内联(600s/RSI70) S32_ENABLED False-guard; 域/反证全文=git d19a237版§2 | `S32 ` |
 | S33 | 2026-09-08 | live@main(tpl998) | **资费疫苗下修(S30参数段下修)**:温和+0.20→+0.10,深+0.10→+0.05,极深−0.10不动;score+detail两位点同步,detail标签换S33前缀(决胜扫描口径随更);触发=§6预注册门(多头决胜cohort n10/净−5.82,owner无否决);阈值内联;回滚=一步rollback回tpl990 | `S33 ` |
 
-下一个新锚点编号：**S34**(S23-S33已用)。⚠️锚点自S24起分fork谱系: main=S4..S23+S30+S31+S33(S32关guard在场);trend=+S24;fade-v2=+S25+S28;breakout=+S26(其均值回归核档案化)。apply前grep按该载具fork谱系核验。原注记:(历史上 S10 曾存在于注释引述，编号不复用)。
+| S34 | 2026-09-19 | live@sandbox tpl1055(main 未装) | **sim-clock**: sim_clock=true 时 cooldown/急再入veto/影子/CB/S31/S32/择优窗改用 K 线时间(_ct/_cm), live 零差异; 依据=回测把小时压成秒→每币仅 1 笔; 验证 #56 MAGMA 10 笔 | `S34 ` |
+下一个新锚点编号：**S35**(S23-S33已用)。⚠️锚点自S24起分fork谱系: main=S4..S23+S30+S31+S33(S32关guard在场);trend=+S24;fade-v2=+S25+S28;breakout=+S26(其均值回归核档案化)。apply前grep按该载具fork谱系核验。原注记:(历史上 S10 曾存在于注释引述，编号不复用)。
 静态必留 6 符号（v10 既有，与上表取并集）：`on_market_message` `_emit_signal` `_append_bar` `self.pub.publish` `_init_symbol_state` `_purge_idle_symbols`
 
 ## 3. 已确认机制
@@ -320,25 +322,28 @@
 
 | # | 类型 | 内容（含完整意图） | 登记轮 | 状态 |
 |---|---|---|---|---|
-| DS-2 | owner裁决(需重启) | 质量门恢复Step0: min_confidence 0.45→0.55+lcp 0→0.10+scp 0→0.05(Python侧键)。证据@10:2x: 逐笔join显示提高min_conf不是止血杠杆,Step0原样不推荐。**@09-19 00:25Z CC force 重启(v5.3 准)以 config 现值注入(cd180/min_conf0.35/warmup50/select300/max_atr_pct0.8/atr 2.0/1.5),DS 未污染 Python 侧键** | 09-17 | open |
-| DS-3 | owner安装 | ops/ai_task_bridge.py装进DeepSeek侧cron(桥接/tmp/ai_task↔_ai_task_cc/_ai_task_ds);装前留言板仅config键半通(CC已写首条) | 09-17 | open **@09-19 05:5x owner 两条 live 直令重申 /tmp/ai_task 双向; 事实 _ai_task_ds 始终 null=sync 从未成功; 已 TG 安装行: `*/10 * * * * cd <repo> && QT_USER=admin QT_PASS=*** python3 ops/ai_task_bridge.py sync`(脚本在 quanty-ledger 分支 ops/); DS 侧发言用 `post`** |
-| DS-4 | owner保险 | auto_optimize_dry_run=true(Go侧重写器上膛保险);或owner明示保持现状 | 09-17 | open |
-| DS-6 | owner部署(现货) | 第二进程quanty-spot(配方=prompt v5.1◆部署配方/git b341694版§5): env覆盖PORT8081/DB quanty_spot/REDIS_DB1/BINANCE_MARKET=spot+BASE_URL/WS_BASE_URL;API key现货权限;划转≤期货30%;反代;建claude_cron;自检market=spot;填BACKEND_SPOT/SPOT_ID | 09-17 | open |
-| DS-7 | M候选(现货超时) | claude/dev-spot-maxhold: quick_trade_monitor.go:41去usdm门(closePositionForInstance已支持spot),使现货持仓有max_hold出场;未部署前cron巡检持仓龄≥180m→**端点核实@10:2x: /api/positions/close仅usdm,spot无路径→TG报owner手平** | 09-17 | open |
-| DS-8 | owner确认 | 24h income TRANSFER −50U(12h窗无)是否=现货钱包划转;若是→回填BACKEND_SPOT/SPOT_ID起跑canary;钱包口径现≈121U估(avail78.8+保证金41.9);**@20:2x TRANSFER已滚出24h窗(入账∈09-16 15:2x-20:1x),仍待owner认** | 09-17 | open |
-| DS-9 | owner确认 | 08:30Z admin PATCH breakeven_trigger_atr 1.0→0(无_exp登记,DS节拍外)是DS还是owner手改;已按裸改watch_ds(eval 20:30Z) | 09-17 | open(**裁决@15:20Z: watch线破(open≥08:30 n27 毛−6.26U≤−4U)→DS-ROLLBACK be_atr 0→1.0已执行复读✓;仍候owner认领:若为owner手改→告知即恢复0**) |
-| CC-1 | CC反事实全集 | 09-17 futures vision 1m日档(T+1;00:2x/05:2x仍404,09-16档200)到手后用cf2.py重跑post-BRAKE全45笔+禁多段: 复核 hunger_sl 0.025 结论(赢单误杀计数/净额差);误杀≥2笔→回滚0.05;同时算 hunger_after 30/45 与 trailing_callback 1.2%放宽反事实 | 09-18 | open |
-| CC-2 | RECOVER门跟踪 | 门自09-18 06:2x只管lev升档;lev 按owner令10;**@09-19 03:5x 6h income 净 −17.5(毛 −4.9 费 −12.7)=门关**;下一档非owner令不推 | 09-18 | open |
-| CC-4 | 策略代码(S35候选) | 入场侧高分延伸veto: conf≥0.60桶(09-16 16:00→07:52 n26 wr31% 净−28.79=段亏67%,穿刺69%<3m)=延伸段末端入场;设计门=先取1m K线(data-api.binance.vision现货代理或vision T+1)量化 (entry−EMA20)/ATR 与 bars-since-cross,≥20笔同型再写gate;apply需空仓重启窗(有持仓stop被拒,严禁造窗)→send_later探针≤3 | 09-18 06:2x | open **@09-19 05:5x 两窗矛盾(§4 H-0919d)→HOLD 不写门** |
-| CC-11 | 巡检 | pct 配置下每轮报: 保证金占用峰值/最大单仓名义/最大单笔SL亏/6h,24h钱包%;DS breaker 若砍pct→按owner令处置并TG(裸改簿) | 09-18 13:1x | open(读数史 git df539c9版; 最新@06:3x: 最大单仓名义 479U(pct0.25), 最大单亏 OP −5.48, 6h ≈−16%/24h ≈−31%(DB 逐笔+费估)) **@07:3x: 最大单仓名义 VTHO 354/ZEST 204U(pct0.25 段尾), 最大单亏 CROSS −5.51/OP −5.48/AR −5.11(均 0.4% 刀 1-2m 内过冲 1.3-1.6%); 6h ≈−27%/24h 净 −109.2U(入金 +142 另列)🆘; DS #7 07:08 砍 pct→0.125 未锁, 不硬抢** |
+| DS-2 | owner裁决(需重启) | 全文=git 6b44db7版§5(要点不变) | 09-17 | open |
+| DS-3 | owner安装 | 全文=git 6b44db7版§5(要点不变) | 09-17 | open **@09-19 05:5x owner 两条 live 直令重申 /tmp/ai_task 双向; 事实 _ai_task_ds 始终 null=sync 从未成功; 已 TG 安装行: `*/10 * * * * cd <repo> && QT_USER=admin QT_PASS=*** python3 ops/ai_task_bridge.py sync`(脚本在 quanty-ledger 分支 ops/); DS 侧发言用 `post`** |
+| DS-4 | owner保险 | 全文=git 6b44db7版§5(要点不变) | 09-17 | open |
+| DS-6 | owner部署(现货) | 全文=git 6b44db7版§5(要点不变) | 09-17 | open |
+| DS-7 | M候选(现货超时) | 全文=git 6b44db7版§5(要点不变) | 09-17 | open |
+| DS-8 | owner确认 | 全文=git 6b44db7版§5(要点不变) | 09-17 | open |
+| DS-9 | owner确认 | 全文=git 6b44db7版§5(要点不变) | 09-17 | open(**裁决@15:20Z: watch线破(open≥08:30 n27 毛−6.26U≤−4U)→DS-ROLLBACK be_atr 0→1.0已执行复读✓;仍候owner认领:若为owner手改→告知即恢复0**) |
+| CC-1 | CC反事实全集 | 全文=git 6b44db7版§5(要点不变) | 09-18 | open |
+| CC-2 | RECOVER门跟踪 | 全文=git 6b44db7版§5(要点不变) | 09-18 | open |
+| CC-4 | 策略代码(S35候选) | 全文=git 6b44db7版§5(要点不变) | 09-18 06:2x | open **@09-19 05:5x 两窗矛盾(§4 H-0919d)→HOLD 不写门** |
+| CC-11 | 巡检 | 全文=git 6b44db7版§5(要点不变) | 09-18 13:1x | open(读数史 git df539c9版; 最新@06:3x: 最大单仓名义 479U(pct0.25), 最大单亏 OP −5.48, 6h ≈−16%/24h ≈−31%(DB 逐笔+费估)) **@07:3x: 最大单仓名义 VTHO 354/ZEST 204U(pct0.25 段尾), 最大单亏 CROSS −5.51/OP −5.48/AR −5.11(均 0.4% 刀 1-2m 内过冲 1.3-1.6%); 6h ≈−27%/24h 净 −109.2U(入金 +142 另列)🆘; DS #7 07:08 砍 pct→0.125 未锁, 不硬抢** |
 | CC-15 | owner裁决 | p6 出场几何 D 方案(赢单侧放宽 trailing/BE);候 4 轮 | 09-18 15:2x | **closed@09-19 03:4x: 被 owner 第一波直令+反事实取代——trailing/BE 直接关闭(反事实 +54 为无追踪括号), 追踪变体入 §4 H-0919a** |
 | CC-9 | DS越界簿 | admin mcp 未声明改动=协议7越界 #1~#5(09-16 22:10/09-17 13:15/09-18 06:30/09-18 15:22/09-18 21:22, 全文 git df539c9版)+#6 09-19 03:22 pct→0.0625; 裁决=不硬抢(RECOVER 门关/mcp6 不绑定/乒乓), owner 04:49 自行解锁 pct0.25(=A 路径), mcp 仍 6; owner 令恢复即恢复+TG | 09-18 08:1x | open(mcp 6→10 候 owner; breaker 阈值改钱包比例候 owner) **@06:3x 预期 07:09 breaker 再砍→不硬抢只 TG; owner 13:4x"按 owner 值恢复"与 CC-9 不硬抢裁决冲突→候 owner 一字令(恢复即恢复)** **@07:3x #7 07:08:41 pct 0.25→0.125(仅 pct, 无 _exp 锁; mcp 6 未动); 仓库 qt_breaker.py 087a6dd@05:14Z PCT_FLOOR 0.25/TRIP_COOLDOWN 6h 与宿主行为(距 #6 3h46m 再砍到 0.125)矛盾→宿主副本≠仓库(CC-24⑦)** |
-| CC-19 | M候选(费率病根) | **maker 入场**: 24h 手续费 −40.59U vs 毛 −8.34U(费=毛的 5 倍);源码=入场 MARKET 单(strategy_signal.go:745 enqueueOrderForInstance price=0→binance.go:1372 price>0 才 LIMIT GTC,无 GTX/post-only)=双边 taker 0.1% 来回;方案=claude/dev-maker-entry: 入场改 LIMIT GTX 挂最优价,N 秒未成交撤单改市价(config entry_post_only/entry_maker_timeout_sec);预期费 0.1%→0.07~0.04%;部署权 owner;候 owner 一句话 | 09-19 00:1x | open |
+| CC-19 | M候选(费率病根) | 全文=git 6b44db7版§5(要点不变) | 09-19 00:1x | open |
 | CC-20 | 评判 | FIX max_atr_pct 6→0.8(09-19 00:24Z) | 09-19 00:2x | **closed FAIL@03:3x: 段 n40 毛 −5.67 wr48% 费后 −0.33/笔, 亏单 17/21 仍死在 0.4% 刀带→门不是解, 刀才是; worsen 触→ROLLBACK 6(03:41 重启生效)** |
 | CC-21 | 评判 | **p9 ATR 括号**(_exp_cc 03:41:02Z; 重启 03:41:14Z 首单起; 门/worsen/回滚集与自查点 1-3 读数全文=git d19a237 版) | 09-19 03:4x | **closed@09-19 07:3x(段被 07:13:27 池切换重启封口)**: p9a(03:41→04:53) n11 −5.30 wr18% 空 9/11; p9b(04:53→07:13, hunger_sl 0.04 在位) n20 −32.95 wr10% 饥饿 0.4% 刀 16/20(−38.95)/TP 2(+8.06), 06:00 后 n10 wr0%; 括号本体未被公平检验(SL 腿自 04:53 被 0.04 刀覆盖), worsen 触线只报; 12:00Z 不再评判 p9, 新池段(07:21 起)按 _exp_cc OWNER-DIRECTIVE 计; hunger_sl 取舍仍=CC-24① |
-| CC-22 | M候选(金额帽精确实现) | **Go 风险定量 sizing**: config risk_per_trade_usdt(0=关): percent_balance 下 名义=min(avail×pct×mult×lev, risk/(atr_sl_mult×ATR%))(信号 detail 已带 atr_pct; strategy_execution.go 尺寸处读); 交易所 SL 距不变(2×ATR), 单笔止损额恒=risk; 简化备选 stop_loss_usdt(quick_trade 按 unrealized≤−cap 平)会重现紧刀→不推荐; 部署权 owner; 候一句话 | 09-19 03:4x | open |
-| CC-23 | 管道(owner/M) | **REST 限频伤及避险动作**(05:10 OP 429 平仓失败 −3.74→−5.48; 守护跳过; -1003 开仓回滚): 病根=每仓 2s positionRisk+300 币 kline 回退(§3 轮询地图); 补丁 claude/dev-rest-budget 61631b0 候 owner 部署; 全文=git d19a237版§5 | 09-19 05:5x | open(候 owner; 7 币池后 kline 回退压力已降, positionRisk 轮询仍在) |
+| CC-22 | M候选(金额帽精确实现) | 全文=git 6b44db7版§5(要点不变) | 09-19 03:4x | open |
+| CC-23 | 管道(owner/M) | 全文=git 6b44db7版§5(要点不变) | 09-19 05:5x | open(候 owner; 7 币池后 kline 回退压力已降, positionRisk 轮询仍在) |
 | CC-24 | owner 裁决包 | ①hunger_sl 0.04 认领+取舍: A 保持(多头吃亏, 网格多 −34 vs +36) / B 回 0.30 让 2×ATR 括号生效 + pct 0.25→0.125 使单笔止损 ≈2×ATR×250U≈3.3U 落在 3-5U 帽内(CC 推荐 B) ②空头: sides=[buy] 直至空头信号复验(策略决定非刹车; 24h 网格空 n70 −22.0/6h wr28%) 或 short_conf_premium 0.15(只减半, 需重启)(CC 推荐前者, owner 拍板) ③mcp 6→10 ④breaker 阈值改钱包比例 ⑤CC-23 二选一 ⑥DS-3 桥接安装 | 09-19 05:5x | open **⑦ 宿主 ops/qt_breaker.py 与仓库 087a6dd(PCT_FLOOR 0.25/冷却 6h) 不一致: 07:08 仍砍到 0.125 且未写锁→请 owner 同步宿主副本 ⑧ deepseek_optimize.py FORBIDDEN_EXACT 补 symbol_select_mode/max_price/min_volatility/_exp_cc/_ai_task_cc/_standby_cc(现只禁 symbols/auto_symbols/select_limit/symbol_blacklist/sides/entry_time_windows/_exp/_last_optim)→否则 3h 节拍可改回 filter 池** |
+| CC-25 | watch_ds(裸改) | **Majors 被启动**(08:01:47Z UI 无 audit, 5 币 mcp5): 1m 止损距=来回费(ETH 0.102/BNB 0.105/XRP 0.188% vs 0.10%), 保本胜率≈87%; 线: n≥10∧费后≤−3U→TG 建议 stop+S35 bar 聚合后再启; CC 不擅停 | 09-19 08:2x | open(首 3 单 −0.78) |
+| CC-26 | 备用池机制 | _standby_cc 8 币; 每轮 POST /backtest(sandbox, 1m 18h, 现行 config+sim_clock+taker_fee 0.0005); 连续 2 窗费后>0∧≥5 笔→晋升; core 48h ≤−4U∧n≥4→降回; 前提 S34 验证✓(#56); 阻塞=回测器 #54/55/57 挂起>1h 需重跑 | 09-19 07:1x | open |
+| CC-27 | DS 脚本论证 | 仓库 087a6dd@05:14Z 入库 ops/qt_breaker.py(6h/−4U/PCT_FLOOR 0.25/冷却 6h/锁 24h)+deepseek_optimize.py(**第 246 行仍执行已废 #8 Σ(pct×mcp)≤0.75**→0.25×6 必被砍到 0.125; 07:08 砍 pct 无锁且距上次 3h46m<6h=宿主副本≠仓库); 请 owner ①同步宿主脚本 ②删 246 行约束 ③阈值改钱包比例 | 09-19 08:2x | open |
 > 结案集@09-19 03:4x: CC-20(FAIL→回滚 6)/CC-15(被第一波直令取代) 终态在行内; 结案集@09-19 00:2x: CC-12(owner atr 2.0/1.5 经 CC force 重启 00:25:26Z 生效)/CC-13(p6 封段 17:56Z n71 −34.75)/CC-17(p7 裁决见 §6)/CC-18(ROUTE 7 币落地 20:2x) 终态全文=git 5096ca1版§5;更早结案集=git 2fcc0da版§5。
 > 维护注指针集: #87/#86=git 805a115;#84=git dd4326e;#83=git 09-05 06:2x版;#82=09-04 07:3x版;#81/#78=git 4be520c;#74=2aa13b1;#70=17251a9;#68=0940c62。
 > 维护注(落地结案@09-14 14:52Z): #88全绿(bl22落地+feed卫生remove15)全文=git 6c1bd6a版§5。
@@ -377,6 +382,7 @@
 | 硬超时磨损类 | 48h滚动n13/−5.79@09-10;全文=git 6b41621版§6;行动门 hold≥40m类n≥20∧类净≤−3U→升§4 | | |
 
 ## 7. 运行日志（每轮一行，新行追加在表首）
+| 2026-09-19 08:2x | **检查轮(owner 07:2x"我让 deepseek 在做, 一会你检查一下"; 只读)**: main diff 仅 07:27 bl42(他会话)+07:21 max_price; **Majors 被 UI 启动 08:01:47Z**(5 币含 XRP, mcp 2→5, 无 audit); Sandbox 未动; _ai_task_ds 空; DS admin 07:21 后 0 PATCH; 仓库 087a6dd DS 脚本入库(CC-27 仍执行已废 Σ≤0.75); 回测 #56 MAGMA sim_clock 10 笔(S34✓) #54/55/57 挂起; main 3 单 HEI +3.55/DRIFT +2.48/G −0.46, Majors 3 单 −0.78(止损距=费); income 1h +11.83 / 3h −15.64 / 6h −43.19 / 24h −96.3(费 −57.2)🆘; avail 161; 0 config 改动 ‖ 下轮=CC-25 watch+重跑备用池回测+候 owner CC-24/27 |
 | 2026-09-19 07:1x-07:3x | 定时轮(07:15 触发, 与 owner live 会话并行: 该会话 07:13:23 落 7 币 manual 池+新建 majors 壳 e725e31a(stopped)+07:13:27/07:21:21 两次 force 重启(max_price 0→code:1008 "币价超上限"全拒 8 分钟→07:21 修 1e12); 本轮 0 交易键): 管道活(REST 200, ctx24 首拉 429 重试 200); 钱包≈153.5(avail 96.8+2 仓保证金 55+浮盈 1.65); income: 1h 57 腿 wr1.8% 净 −26.7 / 3h 净 −40.7 / 6h 净 −56.4(≈−27%)报警 / 12h 净 −59.9 / 24h 1304 腿 wr39.9% 毛 −52.6 费 −56.6 净 −109.2🆘(多 −74.0/空 −35.1; TRANSFER +142.06 入金另列); DB 逐笔 24h n260 饥饿 0.4% 刀 107/260 毛 −215.9 vs 赢单 115/+186.5; p9b(04:53→07:13) n20 −32.95 刀 16/20 wr10%, 06:00 后 n10 wr0% 输单中位 −0.53% 价 hold 中位 2.2m; 新池段 07:21 起 n0; 有效门槛 0.35(0.35 桶 27/300 成交); 隔离规则命中 XTZ n4/−7.44·AR n9/−7.12·CROSS n14/−7.06→bl42(feed7 ∩=∅); 宏观 FGI71 BTC +4.4% 市值 +1.3% trending∩池 ARB; 执行: ROUTE bl+3 ‖ 留言板 07:26:59Z ‖ DS: 07:08:41 breaker #7 pct 0.25→0.125 无 _exp 锁(仓库 087a6dd floor0.25/冷却 6h≠宿主行为→owner 同步), 不硬抢(CC-9); 优化器 FORBIDDEN 缺 symbol_select_mode/max_price/min_volatility/_exp_cc/_ai_task_cc/_standby_cc→CC-24⑧; 下轮=新池段读数(eval 18:00Z 或 n≥30)+hunger_sl 候 owner |
 | 2026-09-19 06:1x-06:4x | 全文=git d19a237版(定时轮: p9 worsen 触线只报; REST 轮询地图+补丁 61631b0; 空头置信度反向; 陈旧价假触发 n=1; DS 0 PATCH; 钱包≈177) |
 | 2026-09-19 05:3x-05:5x | 全文=git 4c56565版(并行复核轮 0 改动: 1h income 净 −15.56=−8.1%/h; 24h −81.35=−31.6%🆘; 离线池宽度 0.31; 空头各 conf 桶全负; 留言板补证 05:47Z)
