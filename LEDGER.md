@@ -267,7 +267,7 @@
 - **[09-19 11:4x] owner 11:06Z 批签名 + symbols "" 语义 + 跨实例槽位干扰(源码)**: 要点=strategy_start.go:224-241 symbols 空∧max_price>0 ⇒ 300 池; manager.go:287-313 isAllowedSymbol symbols 空 ⇒ 恒 true → majors 仓计入 main openCount; 全文=git 7e0e2fe 版§3。
 - **[09-19 10:3x] tp/sl pct=0 ≠ 裸奔(源码+日志实证; 纠正 prompt v5.1 协同协议 11①/硬边界 11 前提)**: resolveTPSLFromROI :305-307 pct≤0 时原样返回信号 tp/sl, hasEffectiveTPSL :278-283 信号 tp>0∧sl>0 即挂腿; 真裸奔条件=信号 tp/sl 也为 0 或 429 级联(ZAMA 11:11 28s, CC-23); 5.5 核对口径=每 running 实例最近开仓有 "已设置止盈止损" ∧ (sl_ratio,tp_ratio>0 ∨ pct>0) ∧ max_hold>0; 全文=git 4d0e7da 版§3。
 - **[新增 09-19 10:3x] DS 改动簿 #9**: 09:37 breaker lock-1789810634 mcp 6→3 未声明(协议7#3 第 7 次) + 10:09 optimizer lev 10→5 裸改 + majors 10:03/10:06 atr 净零; 裁决=不硬抢, watch_ds; 全文=git 29d8478 版§3。
-- **[09-19 07:3x] DS 改动簿 #8 + 熔断器副本漂移 + 优化器禁改缺口 + max_price=0 语义**: 要点=07:08 pct 0.25→0.125 无锁(宿主副本≠仓库 087a6dd floor0.25)→CC-24⑦; FORBIDDEN_EXACT 缺 symbol_select_mode/max_price/_exp_cc/_ai_task_cc/_standby_cc/hunger_*/min_confidence→CC-24⑧; max_price 必须 1e12 非 0(0=全拒); 全文=git c75a1c3 版§3。
+- **[09-19 07:3x] DS 改动簿 #8 + 熔断器副本漂移 + 优化器禁改缺口 + max_price=0 语义**: 全文=git c75a1c3 版§3
 - **[09-19 06:3x] REST 轮询地图(源码)+本地 TP/SL 陈旧价假触发**: 每仓 2s positionRisk 权重 5; 补丁 claude/dev-rest-budget 61631b0 候部署; 全文=git 6b44db7 版§3。
 - **[新增 09-19 08:4x] Python stdout 日志不出 API(部署版)**: 全文=git 4d0e7da 版§3
 - **[新增 09-19 08:4x] 无 audit 写路径**: 平台 UI 改 config 走 PUT /strategies/:id/config(UpdateStrategyConfig)且 start/stop 端点均不写 audit(audit 50 行全 patch_config) ⇒ majors 08:01:47 start + 6 键改动(…; 全文=git 4d0e7da 版§3。
@@ -292,10 +292,10 @@
 - **[新增 09-18 12:4x] max_initial_margin_usdt 语义**: strategy_execution.go:127-150 percent_balance 下 保证金/仓=min(avail×pct×mult, cap)(>0 生效), Go 热键; 现值 500=不触; 全文=git c06ab72版§3。
 - **[新增 09-18 10:2x] Go侧SL距离clamp**: strategy_position.go:486-498/:885-898 交易所 SL 钳在 entry×(1∓0.3/lev)=lev10 时 ≤3% 价(−30% ROI 上限), 2×ATR>3% 即被钳; lev20 时 1.5%; 全文=git c06ab72版§3。
 - **[新增 09-18 10:2x] Python兜底比例重启陷阱**: config stop_loss_pct=0/take_profit_pct=0 重启后令 Config.SL_RATIO/TP_RATIO=0→Go 拒开; 修复=config sl_ratio0.03/tp_ratio0.06 在位(v39), 任何重启窗前复核; -4028 杠杆无效币按规则隔离; 全文=git c06ab72版§3。
-- **Python进程有效值(START行=ground truth;logs q=cooldown%3D)**: 最近START 09-16 04:33:40Z(owner重启/部署,非audit动作)注入 cooldown=180s min_confidence=0.35 atr_tp4.5/sl2.5;成交conf最低0.36且折扣先于门(code 674-6…; 全文=git 4d0e7da 版§3。
-- **breakeven_trigger_atr语义**: strategy_exit.go:171 trig<=0→maybeMoveBreakeven no-op(保本关闭);admin 08:30 1.0→0裸改(无_exp;DS或owner手改待认),watch_ds登记。**饥饿数字**: hunger_take_profit_pct0.08/…; 全文=git 4d0e7da 版§3。
-- **手动平仓端点**: POST /api/positions/close?symbol=X(positions_handlers.go:517)仅usdm分支(撤联动TPSL+市价平),spot无路径→DS-7现货超时缺口部署前=TG报owner手平。GET /api/stats/dashboard无余额字段;ctx…; 全文=git 4d0e7da 版§3。
-- **反事实数据源@09-18 00:2x**: data-api.binance.vision(现货 REST 公共镜像)本容器 http200(fapi/api.binance.com 451)→/api/v3/klines 1m 现货作永续代理, 归一化以入场前一根现货收盘为 p0; 09-19 又证 Bitget/Gate 永续 1m…; 全文=git 4d0e7da 版§3。
+- **Python进程有效值(START行=ground truth;logs q=cooldown%3D)**: 全文=git 4d0e7da 版§3
+- **breakeven_trigger_atr语义**: 全文=git 4d0e7da 版§3
+- **手动平仓端点**: 全文=git 4d0e7da 版§3
+- **反事实数据源@09-18 00:2x**: 全文=git 4d0e7da 版§3
 
 ## 4. 假设库·候选队列（v2 迁移注记 @08-01 16:40Z：本节与 §6 观察计数合并为【假设库】，内容全量保留；prompt v2 起执行门槛=逐笔证据标准[≥20 笔同型死法或机制落到源码行为]，旧 v12 Step 4.6c 门槛作历史参照）
 - **[候选·连开cap全组重校 @08-28 03:4x]** 结论=多币池载具cap3可自愈非死锁,仅单币池致死(trend已修),main改mces必要性下调,候选降权窗;依据链与全文=git f90d9dd版§4。
