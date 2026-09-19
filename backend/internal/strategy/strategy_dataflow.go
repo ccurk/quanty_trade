@@ -551,6 +551,14 @@ func (m *Manager) onCandleStreamEvent(inst *StrategyInstance, sym string, event 
 		emitStrategyLog(inst, "warn", fmt.Sprintf("Binance WS silent disconnect symbol=%s %s（退避重连中，自愈）", sym, detail))
 	case "unmarshal_failed":
 		emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS unmarshal failed symbol=%s err=%s", sym, detail))
+	// ★ 必须显式列出并空实现，不能靠「删 case」来静音。
+	// 我上线第一版就是这么干的，结果这些事件掉进 default，被当成
+	// `Binance WS unknown event` 打成 **error** —— 静音变成了假报错，
+	// 前端日志页里每次正常订阅/重连都是一条红色 error。
+	// 实测：上线后 connected/dialing 约 180 行/24h 全变成 error 级。
+	// （emitStrategyLog 不推 Lark，所以只是日志污染，不是告警风险。）
+	case "dialing", "connected", "rx_raw_first", "rx_first", "rx_first_closed":
+		// 链路流水，故意不落库；链路是否通由「等待首根闭合K线 symbol数=N/M」汇总表达。
 	default:
 		emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS unknown event symbol=%s event=%s detail=%s err=%v", sym, event, detail, err))
 	}
