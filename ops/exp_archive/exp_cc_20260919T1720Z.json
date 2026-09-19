@@ -1,0 +1,10 @@
+{
+ "archived_at": "2026-09-19T17:2xZ",
+ "from": "_exp_cc",
+ "fields": {
+  "reads_1430": "v40 段 n4 毛 +0.28 wr75%(USELESS −0.73 隔离币 2.4m / SSV +0.38 TP / ROBO +0.22 TP / AVAX +0.41 12m; SL 距 0.46-0.62%) 费后≈−0.1; 在飞 ENA/LSK 多; 腿 6/6✓(已设置止盈止损); Rate limited 14:11 后 1(守护跳过); mcp3 跳过 96/9min; [v40] 行情刷新 ok=1748/11.6min≈150 调用/min 与下单同 IP",
+  "reads_1530": "v40 段 n15(DB 14+ENA 14:20 仅 income 有 −0.78) 毛 −1.28 wr53% 多 11/−1.0 空 4/−0.29; 死法 SL 2-5m 2/−1.41, SL 5-44m 5/−3.75(含 ENA), 赢 8/+3.87; 隔离币 USELESS/LSK −2.25(去掉后 n13 +0.97 wr62%); 腿 18/18✓; 429 4(14:16 守护跳过 1, 15:16 查 TPSL 3), tpsl_setup_failed 0; LSK 14:51 SL 腿 -2011 消失→guard_sl 超出 0.4%; conf 成交 0.45-1.0 中位 0.77; mcp3 跳过 7+候选失败 23/1.2h; 笔/日≈300; worsen 未触; rotate remove LSK 15:20 feed 267 bl∩feed=∅",
+  "reads_1630": "v40 段(14:11 起, DB∪income) n≈21(DB 14+income-only RONIN/WAL/MITO/ALCH/ZK/ZIL/ROBO) 毛 −1.97 wr≈55% 费≈−1.9→费后≈−3.9(−0.19/笔); 死法(DB): SL2-5m 2/−1.41, SL5-45m 5/−4.23, 赢 7/+3.63; income-only: RONIN SL −1.12/WAL −0.50/MITO 45m超时 +0.20/ALCH +0.24/ZK +0.41/ZIL TP +0.57; 腿: v40 段 opens 14/14✓, 重启后 ZIL/XMR/DASH/STEEM 4/4✓('锚到成交价' 新日志); 429 since v40 5(守护跳过 2/查 TPSL 3)+SOLV 16:09:37 tpsl_setup_failed→开仓事务回滚(非裸奔); worsen 未触(−1.97>−4, wr55%, 裸奔 0, rotate 后隔离币成交 0); DB 丢行累计 +5(RONIN/WAL/ALCH/ZK/ZIL); 成交 conf 0.45-1.0 中位 0.77(n44); 频率: 16:16-16:23 '跳过本批信号' ≥100 次=槽位饱和",
+  "deploy_1604": "16:04:12Z backend 重启(开机自恢复; owner 部署 e07f3d7@15:44Z+3e1e467@15:53Z, 分支 claude/hopeful-lamport-0iwne3, 服务器从 git 拉取构建): ①reanchorTPSLToFill 上线(ZIL/XMR '止盈止损已锚到成交价' 实证; CC-31/H-0919f 结案) ②排序改'上一笔盈利优先' score=rr×1.25, 冷却三平局规则删, symbol_reentry_cooldown_minutes 15:36 admin→0(提交正文自述 owner 直令'不再冷却') ③parseSymbolsValue 20 项静默截断→500 = H-0919g 隔离链断裂真根因(bl 第 21~45 项 LSK/USELESS/XTZ/SYN/PROM/SOL/XRP… 从未生效); 重启重播种 300 含 bl 32 → 16:2x rotate remove 32(feed 268, bl∩feed=∅, ∩majors=∅); 重启后 150 批排序 0 个 bl 候选=闸生效旁证; majors 同时重启(S35 种子重拉, 腿 ETH✓); 部署版 strategy_signal.go:691 FetchPositions 循环仍按 isAllowedSymbol(symbols \"\"⇒恒 true) 把 majors 仓计入 main openCount ⇒ 16:16:09 ZIL 开仓即 3/3(ZIL+majors ETH/BNB) ⇒ mcp3 实际=3−majors 持仓数(CC-30 仍开)"
+ }
+}
