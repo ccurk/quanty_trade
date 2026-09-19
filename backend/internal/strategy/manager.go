@@ -1672,6 +1672,38 @@ func (inst *StrategyInstance) readStderr(stderr io.ReadCloser) {
 	flush()
 }
 
+// historySyncPace 是历史预热时【每个 symbol 之间】的间隔。
+//
+// 为什么必须有它（2026-09-19 一次真实 IP 封禁的复盘）：
+//
+//	启动/重连后 historySyncLoop 要对【全部 feedSymbols】逐个拉 1m 历史。Meme 实例
+//	实测 300 个币，原来是零间隔紧循环 ⇒ 11:08:49.445 出现第一个真 -1003
+//	（"Too many requests; current limit of IP(...)"），此后 ban 窗口武装，
+//	10 秒内共 878 次调用全部被本地拒答、最密的一秒 249 次。
+//
+// 关键点：币安 fapi 的 IP 上限是【每分钟请求数】。klines(limit=200) 的 weight 只有 2，
+// 878 次调用折算约 1756 权重、只占 2400 额度的约七成 ⇒ 现有 weightHigh() 的
+// 80% 权重闸【根本不会触发】。也就是说低权重高请求数的调用完全绕过了权重保护，
+// 必须单独按请求节奏限流。300 个 symbol × 50ms = 15s，约 20 req/s，
+// 安全落在 2400/min 之内，且远快于一次 ban 窗口造成的停摆。
+const historySyncPace = 50 * time.Millisecond
+
+// historyRateLimited 判别是否为币安限频/本地 ban 窗口拒答。
+// 必须同时认两种形态：
+//   - 真币安：{"code":-1003,...}（IP 级限流）
+//   - 本地合成：{"code":429,"msg":"Rate limited"}（binance.go 的 signedRequest/
+//     publicRequest 在 ban 窗口内直接返回，根本没出网）
+func historyRateLimited(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "\"code\":-1003") ||
+		strings.Contains(msg, "\"code\":429") ||
+		strings.Contains(msg, "Rate limited") ||
+		strings.Contains(msg, "Too Many Requests")
+}
+
 func (m *Manager) historySyncLoop(ctx context.Context, inst *StrategyInstance, redisBus *bus.RedisBus) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -1708,11 +1740,28 @@ func (m *Manager) historySyncLoop(ctx context.Context, inst *StrategyInstance, r
 
 			ok := true
 			historyBars := 200
-			for _, sym := range symbols {
+			for i, sym := range symbols {
+				// ★ 节流：见 historySyncPace 的注释（2026-09-19 实测的一次 IP 封禁）。
+				if i > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(historySyncPace):
+					}
+				}
 				candles, err := inst.exchange.FetchCandles(sym, "1m", historyBars)
 				if err != nil || len(candles) == 0 {
 					ok = false
 					emitStrategyLog(inst, "error", fmt.Sprintf("FetchCandles failed for history symbol=%s err=%v", sym, err))
+					// ★ 已被限频就立刻收手，不要打完全部 symbol。
+					// 实测（2026-09-19 11:08:49）：ban 窗口一旦武装，剩下每一次调用都
+					// 只会变成一条「本地拒绝」日志（10 秒内刷出 877 行、最密一秒 249 行），
+					// 而 ban 窗口并不会因此缩短 —— 纯粹是自伤，还把封禁期拖得更长。
+					if historyRateLimited(err) {
+						emitStrategyLog(inst, "warn", fmt.Sprintf(
+							"预热遇限频，提前结束本轮 已完成=%d/%d symbol=%s", i, len(symbols), sym))
+						break
+					}
 					continue
 				}
 				out := make([]bus.CandleMessage, 0, len(candles))
