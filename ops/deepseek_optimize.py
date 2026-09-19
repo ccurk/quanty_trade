@@ -160,6 +160,34 @@ def experiment_hold(cfg):
     return hold
 
 
+LOCK_HOURS = int(os.environ.get("QT_LOCK_HOURS", "6"))
+
+
+def build_self_lock(cfg, accepted):
+    """给本批【已落库】的改动上自锁 —— 写 _exp，让 experiment_hold() 冻结这些键 LOCK_HOURS 小时。
+
+    为什么需要：定时器 2026-09-19 起为 15 分钟一轮（owner 直令）。不加锁的话，
+    同一个键一天可被重写 96 次，配置抖动会把任何改动都变成测不出因果的噪声。
+    与 qt_breaker.py 的锁共用 _exp：旧锁整块存进 prior_exp 留档，frozen_keys 取并集，不丢覆盖。
+    """
+    now = time.time()
+    prev = cfg.get("_exp") if isinstance(cfg.get("_exp"), dict) else None
+    changed = {a["key"]: "%s→%s (DS自锁%dh)" % (a["from"], a["to"], LOCK_HOURS)
+               for a in accepted}
+    frozen = sorted(set(changed) | set((prev or {}).get("frozen_keys") or []))
+    return {
+        "id": "lock-%d-ds" % int(now),
+        "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        "eval_after": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + LOCK_HOURS * 3600)),
+        "status": "open-ds-autolock",
+        "changed": changed,
+        "frozen_keys": frozen,
+        "mechanism": "写入 ops/deepseek_optimize.py（自锁）；执行侧 experiment_hold()。锁自行到期，不需人工清理。",
+        "why": "定时器 15min/轮 ⇒ 不加锁同一键一天可被重写 96 次，测不出因果。",
+        "prior_exp": prev,
+    }
+
+
 def load_env(path):
     """读 env 文件成 dict。**不打印值** —— 调用方只应报告长度/键名。"""
     out = {}
@@ -209,6 +237,40 @@ def strip_heavy(ctx):
     if isinstance(ctx, dict):
         ctx.pop("current_code", None)
     return ctx
+
+
+def window_line(ctx):
+    """窗口摘要（交易所口径）—— 返回 (文本, 笔数 n)。
+
+    ⚠️ 2026-09-20 订正：此前 [info] 行与 TG 行用的是 ctx["trades_window"]（DB 派生），
+    而 build_prompt() 用的是 ctx["binance"]（交易所）。同一窗口两个口径能差一倍
+    （DB 少记佣金），会出现「日志说 A、模型看到 B」。现在两处引用同一个函数，
+    物理上不可能再漂移；闸门 n 也取自同一函数，保证「跑不跑」与「按什么数决策」同源。
+    交易所数据缺失时回退 DB，并在行尾标注，不静默。
+    """
+    bx = ctx.get("binance") or {}
+    it = bx.get("income_totals") or {}
+    pt = bx.get("paired_trades") or {}
+    tw = ctx.get("trades_window") or {}
+
+    n = pt.get("pair_count") or tw.get("count") or 0
+    wr = pt.get("win_rate_pct")
+    if wr is None:
+        wr = tw.get("win_rate_pct")
+    if wr is not None:
+        wr = "%.1f" % float(wr)
+
+    real = it.get("REALIZED_PNL")
+    if real is None:
+        return ("窗口 %dh | %s 笔 | 胜率 %s%% | PnL %s（⚠️DB口径，交易所数据缺失）"
+                % (WINDOW_HOURS, n, wr, tw.get("realized_pnl"))), n
+
+    comm = it.get("COMMISSION") or 0.0
+    fund = it.get("FUNDING_FEE") or 0.0
+    net = real + comm + fund
+    fee = " 费/毛 %.0f%%" % (abs(comm) / abs(real) * 100) if real else ""
+    return ("窗口 %dh | %s 笔 | 胜率 %s%% | 已实现 %+.2f 费 %+.2f 资金 %+.2f **净 %+.2fU**%s（交易所口径）"
+            % (WINDOW_HOURS, n, wr, real, comm, fund, net, fee)), n
 
 
 def build_prompt(ctx, cfg):
@@ -370,10 +432,9 @@ def main():
     exp = cfg.get("_exp")
     ctx = strip_heavy(ctx)
 
+    wline, n = window_line(ctx)
     tw = ctx.get("trades_window") or {}
-    n = tw.get("count") or 0
-    print("[info] window=%dh trades=%s win_rate=%s%% pnl=%s"
-          % (WINDOW_HOURS, n, tw.get("win_rate_pct"), tw.get("realized_pnl")))
+    print("[info] " + wline)
 
     if n < MIN_TRADES:
         msg = ("样本不足：窗口 %dh 内仅 %d 笔（阈值 %d），本轮不优化。"
@@ -475,8 +536,7 @@ def main():
         accepted = []
 
     lines = ["🤖 DeepSeek 自动优化 | %s" % time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()),
-             "窗口 %dh | %d 笔 | 胜率 %s%% | PnL %s"
-             % (WINDOW_HOURS, n, tw.get("win_rate_pct"), tw.get("realized_pnl")),
+             wline,
              "", "诊断: " + str(verdict.get("diagnosis", ""))[:300], ""]
 
     if accepted:
@@ -509,6 +569,16 @@ def main():
                 lines.append("✅ 已即时生效（下次开仓/平仓）：%s" % ", ".join(imm))
             if rst:
                 lines.append("⚠️ 需 stop+start 才生效（当前进程仍跑旧值）：%s" % ", ".join(rst))
+            # ★ 自锁（2026-09-19 owner 直令）：改完就把本批键冻进 _exp。
+            # 失败不静默 —— 没冻上意味着下一轮可以立刻再改同一个键。
+            try:
+                lock = build_self_lock(cfg, accepted)
+                http_json("%s/api/strategies/%s/config" % (BACKEND, STRATEGY_ID),
+                          "PATCH", {"_exp": lock}, token=tok)
+                lines.append("🔒 自锁: %s 冻结至 %s（%dh）"
+                             % (", ".join(sorted(lock["changed"])), lock["eval_after"], LOCK_HOURS))
+            except Exception as e:              # noqa: BLE001
+                lines.append("⚠️ 自锁写入失败（改动已生效但未冻结，下轮可再改）: %s" % e)
         except Exception as e:                  # noqa: BLE001
             lines.append("落配置失败: %s" % e)
 
