@@ -1,0 +1,88 @@
+{
+ "action": "OWNER-DIRECTIVE(09-19 06:5x live \"现在变成多个策略, 一个池子专门做 btc eth bnb sol, 一个策略专门做 meme 固定的几个币; 备用池不参与交易, 用策略模拟下单, 好则加入\"): ①main→meme-core 固定池 8 币(symbol_select_mode manual; 72h 逐币 费后/笔≥−0.07∧n≥7: G +1.98/MAGMA +0.55/BULLA +0.49/POWER +0.18/UAI +0.05/DRIFT −0.02/HEI −0.04/ARB −0.07) force 重启 ②新建 majors 实例(BTC/ETH/BNB/SOL, tpl998, stopped)候 15m 回测门+S34 bar 聚合(1m 上 BTC 2×ATR=0.10%=来回费, 结构性负) ③备用池 _standby_cc 8 币: 每轮 18h 1m 回测(现行 config), 连续 2 窗费后>0∧n≥5→晋升; 实盘 48h ≤−4U∧n≥4→降回备用",
+ "carry": {
+  "cc20": "FAIL→回滚 6",
+  "cc20_atr_gate": "FAIL→ROLLBACK 6",
+  "ds_rollback_15:25Z": "已执行; 21:22 DS 再砍→见 ds_note",
+  "p3_lev10": "KEEP 4/4 @09-18 12:44Z(全文 git 5096ca1 版 _exp_cc)",
+  "p5_pct": "KEEP 3/3 @15:23Z(owner 值; 全文 git 5096ca1)",
+  "p6_exit_tight": "封段 @17:56Z n71 −34.75(全文 git 5096ca1; CC-13 结案)",
+  "p7_sl3": "见 p7_verdict(全文 git 5096ca1)",
+  "p7_verdict": "全文 git 70822bb 版 _exp_cc",
+  "p8_interim_03:34Z": "tp0.15/sl0.30/hunger 0.15/0.30 临时值 03:34→03:5x(反事实 −73.9 最差→被 p9 取代)",
+  "p9_atr_bracket": "03:41→ 段被 04:53 hunger_sl 0.04 污染; 全文 git b6b129a/d19a237",
+  "route_00_1xZ": "LSK/STRK bl35",
+  "route_20_2xZ": "SYN/牛来/PIEVERSE/USELESS/AIN/MARSCOIN+CYPH bl33"
+ },
+ "cc21_note": "p9 评判改为分段报读(见台账 CC-21); 本条取代为在飞",
+ "ds_note": "@10:3x DS #9: 09:37 mcp 6→3(breaker, 未声明)+10:09 lev 10→5(optimizer 裸改)+majors 10:03/10:06 atr 11/14→2/2.5 净零; 均不硬抢, 登 watch_ds; _ai_task_ds 仍 null(DS-3)",
+ "eval_after": "2026-09-19T18:00:00Z 或 n≥30 先到",
+ "expect": "meme-core n≥30: 费后均净≥0 ∧ wr≥45%; 笔/日 预计 8 币×≈2~4=16~32(低于基线 38.7 但 owner 直令缩池; 频率地板 19 视为软目标)",
+ "hypothesis": "owner 论证: 全市场 meme 扫描=用平均逻辑打极端品种(买到走完主升/池浅/对倒盘); 缩到看得懂能退出的一小撮再谈优化. 数据: 72h 119 币中费后/笔>0 且 n≥7 仅 5 币; 尾部 24 币 n≥6 全负(BR −13.8/AIN −9.6/AVA −9.5/CROSS −8.5)",
+ "majors_note": "1m ATR% 中位 BTC 0.051/ETH 0.082/BNB 0.055/SOL 0.102 → 2×ATR 止损 0.10~0.20% vs 来回费 0.10%=费吞; 需 15m 级 bar(S34 bar_agg_minutes, 代码侧聚合, 只 apply 到 majors 实例)+回测门; 回测任务 43~50 已排(15m 5d ×4, 1m 18h ×2, meme 校准 ×2)",
+ "metric": "meme-core 段(重启后首单起): 笔/日 ‖ 费后均净 ‖ wr ‖ 逐币净 ‖ 6h/24h 钱包% ‖ 备用池回测榜(每轮) ‖ majors: 回测 15m 5d 四币 费后净/笔数(门=≥2 币费后>0)",
+ "namespace_note": "_exp 归 DeepSeek(未改); _exp_cc/_standby_cc 归 claude_cron",
+ "owner": "claude_cron",
+ "owner_no_autocut": "owner 直令 @2026-09-18T13:15:56Z (live \"去掉了\"): 删除自动缩表刹车——6h≤−8% 不再降 pct、24h≤−20% 不再降 lev;CC 任何轮次不得自动降 pct/lev/mcp/sides;保留=TG 报警(6h≥8%/24h≥20%)+24h≥30% TG🆘+避险动作仅限 avail<1U cancel-orders;DS breaker 砍 pct/lev → 按 owner 值恢复并 TG(裸改簿)",
+ "physical_guard": "引擎内置: strategy_position.go:486-498 SL 钳 ≤0.3/lev(lev10=3%价);CC-7 结案(台账 §3)",
+ "restart_guard": "config sl_ratio0.03/tp_ratio0.06 在位(v39@10:28Z;Python 兜底比例,Go 零引用);任何重启窗前复核",
+ "rollback": {
+  "max_price": 1000000000000,
+  "min_volatility": 1,
+  "note": "回 300 池=owner 09-18 12:5x 值; 重启生效",
+  "select_limit": 300,
+  "symbol_select_mode": "filter"
+ },
+ "selection_caveat": "72h 逐币净额含多次 config 换代, G +26.7 由 3 笔撑; 选池=起点非结论, 备用池回测榜是纠错机制",
+ "status": "open",
+ "ts": "2026-09-19T07:13:23Z",
+ "watch_ds": {
+  "breakeven_trigger_atr": {
+   "status": "rolled_back@09-17 15:20Z;现值 1.0;owner 手改告知即恢复 0"
+  },
+  "hunger_stop_loss_pct": {
+   "actor": "admin(文本自称 owner 直令; 候 owner 认领)",
+   "eval_after": "owner 回复即裁",
+   "line": "p9b 段净≤−4U 或 首5分钟SL占比≥40% → 若为 DS 裸改则 DS-ROLLBACK 0.30; 若为 owner 值则 KEEP+每轮呈报",
+   "new": 0.04,
+   "old": 0.3,
+   "status": "线已破@05:2x(n6 −12.25, 5/6<5m); 未回滚(归属未定, 同键同值与 owner 09-18 17:59 自落一致→按 owner 值处理, TG 求认领)",
+   "ts": "2026-09-19T04:53:09Z"
+  },
+  "leverage": {
+   "actor": "admin(optimizer 3h 节拍 04:09/07:08/10:09; 无 _exp 登记=裸改; owner 值 10)",
+   "eval_after": "2026-09-19T18:00:00Z 或 post 段 n≥10",
+   "line": "post 段(open≥10:09Z) n≥10: 段净≤−4U ∨ 费后均净劣于 pre 段(07:21→10:09 n7 毛+10.89 费后≈+1.43/笔) ∧ 刀占比未降 → DS-ROLLBACK leverage 10 + TG; 否则 KEEP 报 owner",
+   "mechanism": "hunger_sl 0.04 ROI 刀: lev10=0.4% 价→lev5=0.8% 价(刀加宽 2×); 名义/费减半; 交易所 2×ATR SL 腿不随 lev 变",
+   "new": 5,
+   "old": 10,
+   "status": "open; 不硬抢(CC-9); owner 一字令即恢复 10",
+   "ts": "2026-09-19T10:09:04Z"
+  },
+  "max_concurrent_positions": {
+   "actor": "admin breaker lock-1789810634(_exp.changed 只声明 pct 0.125→0.125; mcp 未声明=协议7 #3 越界第 7 次)",
+   "new": 3,
+   "old": 6,
+   "status": "open; 不硬抢(CC-9); owner 令 10; 7 币段并发峰 2→现不绑定; 判据: 日志 已预留 3/3 / 仓位已满 出现→绑定, TG 催 owner",
+   "ts": "2026-09-19T09:37:15Z"
+  },
+  "max_hold_minutes": {
+   "new": 240,
+   "old": 60,
+   "status": "closed@09-18 13:37Z: owner 直令 max_hold 45(v50) 取代 DS 240;watch 线终读(段 open≥09-17 15:16Z n88 +8.70;hold>60m 子集 n7 +1.22)从未触及;DS-10 归属仍待 owner 认",
+   "ts": "2026-09-17T15:16:07Z"
+  },
+  "max_initial_margin_usdt": {
+   "status": "closed@13:00Z: owner 澄清保证金口径→500(v44);DS 10:27:59 的 50 已被 owner 值取代",
+   "ts": "2026-09-18T10:27:59Z"
+  },
+  "order_amount_pct": {
+   "actor": "admin(_exp id lock-1789793352-owner-unlock, 文本=owner 直令解锁)",
+   "new": 0.25,
+   "old": 0.0625,
+   "status": "owner 值 KEEP(CC-9 A 路径); 注: breaker 阈值未改则下一节拍会再砍→乒乓; mcp 仍 6(未随解锁恢复 10)",
+   "ts": "2026-09-19T04:49:12Z"
+  }
+ },
+ "worsen": "只报警: 段 n≥15∧费后≤−6U → TG 建议换池成员(按备用池榜)"
+}
