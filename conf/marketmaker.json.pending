@@ -1,0 +1,42 @@
+{
+  "_note": "极小额首测配置。observe_only:true=只观测不下单(安全)。改成 false + 重启后端才真实做市。 | 2026-09-08 摘除 ONG_USDT:实测中位基差 +45.2bps 而中位价差仅 23.0bps(3572 个样本),报价中心锚 binance 导致卖腿扎进 gate 买盘、买腿永不成交,结构性只卖不买。报价中心改锚 gate 自身中价之后可考虑放回。",
+  "enabled": true,
+  "observe_only": false,
+  "feed": "binance",
+  "exec": [
+    {
+      "name": "gate",
+      "ws_trade": true
+    }
+  ],
+  "pairs": [
+    {
+      "feed_symbol": "SOLUSDT",
+      "exec": "gate",
+      "exec_symbol": "SOL_USDT",
+      "spread_bps": 10,
+      "order_qty": 0.05,
+      "max_position": 0.2,
+      "refresh_ms": 1000
+    },
+    {
+      "feed_symbol": "PORTALUSDT",
+      "exec": "gate",
+      "exec_symbol": "PORTAL_USDT",
+      "spread_bps": 15,
+      "order_qty": 220,
+      "max_position": 440,
+      "refresh_ms": 1000
+    },
+    {
+      "feed_symbol": "MOVEUSDT",
+      "exec": "gate",
+      "exec_symbol": "MOVE_USDT",
+      "spread_bps": 15,
+      "order_qty": 450,
+      "max_position": 900,
+      "refresh_ms": 1000
+    }
+  ],
+  "max_daily_loss_usd": 3
+}

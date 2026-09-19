@@ -1,0 +1,434 @@
+#!/usr/bin/env python3
+"""DeepSeek 定时策略优化器 —— 读实盘诊断，产出参数建议。
+
+默认 **dry-run**：只分析、只推送，一个字节的配置都不改。
+加 --apply 才会走 PATCH /api/strategies/:id/config 真正落配置。
+
+为什么默认 dry-run（2026-09-16 重写 —— 旧的「技术上进不去」理由已失效）：
+  1. ~~config 改动必须 stop+start 才生效 / UpdateStrategyConfig 在 running 时直接拒绝~~
+     **这条已不成立。** strategy_audit_logs 实查：guard 报错累计 1589 行
+     (2026-07-17~09-16)，最后一次是 2026-09-16 13:33:28(http 500)；其后
+     14:21:34 / 14:30:20 两次 patch_config 成功(http 200)，且都早于 14:52:46 的
+     容器重启 —— 说明线上早已接受「运行时改配置」。源码印证：manager.go:1801
+     UpdateStrategyConfig 已无状态检查，回归测试见 config_hotreload_test.go:20。
+     → 所以 dry-run 现在是一个**主动的风险选择**，不再是技术无奈：本脚本一旦带
+       --apply 就有能力改生产参数，改错了只能靠 _exp.rollback 手工回退。
+  2. **回测测不了这些参数**（未变）—— strategy_backtest.go 直接取 Python 信号里的
+     take_profit/stop_loss，通篇没有 resolveTPSLFromROI。实盘却由那个函数用
+     take_profit_pct/stop_loss_pct ÷ 杠杆无条件覆盖 Python 的 ATR 值。回测与实盘
+     不是同一条平仓逻辑，任何回测结论都不能迁移，所以没有廉价的事前验证手段。
+  3. 边界 §5：running 载具不停机（未变）—— 这正是下面那份「哪些键要重启」清单
+     存在的原因：能不停机生效的键，才可以被自动改。
+
+生效范围（逐键实测归类 2026-09-16。方法：Go 侧 grep internal/strategy/*.go 里
+`inst.Config()["KEY"]` 的读取点（排除 autotune/backtest/config 等非行为文件）；
+Python 侧 grep 容器内策略源码 /app/strategies/_runtime/8eb182b6-*.py）：
+  ① 改完**下一次开仓/平仓即生效**（Go 每次读活配置快照）：
+     leverage, order_amount_pct, max_concurrent_positions, take_profit_pct,
+     stop_loss_pct, trailing_callback_pct, trailing_enabled,
+     symbol_reentry_cooldown_minutes, max_consecutive_entries_per_symbol,
+     hunger_take_profit_pct, hunger_stop_loss_pct, hunger_after_minutes,
+     hunger_mode_enabled, conf_sizing_enabled, conf_sizing_min_mult,
+     conf_sizing_max_mult, conf_sizing_conf_hi, use_exchange_tpsl
+  ② **必须 stop+start 才生效** —— Python 子进程在 spawn 时从 argv 读走整份配置
+     (strategy_start.go:311 exec.Command("python3", absPath, configJSON))，
+     它捕获的是启动那一刻的值：
+     cooldown_sec, long_conf_premium, short_conf_premium, volume_ratio_min,
+     best_pick_enabled, best_pick_window_sec
+  ③ **两侧都读 → 取最保守假设**：
+     min_confidence —— Python 侧才是真正的入场门（_exp 记录「死在 conf 门」），
+       Go 侧只拿它当 conf_sizing 带宽的下界兜底(strategy_execution.go:23)。
+       故按②对待。
+     max_hold_minutes —— Go 侧超时强平读活配置(strategy_execution.go:372)。
+  注：take_profit_pct/stop_loss_pct 在 Python 侧也各有一份，但实盘由 Go 的
+  resolveTPSLFromROI 无条件覆盖，故按①对待。
+
+安全边界（ops/prompt_v3_group.md，越界一律 clamp 或拒绝）：
+  §2 leverage∈[2,20] / order_amount_pct∈[0.05,0.75] / cooldown_sec∈[180,1800]
+     / max_concurrent_positions≤10 / allowed_sides 非空
+  §3 entry_time_windows 保持 ""
+  §4 严禁马丁/加倍摊平
+  §8 Σ_running(pct_i×mcp_i) ≤ 0.75
+  §9 币池互斥 —— 本脚本永不改 symbols/auto_symbols
+
+私钥/密钥纪律：只从 600 的 env 文件读，**永不打印、永不回显、永不落库**。
+"""
+import json
+import os
+import sys
+import time
+import urllib.request
+import urllib.error
+
+BACKEND = os.environ.get("QT_BACKEND", "http://localhost:8080")
+BACKEND_ENV = "/etc/quanty/backend.env"
+AI_ENV = "/etc/quanty/auto_optimize.env"
+
+STRATEGY_ID = os.environ.get("QT_STRATEGY_ID", "8eb182b6-ee74-4125-a602-f0a91f376432")
+WINDOW_HOURS = int(os.environ.get("QT_WINDOW_HOURS", "6"))
+MODEL = os.environ.get("QT_MODEL", "deepseek-v4-pro")
+DRY_RUN = "--apply" not in sys.argv
+MIN_TRADES = 30          # 样本不足就不优化：低于这个数 LLM 在噪声上做决策
+MAX_DRIFT = 2.0          # 单次改动幅度上限，与 REST apply 的 guard 一致
+
+# 需要 stop+start 才生效的键 —— Python 子进程在 spawn 时从 argv 读走整份配置，
+# 捕获的是启动那一刻的值(strategy_start.go:311)，之后不刷新。逐键归类见文件头注。
+# min_confidence 的真正入场门在 Python 侧，故归入本组。
+RESTART_REQUIRED = {
+    "cooldown_sec", "long_conf_premium", "short_conf_premium",
+    "volume_ratio_min", "best_pick_enabled", "best_pick_window_sec",
+    "min_confidence",
+}
+
+# 硬边界。任何越界建议被 clamp 回区间端点，并记入 rejected 供审计。
+BOUNDS = {
+    "leverage": (2, 20),
+    "order_amount_pct": (0.05, 0.75),
+    "cooldown_sec": (180, 1800),
+    "max_concurrent_positions": (1, 10),
+    "min_confidence": (0.05, 0.95),
+    "long_conf_premium": (0.0, 0.5),
+    "short_conf_premium": (0.0, 0.5),
+    "take_profit_pct": (0.05, 2.0),
+    "stop_loss_pct": (0.02, 0.5),
+    "trailing_callback_pct": (0.1, 10.0),
+    "max_hold_minutes": (1, 1440),   # 0=禁用超时强平；强平是破坏性动作，不许 LLM 关掉
+    "volume_ratio_min": (0.5, 10.0),
+    "best_pick_window_sec": (1.0, 30.0),
+    "symbol_reentry_cooldown_minutes": (0, 240),
+    "max_consecutive_entries_per_symbol": (1, 20),
+    "hunger_take_profit_pct": (0.01, 1.0),
+    "hunger_stop_loss_pct": (0.01, 0.5),
+    "hunger_after_minutes": (1, 1440),
+    "conf_sizing_min_mult": (0.1, 2.0),
+    "conf_sizing_max_mult": (0.1, 3.0),
+    "conf_sizing_conf_hi": (0.1, 0.99),
+    "best_pick_enabled": (0, 0),   # bool，clamp 用不到，占位以便白名单校验
+    "trailing_enabled": (0, 0),
+    "use_exchange_tpsl": (0, 0),
+    "hunger_mode_enabled": (0, 0),
+    "conf_sizing_enabled": (0, 0),
+}
+
+# 永不触碰的键。**前缀与精确必须分开** —— 若把 "symbol" 当统一前缀，
+# 会把白名单里的 symbol_reentry_cooldown_minutes 一起误杀（该键确实可调）。
+# 精确禁改：币池（边界§9）/ 身份 / 传输
+FORBIDDEN_EXACT = {
+    "symbols", "auto_symbols", "symbol", "select_limit", "symbol_blacklist",
+    "entry_time_windows", "allowed_sides", "strategy_id", "owner_id", "backtest",
+    "_exp", "_last_optim",
+}
+# 前缀禁改：redis 传输键 / 本脚本自身配置 / 实验与分组标记
+FORBIDDEN_PREFIX = ("redis_", "auto_optimize_", "group_", "brake_")
+
+
+def load_env(path):
+    """读 env 文件成 dict。**不打印值** —— 调用方只应报告长度/键名。"""
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
+
+
+def http_json(url, method="GET", body=None, token=None, timeout=90):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def tg(msg):
+    """推 Telegram。缺 token/chat_id 就静默跳过 —— 推送失败不能影响优化主流程。"""
+    tok = os.environ.get("_TG_TOKEN")
+    chat = os.environ.get("_TG_CHAT")
+    if not tok or not chat:
+        return
+    try:
+        req = urllib.request.Request(
+            "https://api.telegram.org/bot%s/sendMessage" % tok,
+            data=json.dumps({"chat_id": chat, "text": msg[:3900],
+                             "disable_web_page_preview": True}).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=20).read()
+    except Exception as e:                      # noqa: BLE001 - 推送是尽力而为
+        print("[warn] tg push failed: %s" % type(e).__name__, file=sys.stderr)
+
+
+def strip_heavy(ctx):
+    """剥掉 current_code（实测 84KB/103KB）—— 调 config 用不上 84KB 源码，
+    留着只会稀释 LLM 注意力并把 token 成本抬 5 倍。"""
+    if isinstance(ctx, dict):
+        ctx.pop("current_code", None)
+    return ctx
+
+
+def build_prompt(ctx, cfg):
+    """把实测事实写进 system prompt —— 防止 LLM 给出反算术的建议。"""
+    tw = ctx.get("trades_window") or {}
+    bx = ctx.get("binance") or {}
+    it = bx.get("income_totals") or {}
+    pt = bx.get("paired_trades") or {}
+
+    realized = it.get("REALIZED_PNL")
+    commission = it.get("COMMISSION")
+    funding = it.get("FUNDING_FEE")
+    net = None
+    if realized is not None:
+        net = realized + (commission or 0) + (funding or 0)
+
+    facts = []
+    facts.append("窗口内配对交易 n=%s, 胜率=%s%%, 多头净=%s, 空头净=%s"
+                 % (pt.get("pair_count"), pt.get("win_rate_pct"),
+                    pt.get("long_net_pnl"), pt.get("short_net_pnl")))
+    if realized is not None:
+        facts.append("已实现盈亏(不含费)=%s U, 手续费=%s U, 资金费=%s U, **净=%s U**"
+                     % (realized, commission, funding, net))
+        if net and net < 0 and commission:
+            facts.append("手续费占净亏损的 %.0f%% —— 提高交易频率会等比例放大它"
+                         % (abs(commission) / abs(net) * 100))
+    facts.append("Account 未实现=%s, 持仓数=%s"
+                 % (ctx.get("account", {}).get("unrealized_pnl"),
+                    ctx.get("account", {}).get("open_positions")))
+
+    return """你是量化策略参数优化器。只输出 JSON，不要任何解释文字。
+
+## 硬边界（越界建议会被程序直接 clamp，不要浪费输出）
+- leverage∈[2,20]; order_amount_pct∈[0.05,0.75]; cooldown_sec∈[180,1800]
+- max_concurrent_positions ≤ 10; Σ(order_amount_pct × max_concurrent_positions) ≤ 0.75
+- entry_time_windows 保持 ""; 严禁马丁/加倍摊平
+- 不可改: symbols / auto_symbols / symbol_blacklist / allowed_sides / entry_time_windows
+
+## 必须知道的实测事实（忽略它们会给出错误建议）
+1. **手续费是主要对手**（结构事实，不是当期数字）：该策略的毛盈亏长期被手续费吃掉
+   大半，历史上反复出现「手续费 ≈ 全部毛亏损」。**本节任何历史数字都会过时，一律不要
+   引用** —— 当期真实数字只认下面「本窗口实测数据」里注入的 facts。
+   判断口径：毛盈亏是否显著大于一趟来回的费用；不覆盖时提高交易频率 = 加速亏损。
+2. **回测无法验证 TP/SL**：回测走 Python 的 ATR 值，实盘由 resolveTPSLFromROI 用
+   take_profit_pct/stop_loss_pct ÷ leverage 无条件覆盖。两者不是同一条逻辑。
+   所以不要建议"先回测验证" —— 那不是可用手段。
+3. **生效范围是分组的（逐键实测，别一律当成"要重启"）**：
+   多数键（leverage、order_amount_pct、max_concurrent_positions、take_profit_pct、
+   stop_loss_pct、trailing_*、hunger_*、conf_sizing_*）改完**下一次开仓/平仓即生效**；
+   少数键（cooldown_sec、long_conf_premium、short_conf_premium、volume_ratio_min、
+   best_pick_enabled、best_pick_window_sec、min_confidence）由 Python 子进程在 spawn
+   时从 argv 读走，**要 stop+start 才换**。
+   只改第一组 → 你能立刻看到效果；只改第二组 → 要等重启才生效。
+4. **max_concurrent_positions 通常不是瓶颈**：实测槽位占用 7-8/10。
+   开仓数受槽位周转率限制（槽位数 ÷ 平均持仓时长）。
+5. **止盈可能从不触发**：实测 75 笔中 TP 命中 0 次，全部由追踪止损/硬止损/超时强平退出。
+   若 take_profit_pct 远离实际波幅，调它没有意义。
+
+## 当前配置（节选）
+%s
+
+## 本窗口实测数据
+%s
+
+## 输出格式（严格 JSON，字段不全视为无效）
+{
+  "diagnosis": "≤150字，基于上面的数字说明当前最主要的问题",
+  "changes": [
+    {"key": "参数名", "from": 现值, "to": 建议值, "reason": "≤60字，必须引用上面的数字"}
+  ],
+  "no_change_reason": "若 changes 为空，说明为什么不该动",
+  "confidence": "low|medium|high"
+}
+changes 最多 2 项。改动幅度不超过现值 2 倍。没有足够证据就返回空 changes —— 不动也是正确的决定。
+""" % (json.dumps(cfg, ensure_ascii=False, indent=1),
+       "\n".join("- " + f for f in facts))
+
+
+def parse_llm(raw):
+    """LLM 输出容错解析：剥 markdown 围栏，取第一个平衡的 JSON 对象。"""
+    s = raw.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else s
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]
+    i, j = s.find("{"), s.rfind("}")
+    if i < 0 or j <= i:
+        raise ValueError("no JSON object in LLM output")
+    return json.loads(s[i:j + 1])
+
+
+def validate(change, cfg):
+    """白名单 + clamp + 漂移。返回 (ok, value, note)。"""
+    key = change.get("key")
+    if not isinstance(key, str) or not key:
+        return False, None, "缺少 key"
+    if key in FORBIDDEN_EXACT or key.startswith(FORBIDDEN_PREFIX):
+        return False, None, "禁止修改的键（身份/币池/实验记录/自身配置）"
+    if key not in BOUNDS:
+        return False, None, "不在白名单内"
+    if key not in cfg:
+        return False, None, "配置中不存在该键（拼写错误？）"
+
+    old = cfg[key]
+    new = change.get("to")
+    if isinstance(old, bool) or key in ("best_pick_enabled", "trailing_enabled",
+                                        "use_exchange_tpsl", "hunger_mode_enabled",
+                                        "conf_sizing_enabled"):
+        if not isinstance(new, bool):
+            return False, None, "该键是布尔值"
+        return True, new, ""
+    if not isinstance(new, (int, float)) or isinstance(new, bool):
+        return False, None, "非数值"
+    try:
+        oldf, newf = float(old), float(new)
+    except (TypeError, ValueError):
+        return False, None, "现值非数值"
+
+    lo, hi = BOUNDS[key]
+    note = ""
+    if newf < lo or newf > hi:
+        note = "越界 [%s,%s]，已 clamp" % (lo, hi)
+        newf = min(max(newf, lo), hi)
+    # 漂移检查只在两端都非 0 时有意义 —— 0 到非 0（或反向）算不出比率，
+    # 交给 BOUNDS 的区间去兜。symbol_reentry_cooldown_minutes 的 0 是合法值。
+    if oldf != 0 and newf != 0:
+        ratio = newf / oldf
+        if ratio < 1 / MAX_DRIFT or ratio > MAX_DRIFT:
+            return False, None, "单次漂移超过 %.1fx" % MAX_DRIFT
+    if abs(newf - oldf) < 1e-12:
+        return False, None, "与现值相同"
+    return True, newf, note
+
+
+def main():
+    benv = load_env(BACKEND_ENV)
+    aienv = load_env(AI_ENV)
+    key = aienv.get("DEEPSEEK_API_KEY", "")
+    if not key:
+        print("[fatal] no DEEPSEEK_API_KEY in %s" % AI_ENV, file=sys.stderr)
+        return 2
+    # TG 凭据经环境变量传给 tg()，避免全局变量在整个进程里可读
+    os.environ["_TG_TOKEN"] = benv.get("TELEGRAM_BOT_TOKEN", "")
+    os.environ["_TG_CHAT"] = benv.get("TELEGRAM_CHAT_ID", "")
+
+    try:
+        tok = http_json(BACKEND + "/api/login", "POST",
+                        {"username": "admin", "password": benv.get("ADMIN_PASSWORD", "")}).get("token")
+    except Exception as e:                      # noqa: BLE001
+        print("[fatal] backend login failed: %s" % e, file=sys.stderr)
+        return 2
+    if not tok:
+        print("[fatal] no token returned by /api/login", file=sys.stderr)
+        return 2
+
+    ctx = http_json("%s/api/admin/optimize/context?strategy_id=%s&hours=%d"
+                    % (BACKEND, STRATEGY_ID, WINDOW_HOURS), token=tok)
+    cfg = ctx.get("config") or {}
+    exp = cfg.get("_exp")
+    ctx = strip_heavy(ctx)
+
+    tw = ctx.get("trades_window") or {}
+    n = tw.get("count") or 0
+    print("[info] window=%dh trades=%s win_rate=%s%% pnl=%s"
+          % (WINDOW_HOURS, n, tw.get("win_rate_pct"), tw.get("realized_pnl")))
+
+    if n < MIN_TRADES:
+        msg = ("样本不足：窗口 %dh 内仅 %d 笔（阈值 %d），本轮不优化。"
+               % (WINDOW_HOURS, n, MIN_TRADES))
+        print("[skip] " + msg)
+        tg("🤖 自动优化 | 跳过\n" + msg)
+        return 0
+
+    prompt = build_prompt(ctx, cfg)
+    if exp:
+        prompt += "\n## 进行中的实验记录 _exp（不得覆盖，不得据此改同段参数）\n%s\n" % json.dumps(exp, ensure_ascii=False)[:1200]
+
+    try:
+        resp = http_json("https://api.deepseek.com/v1/chat/completions", "POST", {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+        }, token=key, timeout=180)
+        raw = resp["choices"][0]["message"]["content"]
+    except Exception as e:                      # noqa: BLE001
+        print("[fatal] deepseek call failed: %s" % e, file=sys.stderr)
+        return 2
+
+    try:
+        verdict = parse_llm(raw)
+    except Exception as e:                      # noqa: BLE001
+        print("[fatal] unparseable LLM output: %s\n--- raw ---\n%s" % (e, raw[:800]), file=sys.stderr)
+        return 2
+
+    accepted, rejected = [], []
+    for ch in (verdict.get("changes") or [])[:2]:
+        ok, val, note = validate(ch, cfg)
+        if ok:
+            accepted.append({"key": ch["key"], "from": cfg[ch["key"]], "to": val,
+                             "reason": ch.get("reason", ""), "note": note})
+        else:
+            rejected.append({"key": ch.get("key"), "why": note})
+
+    # 组保证金不变式 §8 复核：接受的改动若破坏 Σ(pct×mcp)≤0.75，整批拒绝
+    proj = dict(cfg)
+    for a in accepted:
+        proj[a["key"]] = a["to"]
+    try:
+        exposure = float(proj.get("order_amount_pct", 0)) * float(proj.get("max_concurrent_positions", 0))
+    except (TypeError, ValueError):
+        exposure = 0.0
+    if exposure > 0.75:
+        rejected.append({"key": "(整批)", "why": "Σ(pct×mcp)=%.3f > 0.75，违反边界 §8" % exposure})
+        accepted = []
+
+    lines = ["🤖 DeepSeek 自动优化 | %s" % time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()),
+             "窗口 %dh | %d 笔 | 胜率 %s%% | PnL %s"
+             % (WINDOW_HOURS, n, tw.get("win_rate_pct"), tw.get("realized_pnl")),
+             "", "诊断: " + str(verdict.get("diagnosis", ""))[:300], ""]
+
+    if accepted:
+        lines.append("建议改动:")
+        for a in accepted:
+            lines.append("  • %s: %s → %s  (%s)%s"
+                         % (a["key"], a["from"], a["to"], a["reason"],
+                            "  ⚠️" + a["note"] if a["note"] else ""))
+    else:
+        lines.append("建议改动: 无 —— " + str(verdict.get("no_change_reason", ""))[:200])
+    if rejected:
+        lines.append("")
+        lines.append("被拒:")
+        for r in rejected:
+            lines.append("  ✗ %s: %s" % (r["key"], r["why"]))
+    lines.append("")
+    lines.append("置信度: %s | 模式: %s" % (verdict.get("confidence"), "dry-run(未落配置)" if DRY_RUN else "APPLY"))
+
+    # ---- 落配置。默认不走这里。 ----
+    if accepted and not DRY_RUN:
+        patch = {a["key"]: a["to"] for a in accepted}
+        try:
+            r = http_json("%s/api/strategies/%s/config" % (BACKEND, STRATEGY_ID),
+                          "PATCH", patch, token=tok)
+            lines.append("已落配置: %s" % json.dumps(r, ensure_ascii=False))
+            # 分组报生效状态：一律说"要重启"是错的，多数键下次开/平仓即生效。
+            imm = sorted(k for k in patch if k not in RESTART_REQUIRED)
+            rst = sorted(k for k in patch if k in RESTART_REQUIRED)
+            if imm:
+                lines.append("✅ 已即时生效（下次开仓/平仓）：%s" % ", ".join(imm))
+            if rst:
+                lines.append("⚠️ 需 stop+start 才生效（当前进程仍跑旧值）：%s" % ", ".join(rst))
+        except Exception as e:                  # noqa: BLE001
+            lines.append("落配置失败: %s" % e)
+
+    out = "\n".join(lines)
+    print(out)
+    tg(out)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
