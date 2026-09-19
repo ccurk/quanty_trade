@@ -471,6 +471,11 @@ func (m *Manager) closeUSDMPosition(inst *StrategyInstance, bx *exchange.Binance
 			}
 			<-ticker.C
 		}
+		// 45s 内没等到归零 ⇒ 有残仓。必须留痕：实测 VANA 残留 0.01 时这里是静默
+		// 退出，死仓占住 max_concurrent_positions 槽位且无人发现。
+		if amt, _, _, e := bx.USDMPositionAmt(ownerID, symbol); e == nil && amt != 0 {
+			emitStrategyLog(inst, "error", fmt.Sprintf("平仓后 45s 仓位未归零 symbol=%s 残留数量=%v", symbol, amt))
+		}
 	}(inst.OwnerID, sym)
 	return nil
 }

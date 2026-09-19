@@ -2065,7 +2065,9 @@ func (b *BinanceExchange) ClosePositionOrder(symbol string, ownerID uint) (*Orde
 		}
 	}
 
-	adjQty := roundDownToStep(qty, filters.StepSize)
+	// 全平必须全量：用 snapFullQty 而非 roundDownToStep，否则浮点误差会少下 1 个
+	// step（实测 35.16 → 35.15），在交易所留下 0.01 死仓并占住并发槽位。
+	adjQty := snapFullQty(qty, filters.StepSize)
 	if filters.MinQty > 0 && adjQty < filters.MinQty {
 		return nil, entryPrice, 0, nil
 	}
@@ -2669,7 +2671,9 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 			positionSide = "LONG"
 		}
 	}
-	closeQty := roundDownToStep(math.Abs(positionAmt), filters.StepSize)
+	// 止盈止损腿要盖住整仓，同样不能用 roundDownToStep（浮点误差会少 1 个 step，
+	// 触发后留残仓）。
+	closeQty := snapFullQty(math.Abs(positionAmt), filters.StepSize)
 	if filters.MinQty > 0 && closeQty < filters.MinQty {
 		closeQty = filters.MinQty
 	}

@@ -243,6 +243,27 @@ func roundDownToStep(v float64, step float64) float64 {
 	return math.Floor(v/step) * step
 }
 
+// snapFullQty 把「整仓数量」对齐到步长，专用于全平/挂满仓止盈止损。
+//
+// 与 roundDownToStep 的区别：交易所返回的仓位量本身就是步长的整数倍，但浮点除法
+// 会把整数倍算成略小于该整数（实测 35.16/0.01 = 3515.9999999999995）⇒ Floor
+// 白吃一个 step，下成 35.15，在交易所留下 0.01 死仓：占住 max_concurrent_positions
+// 槽位、并让引擎侧仓位永远不归零（2026-09-19 VANA 实例）。
+// 故先四舍五入到最近整数倍，再夹住不超原值（v 真不是整数倍时不越卖）。
+func snapFullQty(v float64, step float64) float64 {
+	if step <= 0 || v <= 0 {
+		return v
+	}
+	units := math.Round(v / step)
+	if units*step > v+step*1e-6 {
+		units = math.Floor(v / step)
+	}
+	if units < 0 {
+		units = 0
+	}
+	return units * step
+}
+
 func roundUpToStep(v float64, step float64) float64 {
 	if step <= 0 {
 		return v
