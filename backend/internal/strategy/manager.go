@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
@@ -292,7 +293,7 @@ func isAllowedSymbol(inst *StrategyInstance, symbol string) bool {
 	if sym == "" {
 		return false
 	}
-	if xs := parseSymbolsValue(inst.Config["symbols"]); len(xs) > 0 {
+	if xs := parseSymbolsValue(inst.Config()["symbols"]); len(xs) > 0 {
 		for _, s := range xs {
 			if exchange.NormalizeSymbol(s) == sym {
 				return true
@@ -303,7 +304,7 @@ func isAllowedSymbol(inst *StrategyInstance, symbol string) bool {
 		// 被静默丢弃（"择优胜出"却永不下单）。
 		return feedHasSymbol(inst, sym)
 	}
-	if raw, ok := inst.Config["symbol"].(string); ok && strings.TrimSpace(raw) != "" {
+	if raw, ok := inst.Config()["symbol"].(string); ok && strings.TrimSpace(raw) != "" {
 		if exchange.NormalizeSymbol(raw) == sym {
 			return true
 		}
@@ -312,14 +313,14 @@ func isAllowedSymbol(inst *StrategyInstance, symbol string) bool {
 	return true
 }
 
-// isBlacklistedSymbol 返回 true 表示该 symbol 在 inst.Config["symbol_blacklist"]
+// isBlacklistedSymbol 返回 true 表示该 symbol 在 inst.Config()["symbol_blacklist"]
 // 黑名单里。黑名单独立于 symbols 白名单，用于"白名单内但历史亏钱"的标的。
 // 配置形式：JSON 数组 ["SAHARAUSDT","XYZUSDT"] 或逗号分隔字符串。
 func isBlacklistedSymbol(inst *StrategyInstance, symbol string) bool {
 	if inst == nil {
 		return false
 	}
-	xs := parseSymbolsValue(inst.Config["symbol_blacklist"])
+	xs := parseSymbolsValue(inst.Config()["symbol_blacklist"])
 	if len(xs) == 0 {
 		return false
 	}
@@ -335,14 +336,14 @@ func isBlacklistedSymbol(inst *StrategyInstance, symbol string) bool {
 	return false
 }
 
-// isAllowedSide 返回 true 表示该方向在 inst.Config["allowed_sides"] 白名单里。
+// isAllowedSide 返回 true 表示该方向在 inst.Config()["allowed_sides"] 白名单里。
 // 配置缺省（空数组或不存在）→ buy/sell 都放行（保持向后兼容）。
 // 60 天分析显示 long 严重亏钱、short 净盈利，可用 ["sell"] 关掉所有 long。
 func isAllowedSide(inst *StrategyInstance, side string) bool {
 	if inst == nil {
 		return false
 	}
-	raw, ok := inst.Config["allowed_sides"]
+	raw, ok := inst.Config()["allowed_sides"]
 	if !ok || raw == nil {
 		return true
 	}
@@ -447,19 +448,19 @@ func clampOrderAmount(inst *StrategyInstance, requested float64) float64 {
 	}
 	amt := requested
 	if amt <= 0 {
-		amt = getNumber(inst.Config["trade_amount"])
+		amt = getNumber(inst.Config()["trade_amount"])
 	}
 	if amt <= 0 {
 		return 0
 	}
-	maxAmt := getNumber(inst.Config["max_order_amount"])
+	maxAmt := getNumber(inst.Config()["max_order_amount"])
 	if maxAmt <= 0 {
-		maxAmt = getNumber(inst.Config["max_trade_amount"])
+		maxAmt = getNumber(inst.Config()["max_trade_amount"])
 	}
 	if maxAmt > 0 && amt > maxAmt {
 		amt = maxAmt
 	}
-	minAmt := getNumber(inst.Config["min_order_amount"])
+	minAmt := getNumber(inst.Config()["min_order_amount"])
 	if minAmt > 0 && amt < minAmt {
 		return 0
 	}
@@ -490,8 +491,24 @@ type StrategyInstance struct {
 	RuntimePath      string `json:"runtime_path"`
 	RuntimeGenerated bool   `json:"runtime_generated"`
 	RuntimeKeep      bool   `json:"runtime_keep"`
-	// Config is the in-memory decoded config JSON.
-	Config map[string]interface{} `json:"config"`
+	// config 是当前生效的用户参数快照，通过 Config() 读取。
+	//
+	// 为什么不是裸 `Config map[string]interface{}`（2026-09-16 改）：
+	// 这个 map 会被自动化路径（claude_cron / DeepSeek 优化器 / bot endpoint）
+	// 在策略**运行中**整体替换，而入场/出场/信号/下单各路径有 110+ 处无锁读。
+	// 裸字段整体替换是真实的 data race，后果不是"读到旧值"而是 Go runtime
+	// 直接 "concurrent map read and map write" fatal error 打挂整个后端进程。
+	//
+	// 用 atomic.Pointer 而不是加互斥锁：读方**无锁**，因此不存在锁序问题
+	// （inst.mu / orderMu 已在多处被持有，再加一把锁极易造成死锁）。
+	// 写方只换指针，读方拿到的永远是某个完整一致的快照。
+	//
+	// 这也是同日移除 "cannot update config while strategy is running" 那道
+	// guard 的前提。留着 guard 的代价是实测出来的：2026-07-17 起 claude_cron
+	// 的 1589 次改动全被弹掉（strategy_audit_logs: action=patch_config success=0）。
+	//
+	// 约定：调用方**只读**，不得修改 Config() 返回的 map。
+	config atomic.Pointer[map[string]interface{}]
 	// Status is the process state.
 	Status StrategyStatus `json:"status"`
 	// OwnerID is the user who owns this running instance.
@@ -552,6 +569,40 @@ type StrategyInstance struct {
 	tpslCancel       map[string]context.CancelFunc
 	optimizeRunning  bool
 	lastOptimizeAt   time.Time
+}
+
+// Config 返回当前生效的用户参数快照，可能为 nil（尚未 setConfig）。
+//
+// 读方无锁 —— 这是选 atomic.Pointer 而非互斥锁的全部理由：inst.mu / orderMu
+// 已经在 110+ 处被持有，再插一把锁会引入难以穷尽的锁序问题。
+// 返回的 map 视为只读，调用方不得修改。
+func (inst *StrategyInstance) Config() map[string]interface{} {
+	if inst == nil {
+		return nil
+	}
+	if p := inst.config.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// setConfig 整体替换配置快照。写方只换指针，不与任何读方竞争。
+func (inst *StrategyInstance) setConfig(cfg map[string]interface{}) {
+	if inst == nil {
+		return
+	}
+	inst.config.Store(&cfg)
+}
+
+// MarshalJSON 让非导出的原子快照仍以 "config" 出现在 API 响应里。
+// 前端、ListStrategies 的调用方都按这个字段名取值，改成原子存储后
+// 必须显式补回来，否则 /api/strategies 会静默少一个字段。
+func (inst *StrategyInstance) MarshalJSON() ([]byte, error) {
+	type alias StrategyInstance // 避免递归调用 MarshalJSON
+	return json.Marshal(struct {
+		*alias
+		Config map[string]interface{} `json:"config"`
+	}{(*alias)(inst), inst.Config()})
 }
 
 // Manager manages lifecycle of all strategy instances and coordinates exchange access.
@@ -630,8 +681,16 @@ func (m *Manager) fetchStaleRealizedPnL(ex exchange.Exchange, ownerID uint, symK
 	if !ok || openTime.IsZero() {
 		return 0, false
 	}
-	events, err := bex.USDMIncomeHistory(ownerID, openTime.Add(-time.Minute), now, 1000)
-	if err != nil {
+	// 必须翻页。本窗口是 [开仓时间-1m, 现在]，持仓越久事件越多：账户实测 ~490 条/天，
+	// 一笔拿过两天的仓就跨过 1000 条上限。单页会拿到**最早**那批（币安按时间升序返回），
+	// 真正的平仓事件根本不在里面 —— 要么 found=false 让调用方按"持平"记 0（这笔亏损
+	// 就凭空消失，正是 strategy_positions 里那批空壳行），要么匹配到同 symbol 的另一笔
+	// 旧结算，金额还是错的。两种都不可接受。
+	//
+	// complete=false 时退回 (0,false) 而不是拿残缺集去凑：宁可让调用方保留原有回退，
+	// 也不能编一个看似有据的错数。
+	events, complete, err := bex.USDMIncomeHistoryAll(ownerID, openTime.Add(-time.Minute), now, 200*time.Millisecond)
+	if err != nil || !complete {
 		return 0, false
 	}
 	var sum float64
@@ -1092,6 +1151,9 @@ type orderReq struct {
 	stopLoss   float64
 	signalID   string
 	confidence float64
+	// signalPrice = 信号生成时策略用的评估价,只用于在成交价上重锚 tp/sl
+	// (reanchorTPSLToFill)。与上面的 price 是两回事:price 是下单参考价。
+	signalPrice float64
 }
 
 type stopReq struct {
@@ -1106,12 +1168,12 @@ func (m *Manager) StartWorkers() {
 	go m.runAutoOptimizeWorker()
 }
 
-func (m *Manager) enqueueOrderForInstance(inst *StrategyInstance, symbol string, side string, amount float64, price float64, takeProfit float64, stopLoss float64, signalID string, confidence float64) {
+func (m *Manager) enqueueOrderForInstance(inst *StrategyInstance, symbol string, side string, amount float64, price float64, takeProfit float64, stopLoss float64, signalID string, confidence float64, signalPrice float64) {
 	if inst == nil || symbol == "" || side == "" {
 		return
 	}
 	select {
-	case m.orderCh <- orderReq{inst: inst, symbol: symbol, side: side, amount: amount, price: price, takeProfit: takeProfit, stopLoss: stopLoss, signalID: signalID, confidence: confidence}:
+	case m.orderCh <- orderReq{inst: inst, symbol: symbol, side: side, amount: amount, price: price, takeProfit: takeProfit, stopLoss: stopLoss, signalID: signalID, confidence: confidence, signalPrice: signalPrice}:
 	default:
 		emitStrategyLog(inst, "error", "Order queue is full, dropping order request")
 	}
@@ -1137,7 +1199,6 @@ func (m *Manager) AddStrategy(id, name, path string, ownerID uint, templateID ui
 		TemplateID:        templateID,
 		StrategyVersionID: strategyVersionID,
 		Path:              path,
-		Config:            config,
 		Status:            StatusStopped,
 		OwnerID:           ownerID,
 		CreatedAt:         time.Now(),
@@ -1145,6 +1206,7 @@ func (m *Manager) AddStrategy(id, name, path string, ownerID uint, templateID ui
 		exchange:          m.exchange,
 		mgr:               m,
 	}
+	inst.setConfig(config)
 	m.instances[id] = inst
 	return inst
 }
@@ -1191,7 +1253,7 @@ func (m *Manager) prepareRuntimeStrategyFile(inst *StrategyInstance) (string, er
 		return "", err
 	}
 
-	keep := getBool(inst.Config["keep_runtime_file"]) || getBool(inst.Config["debug"]) || getBool(inst.Config["log_trace"])
+	keep := getBool(inst.Config()["keep_runtime_file"]) || getBool(inst.Config()["debug"]) || getBool(inst.Config()["log_trace"])
 	inst.RuntimePath = absPath
 	inst.RuntimeGenerated = true
 	inst.RuntimeKeep = keep
@@ -1627,7 +1689,7 @@ func (m *Manager) historySyncLoop(ctx context.Context, inst *StrategyInstance, r
 				continue
 			}
 
-			if getBool(inst.Config["log_redis"]) {
+			if getBool(inst.Config()["log_redis"]) {
 				inst.mu.Lock()
 				if inst.resyncLogBootID != bootID {
 					inst.resyncLogBootID = bootID
@@ -1665,7 +1727,7 @@ func (m *Manager) historySyncLoop(ctx context.Context, inst *StrategyInstance, r
 					ok = false
 					logger.Errorf("[REDIS PUBLISH ERROR] id=%s owner=%d symbol=%s type=history err=%v", inst.ID, inst.OwnerID, sym, err)
 					emitStrategyLog(inst, "error", fmt.Sprintf("Redis publish history failed symbol=%s err=%v", sym, err))
-				} else if getBool(inst.Config["log_redis"]) {
+				} else if getBool(inst.Config()["log_redis"]) {
 					emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish history ok symbol=%s bars=%d", sym, len(out)))
 				}
 			}
@@ -1676,7 +1738,7 @@ func (m *Manager) historySyncLoop(ctx context.Context, inst *StrategyInstance, r
 				inst.resyncNextAt = time.Time{}
 				inst.resyncBackoff = 0
 				inst.mu.Unlock()
-				if getBool(inst.Config["log_redis"]) {
+				if getBool(inst.Config()["log_redis"]) {
 					emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish history done boot_id=%s", bootID))
 				}
 			} else {
@@ -1723,9 +1785,22 @@ func (m *Manager) RemoveStrategy(id string) error {
 	return nil
 }
 
-// UpdateStrategyConfig updates a strategy's config in memory.
+// UpdateStrategyConfig 整体替换策略的内存配置快照。
 // Caller is responsible for persisting to DB (API handler does this).
-// Config cannot be changed while the strategy is running to avoid race conditions.
+//
+// 2026-09-16 用户直令：移除原先 "running 时禁止改配置" 的硬拒。
+//
+// 那道 guard 的原始理由是 data race，方向对但手段错：真正的修法是给 Config
+// 加原子快照（见 StrategyInstance.config 的注释），而不是禁止修改。留着它的
+// 代价是实测出来的 —— 审计表 strategy_audit_logs 里 claude_cron 从
+// 2026-07-17 到 2026-09-16 的 1589 次改动**全部**因
+// "cannot update config while strategy is running" 被弹掉（成功仅 219 次），
+// 也就是说自动调参链路两个月里 88% 的时间是死的。
+//
+// 生效范围（重要，容易误解）：走 Config() 快照的**后端内**参数（杠杆、仓位
+// 比例、confidence 门、ATR 止盈止损系数、并发上限…）下一次开仓/平仓即生效，
+// 不需要重启。但 Python 子进程是在 spawn 时从 argv 读配置的，它那一侧的参数
+// （信号计算相关）要 stop+start 才换 —— 这一点没变，optimizer 的提示文案仍准确。
 func (m *Manager) UpdateStrategyConfig(id string, config map[string]interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1734,11 +1809,7 @@ func (m *Manager) UpdateStrategyConfig(id string, config map[string]interface{})
 		return fmt.Errorf("strategy %s not found", id)
 	}
 
-	if inst.Status == StatusRunning {
-		return fmt.Errorf("cannot update config while strategy is running")
-	}
-
-	inst.Config = config
+	inst.setConfig(config)
 	return nil
 }
 
@@ -1755,8 +1826,8 @@ func (inst *StrategyInstance) readStdout() {
 	// 对 debug 档的说明),逐根 K 线属于瞬时观测,没有事后追溯价值。让它走
 	// BroadcastJSON(前端实时)和 logger(容器日志)即可,DB 留给决策/下单/成交/
 	// 错误这些低频、需要回溯的日志。非 trace 档位完全不受影响。
-	traceOn := getBool(inst.Config["debug"]) || getBool(inst.Config["log_trace"]) ||
-		strings.ToLower(strings.TrimSpace(getString(inst.Config["log_level"]))) == "debug"
+	traceOn := getBool(inst.Config()["debug"]) || getBool(inst.Config()["log_trace"]) ||
+		strings.ToLower(strings.TrimSpace(getString(inst.Config()["log_level"]))) == "debug"
 	persist := !traceOn
 	scanner := bufio.NewScanner(inst.stdout)
 	for scanner.Scan() {
@@ -1841,13 +1912,12 @@ func (m *Manager) SyncFromDB(db *gorm.DB) error {
 				path = firstNonEmpty(strings.TrimSpace(inst.Template.Path), fmt.Sprintf("db://template/%d", inst.Template.ID))
 			}
 
-			m.instances[inst.ID] = &StrategyInstance{
+			restored := &StrategyInstance{
 				ID:                inst.ID,
 				Name:              inst.Name,
 				TemplateID:        inst.TemplateID,
 				StrategyVersionID: versionID,
 				Path:              path,
-				Config:            config,
 				Status:            StatusStopped,
 				OwnerID:           inst.OwnerID,
 				CreatedAt:         inst.CreatedAt,
@@ -1855,6 +1925,8 @@ func (m *Manager) SyncFromDB(db *gorm.DB) error {
 				exchange:          m.exchange,
 				mgr:               m,
 			}
+			restored.setConfig(config)
+			m.instances[inst.ID] = restored
 
 		}
 	}

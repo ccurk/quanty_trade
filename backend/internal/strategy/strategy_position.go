@@ -25,15 +25,19 @@ func (m *Manager) runOrderWorker() {
 						req.symbol, req.side, req.amount, r)
 				}
 			}()
-			m.placeOrderForInstance(req.inst, req.symbol, req.side, req.amount, req.price, req.takeProfit, req.stopLoss, req.signalID, req.confidence)
+			m.placeOrderForInstance(req.inst, req.symbol, req.side, req.amount, req.price, req.takeProfit, req.stopLoss, req.signalID, req.confidence, req.signalPrice)
 		}()
 	}
 }
 
-func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, side string, amount float64, price float64, takeProfit float64, stopLoss float64, signalID string, confidence float64) {
+func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, side string, amount float64, price float64, takeProfit float64, stopLoss float64, signalID string, confidence float64, signalPrice float64) {
 	if inst == nil {
 		return
 	}
+	// price 是【下单参考价】,入队时一律传 0:一是让 OrderType 走 market(见下面的
+	// `if price > 0 {"limit"}` —— 填了它就变成限价单),二是让 resolveUSDMOrderAmount
+	// 回落到 lastCandleClose / LastPrice 取价。信号自己的评估价走 signalPrice,两者
+	// 用途不同,别合并。
 	price = 0
 	if !isAllowedSymbol(inst, symbol) {
 		inst.orderMu.Lock()
@@ -122,7 +126,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 	}
 
 	maxPos := 1
-	if v := int(getNumber(inst.Config["max_concurrent_positions"])); v > 0 {
+	if v := int(getNumber(inst.Config()["max_concurrent_positions"])); v > 0 {
 		maxPos = v
 	}
 
@@ -308,7 +312,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 		} else if strings.Contains(errMsg, "\"code\":-4164") {
 			errMsg = fmt.Sprintf("开仓失败：notional 小于最小下单额 (%v)", err)
 		} else if strings.Contains(errMsg, "\"code\":-2027") {
-			lev := int(getNumber(inst.Config["leverage"]))
+			lev := int(getNumber(inst.Config()["leverage"]))
 			if lev <= 0 {
 				lev = 1
 			}
@@ -361,8 +365,21 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			"avg_price":         order.Price,
 			"updated_at":        time.Now(),
 		})
+	// 唯一的 tp/sl 重锚点。策略的 tp/sl 锚在【信号评估价】上,而市价单的成交价会偏离它
+	// (实测 0.01%~0.22%),偏离多少就按比例吃掉多少止损距离 —— 这里把两个【相对距离】
+	// 原样搬到 order.Price(成交价)上,再交给 resolveTPSLFromROI。
+	// 顺序不能反:先搬家再算 ROI 宽度,这样即使将来有人把 take_profit_pct/stop_loss_pct
+	// 填上,ROI 宽度也是按成交价算的。
+	// 下游全部继承这个结果(notifyTradeOpened / monitorPositionTPStop / 落库行 /
+	// tryPlaceExchangeTPStop 的交易所 algo 腿),所以只需要重锚这一次;
+	// tryPlaceExchangeTPStop 里的 resolveTPSLFromROI 目前是空操作,不会二次搬家。
+	takeProfit, stopLoss = reanchorTPSLToFill(signalPrice, order.Price, takeProfit, stopLoss)
 	effectiveTakeProfit, effectiveStopLoss := resolveTPSLFromROI(inst, normalizedSide, order.Price, takeProfit, stopLoss)
 	emitStrategyLog(inst, "info", fmt.Sprintf("开仓下单成功 symbol=%s side=%s status=%s order_id=%s client_order_id=%s qty=%v price=%v", symbol, normalizedSide, strings.ToLower(order.Status), order.ID, order.ClientOrderID, order.Amount, order.Price))
+	if signalPrice > 0 && order.Price > 0 {
+		// 重锚是本轮的止血改动,必须能在日志里直接验收「比值回到设计值」,不能只靠读 DB。
+		emitStrategyLog(inst, "info", fmt.Sprintf("止盈止损已锚到成交价 symbol=%s side=%s signal_price=%v fill_price=%v 滑点=%+.4f%% tp=%v sl=%v", symbol, normalizedSide, signalPrice, order.Price, 100*(order.Price/signalPrice-1), effectiveTakeProfit, effectiveStopLoss))
+	}
 	inst.hub.BroadcastJSON(map[string]interface{}{"type": "order", "data": order})
 	m.notifyTradeOpened(inst, symbol, normalizedSide, order.Amount, order.Price, effectiveTakeProfit, effectiveStopLoss, strings.ToLower(order.Status))
 
@@ -397,7 +414,7 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 		Where("owner_id = ? AND strategy_id = ? AND symbol = ? AND status = ?", inst.OwnerID, inst.ID, symbol, "open").
 		Updates(map[string]interface{}{"take_profit": takeProfit, "stop_loss": stopLoss, "updated_at": time.Now()}).Error
 	useExchange := true
-	if v, ok := inst.Config["use_exchange_tpsl"]; ok {
+	if v, ok := inst.Config()["use_exchange_tpsl"]; ok {
 		useExchange = getBool(v)
 	}
 	if useExchange {
@@ -476,7 +493,7 @@ func (m *Manager) tryPlaceExchangeTPStop(inst *StrategyInstance, symbol string, 
 					takeProfit, stopLoss = resolveTPSLFromROI(inst, side, entryPx, takeProfit, stopLoss)
 					if entryPx > 0 && stopLoss > 0 {
 						if levUsed <= 0 {
-							levUsed = float64(int(getNumber(inst.Config["leverage"])))
+							levUsed = float64(int(getNumber(inst.Config()["leverage"])))
 						}
 						if levUsed <= 0 {
 							levUsed = 1
@@ -581,7 +598,7 @@ func (m *Manager) atomicTPSLRequired(inst *StrategyInstance) bool {
 	if inst == nil {
 		return true
 	}
-	if v, ok := inst.Config["atomic_entry_tpsl"]; ok {
+	if v, ok := inst.Config()["atomic_entry_tpsl"]; ok {
 		return getBool(v)
 	}
 	return true
@@ -875,7 +892,7 @@ func (m *Manager) runPositionTPStopMonitor(ctx context.Context, inst *StrategyIn
 			takeProfit, stopLoss = resolveTPSLFromROI(inst, side, entryPx, takeProfit, stopLoss)
 			if entryPx > 0 && stopLoss > 0 {
 				if levUsed <= 0 {
-					levUsed = float64(int(getNumber(inst.Config["leverage"])))
+					levUsed = float64(int(getNumber(inst.Config()["leverage"])))
 				}
 				if levUsed <= 0 {
 					levUsed = 1
@@ -977,7 +994,7 @@ func minHoldDuration(inst *StrategyInstance) time.Duration {
 	if inst == nil {
 		return 0
 	}
-	if v := getNumber(inst.Config["min_hold_seconds"]); v > 0 {
+	if v := getNumber(inst.Config()["min_hold_seconds"]); v > 0 {
 		return time.Duration(v) * time.Second
 	}
 	return 0

@@ -6,7 +6,9 @@ import (
 )
 
 func confInst(cfg map[string]interface{}) *StrategyInstance {
-	return &StrategyInstance{Config: cfg}
+	inst := &StrategyInstance{}
+	inst.setConfig(cfg)
+	return inst
 }
 
 func TestConfSizingDisabledByDefault(t *testing.T) {

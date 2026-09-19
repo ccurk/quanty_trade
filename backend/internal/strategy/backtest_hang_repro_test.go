@@ -101,13 +101,14 @@ func TestReproBacktestHang(t *testing.T) {
 	}
 
 	m := NewManager(ws.NewHub(), minuteFeedExchange{&exchange.MockExchange{Name: "mock"}, nCandles})
-	m.instances[instID] = &StrategyInstance{
+	reproInst := &StrategyInstance{
 		ID:         instID,
 		Name:       "REPRO",
 		TemplateID: tmpl.ID,
 		Path:       absCode,
-		Config:     cfg,
 	}
+	reproInst.setConfig(cfg)
+	m.instances[instID] = reproInst
 
 	start := time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)
 	end := start.Add(time.Duration(nCandles) * time.Minute)

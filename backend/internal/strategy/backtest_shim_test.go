@@ -73,18 +73,19 @@ func TestBacktestProducesTrades(t *testing.T) {
 	}
 
 	m := NewManager(ws.NewHub(), uptrendExchange{&exchange.MockExchange{Name: "mock"}})
-	m.instances[instID] = &StrategyInstance{
+	shimInst := &StrategyInstance{
 		ID:         instID,
 		Name:       "TEST",
 		TemplateID: tmpl.ID,
 		Path:       tmplPath,
-		Config: map[string]interface{}{
-			"symbol":       "BTCUSDT",
-			"fast_window":  float64(10),
-			"slow_window":  float64(30),
-			"trade_amount": float64(0.01),
-		},
 	}
+	shimInst.setConfig(map[string]interface{}{
+		"symbol":       "BTCUSDT",
+		"fast_window":  float64(10),
+		"slow_window":  float64(30),
+		"trade_amount": float64(0.01),
+	})
+	m.instances[instID] = shimInst
 
 	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	res, err := m.runBacktestSimulation(instID, "BTCUSDT", "1h", start, start.Add(200*time.Hour), 10000, nil, 1, 1)

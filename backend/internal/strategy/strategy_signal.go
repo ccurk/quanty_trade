@@ -17,6 +17,12 @@ type symbolEntryStats struct {
 	RecentCount      int
 	ConsecutiveCount int
 	LastEntryAt      time.Time
+	// LastPnL/HasLastPnL 是该 symbol 最近一笔【已平仓】的已实现盈亏。
+	// HasLastPnL=false 表示没有可信的平仓记录（不是"盈亏为 0"）——见
+	// models.StrategyPosition.PnLSource：source 为 unknown/空 的行是缺失值，
+	// 不能当 0 参与排序。
+	LastPnL    float64
+	HasLastPnL bool
 }
 
 func normalizeStrategySide(raw string) string {
@@ -73,10 +79,10 @@ func flipStrategySide(side string) string {
 }
 
 func resolveNonNaturalEntrySide(inst *StrategyInstance, slotIndex int, anchorSide string) (string, bool) {
-	if inst == nil || slotIndex <= 1 || !getBool(inst.Config["non_natural_entry_enabled"]) {
+	if inst == nil || slotIndex <= 1 || !getBool(inst.Config()["non_natural_entry_enabled"]) {
 		return "", false
 	}
-	seq := parseNonNaturalEntrySequence(getString(inst.Config["non_natural_entry_sequence"]))
+	seq := parseNonNaturalEntrySequence(getString(inst.Config()["non_natural_entry_sequence"]))
 	if len(seq) < 2 || slotIndex > len(seq) {
 		return "", false
 	}
@@ -114,6 +120,35 @@ func remapTPSLBySide(inst *StrategyInstance, side string, entryPrice float64, ta
 	return tp, sl
 }
 
+// reanchorTPSLToFill 把策略下发的 tp/sl 从【信号生成时的评估价 signalPrice】原样搬到
+// 【实际成交价 fillPrice】上。
+//
+// 为什么需要:策略侧两个价位是相对同一个评估价算出来的(多头 tp=P·(1+d_tp)、sl=P·(1−d_sl),
+// 空头镜像),锚在 P 上的绝对价 **不随成交漂**。市价单成交价一偏离 P,两段距离就同向缩水,
+// 盈亏比随之退化 —— 实测 v40 四笔真实开仓:成交价相对评估价 +0.0978% / +0.2210% /
+// +0.0930% / −0.0107%,设计 1.25:1 落到实盘变成 0.44~1.29:1(ROBO 那笔滑点吃掉了 56%
+// 的止损距离)。
+//
+// 只搬运【相对距离】,不重算宽度:ATR 自适应宽度与策略的成本感知闸门(cost_mult /
+// fee_sl_floor_mult)全部原样保留。⚠️ 不要改走 take_profit_pct / stop_loss_pct 那条路 ——
+// 那两个键是常数,会把自适应宽度换成固定 ROI 宽度,等于废掉成本闸门。
+//
+// 一条公式对多空通吃:多头 tp>P>sl、空头 tp<P<sl,把 (价位−P)/P 这个带符号相对距离整体
+// 乘到 fillPrice 上,两种方向都得到「距离不变、锚点搬家」。
+// 任一价格缺失(策略没发 P、或订单尚未有成交回报价)就原样返回,退化为改动前的行为。
+func reanchorTPSLToFill(signalPrice float64, fillPrice float64, takeProfit float64, stopLoss float64) (float64, float64) {
+	if signalPrice <= 0 || fillPrice <= 0 {
+		return takeProfit, stopLoss
+	}
+	if takeProfit > 0 {
+		takeProfit = fillPrice * (1 + (takeProfit-signalPrice)/signalPrice)
+	}
+	if stopLoss > 0 {
+		stopLoss = fillPrice * (1 + (stopLoss-signalPrice)/signalPrice)
+	}
+	return takeProfit, stopLoss
+}
+
 func parseClockMinutes(raw string) (int, bool) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -135,7 +170,7 @@ func resolveEntryTimeWindows(inst *StrategyInstance, now time.Time) (bool, strin
 	if inst == nil {
 		return true, "", false
 	}
-	raw := strings.TrimSpace(getString(inst.Config["entry_time_windows"]))
+	raw := strings.TrimSpace(getString(inst.Config()["entry_time_windows"]))
 	if raw == "" {
 		return true, "", false
 	}
@@ -226,7 +261,7 @@ func symbolReentryCooldown(inst *StrategyInstance) time.Duration {
 	if inst == nil {
 		return 0
 	}
-	minutes := int(getNumber(inst.Config["symbol_reentry_cooldown_minutes"]))
+	minutes := int(getNumber(inst.Config()["symbol_reentry_cooldown_minutes"]))
 	if minutes <= 0 {
 		return 0
 	}
@@ -237,7 +272,7 @@ func maxConsecutiveEntriesPerSymbol(inst *StrategyInstance) int {
 	if inst == nil {
 		return 0
 	}
-	if v := int(getNumber(inst.Config["max_consecutive_entries_per_symbol"])); v > 0 {
+	if v := int(getNumber(inst.Config()["max_consecutive_entries_per_symbol"])); v > 0 {
 		return v
 	}
 	return 0
@@ -333,6 +368,40 @@ func loadRecentEntryStats(inst *StrategyInstance, limit int) map[string]symbolEn
 	}
 	return stats
 }
+
+// loadLastEntryPnL 取每个 symbol 最近一笔已平仓仓位的已实现盈亏（按 close_time 倒序，
+// 每个 symbol 只保留最新一笔）。用于排序：上一笔盈利的 symbol 优先回补。
+//
+// pnl_source 为 "unknown"/"" 的行是【缺失值】而非 0（models.StrategyPosition.PnLSource
+// 有明确定义），必须跳过，否则一次查不到盈亏就会把该 symbol 判成"上一笔打平"。
+func loadLastEntryPnL(inst *StrategyInstance) map[string]float64 {
+	if inst == nil || database.DB == nil {
+		return nil
+	}
+	var rows []models.StrategyPosition
+	_ = database.DB.Where("owner_id = ? AND strategy_id = ? AND status = ?", inst.OwnerID, inst.ID, "closed").
+		Order("close_time desc, id desc").
+		Limit(200).
+		Find(&rows).Error
+	out := make(map[string]float64, len(rows))
+	for _, row := range rows {
+		symKey := exchange.NormalizeSymbol(row.Symbol)
+		if symKey == "" {
+			continue
+		}
+		if _, seen := out[symKey]; seen {
+			continue // 已取到该 symbol 最新的一笔
+		}
+		if row.PnLSource == "" || row.PnLSource == "unknown" {
+			continue // 缺失值，不能当 0
+		}
+		out[symKey] = row.RealizedPnL
+	}
+	return out
+}
+
+// lastEntryWinBoost 是"上一笔该 symbol 盈利"时的优先级乘数。
+const lastEntryWinBoost = 1.25
 
 func canOpenSymbolByCooldown(inst *StrategyInstance, stats symbolEntryStats) (bool, time.Duration, time.Time) {
 	cooldown := symbolReentryCooldown(inst)
@@ -460,9 +529,18 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		amount           float64
 		recentCount      int
 		consecutiveCount int
-		lastEntryAt      time.Time
+		lastEntryWin     bool
+		lastPnL          float64
 	}
 	recentStats := loadRecentEntryStats(inst, 30)
+	// 叠加"上一笔平仓盈亏"：排序用它，而不是用"最近开过几次"。
+	// 空 map 范围遍历安全（recentStats 为 nil 时 loadLastEntryPnL 也必为 nil）。
+	for sym, pnl := range loadLastEntryPnL(inst) {
+		item := recentStats[sym]
+		item.LastPnL = pnl
+		item.HasLastPnL = true
+		recentStats[sym] = item
+	}
 	cands := make([]cand, 0, len(filtered))
 	for _, sig := range filtered {
 		sym := strings.TrimSpace(sig.Symbol)
@@ -501,10 +579,15 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			side = "buy"
 		}
 		stats := recentStats[exchange.NormalizeSymbol(sig.Symbol)]
-		penalty := 1.0 + float64(stats.RecentCount)*0.35 + float64(stats.ConsecutiveCount)*0.5
+		// owner 2026-09-19 直令：不再冷却。原实现是纯惩罚
+		//   penalty = 1 + 近期*0.35 + 连开*0.5; score = rr/penalty
+		// 只读 strategy_orders，盈亏从不参与 ⇒ 同一个币"刚做过"就天然排后面，
+		// 而"刚做过且赚了"和"刚做过且亏了"被当成同一件事。现在改为：
+		// 上一笔平仓盈利的 symbol 优先回补，其余按适配度原值排，不再打折。
+		lastWin := stats.HasLastPnL && stats.LastPnL > 0
 		score := rr
-		if penalty > 1 {
-			score = rr / penalty
+		if lastWin {
+			score = rr * lastEntryWinBoost
 		}
 		cands = append(cands, cand{
 			s:                sig,
@@ -516,7 +599,8 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			amount:           amount,
 			recentCount:      stats.RecentCount,
 			consecutiveCount: stats.ConsecutiveCount,
-			lastEntryAt:      stats.LastEntryAt,
+			lastEntryWin:     lastWin,
+			lastPnL:          stats.LastPnL,
 		})
 	}
 	if len(cands) == 0 {
@@ -528,38 +612,31 @@ func (m *Manager) processSignalBatch(strategyID string) {
 		return
 	}
 
+	// 平局不再按"连开少 / 近期少 / 开得早"排 —— 那三条都是冷却。改为：
+	// 上一笔盈利者优先 → 适配度 → 上一笔盈利更大者 → symbol 名（确定性兜底）。
 	sort.Slice(cands, func(i, j int) bool {
 		if cands[i].score != cands[j].score {
 			return cands[i].score > cands[j].score
 		}
+		if cands[i].lastEntryWin != cands[j].lastEntryWin {
+			return cands[i].lastEntryWin
+		}
 		if cands[i].rr != cands[j].rr {
 			return cands[i].rr > cands[j].rr
 		}
-		if cands[i].consecutiveCount != cands[j].consecutiveCount {
-			return cands[i].consecutiveCount < cands[j].consecutiveCount
+		if cands[i].lastPnL != cands[j].lastPnL {
+			return cands[i].lastPnL > cands[j].lastPnL
 		}
-		if cands[i].recentCount != cands[j].recentCount {
-			return cands[i].recentCount < cands[j].recentCount
-		}
-		if cands[i].lastEntryAt.Equal(cands[j].lastEntryAt) {
-			return cands[i].s.Symbol < cands[j].s.Symbol
-		}
-		if cands[i].lastEntryAt.IsZero() {
-			return true
-		}
-		if cands[j].lastEntryAt.IsZero() {
-			return false
-		}
-		return cands[i].lastEntryAt.Before(cands[j].lastEntryAt)
+		return cands[i].s.Symbol < cands[j].s.Symbol
 	})
 	preview := make([]string, 0, len(cands))
 	for i := 0; i < len(cands) && i < 8; i++ {
-		preview = append(preview, fmt.Sprintf("%s(适配度=%0.4f,优先级=%0.4f,近期=%d,连开=%d)", cands[i].s.Symbol, cands[i].rr, cands[i].score, cands[i].recentCount, cands[i].consecutiveCount))
+		preview = append(preview, fmt.Sprintf("%s(适配度=%0.4f,优先级=%0.4f,近期=%d,连开=%d,上一笔=%+.4f)", cands[i].s.Symbol, cands[i].rr, cands[i].score, cands[i].recentCount, cands[i].consecutiveCount, cands[i].lastPnL))
 	}
 	emitStrategyLog(inst, "info", fmt.Sprintf("同批信号排序完成，共%d个候选：%s", len(cands), strings.Join(preview, "，")))
 
 	maxPos := 1
-	if v := int(getNumber(inst.Config["max_concurrent_positions"])); v > 0 {
+	if v := int(getNumber(inst.Config()["max_concurrent_positions"])); v > 0 {
 		maxPos = v
 	}
 	openCount := 0
@@ -639,7 +716,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 	pendingCount := 0
 	selectedSymbols := map[string]struct{}{}
 	if allowedNow, windows, configured := resolveEntryTimeWindows(inst, time.Now()); !allowedNow {
-		windowText := strings.TrimSpace(getString(inst.Config["entry_time_windows"]))
+		windowText := strings.TrimSpace(getString(inst.Config()["entry_time_windows"]))
 		if windows != "" {
 			windowText = windows
 		}
@@ -702,7 +779,7 @@ func (m *Manager) processSignalBatch(strategyID string) {
 			emitStrategyLog(inst, "info", fmt.Sprintf("跳过候选：%s 非自然开仓后止盈止损无效 side=%s tp=%v sl=%v px=%v", sig.Symbol, side, takeProfit, stopLoss, c.px))
 			continue
 		}
-		res := m.tryPlaceCandidate(inst, sig.Symbol, side, c.amount, takeProfit, stopLoss, strings.TrimSpace(sig.SignalID), sig.Confidence)
+		res := m.tryPlaceCandidate(inst, sig.Symbol, side, c.amount, takeProfit, stopLoss, strings.TrimSpace(sig.SignalID), sig.Confidence, sig.Price)
 		if res == candidatePlaceFilled || res == candidatePlacePending {
 			selected++
 			selectedSymbols[symKey] = struct{}{}
@@ -737,12 +814,15 @@ const (
 	candidatePlaceFilled  candidatePlaceResult = "filled"
 )
 
-func (m *Manager) tryPlaceCandidate(inst *StrategyInstance, symbol string, side string, amount float64, tp float64, sl float64, signalID string, confidence float64) candidatePlaceResult {
+func (m *Manager) tryPlaceCandidate(inst *StrategyInstance, symbol string, side string, amount float64, tp float64, sl float64, signalID string, confidence float64, signalPrice float64) candidatePlaceResult {
 	if inst == nil {
 		return candidatePlaceFailed
 	}
 	requestedAfter := time.Now().Add(-200 * time.Millisecond)
-	m.enqueueOrderForInstance(inst, symbol, side, amount, 0, tp, sl, signalID, confidence)
+	// 第 5 个参数(下单参考价)恒为 0:它只喂 resolveUSDMOrderAmount 的取价回落,而且
+	// placeOrderForInstance 里还被 OrderType 当 limit/market 判别位用。信号自己的评估价
+	// 走最后一个参数 signalPrice,只在拿到成交价后重锚 tp/sl —— 两者不要混。
+	m.enqueueOrderForInstance(inst, symbol, side, amount, 0, tp, sl, signalID, confidence, signalPrice)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		var ord models.StrategyOrder
@@ -770,7 +850,7 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 	if inst == nil {
 		return
 	}
-	logSignal := getBool(inst.Config["log_signal"]) || getBool(inst.Config["log_redis"]) || getBool(inst.Config["debug"])
+	logSignal := getBool(inst.Config()["log_signal"]) || getBool(inst.Config()["log_redis"]) || getBool(inst.Config()["debug"])
 	symbol := strings.TrimSpace(s.Symbol)
 	if symbol == "" {
 		if logSignal {
@@ -807,7 +887,7 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 		side = normalizeStrategySide(side)
 	}
 	if side == "" {
-		side = normalizeStrategySide(getString(inst.Config["default_open_side"]))
+		side = normalizeStrategySide(getString(inst.Config()["default_open_side"]))
 		if side == "" {
 			side = "buy"
 		}

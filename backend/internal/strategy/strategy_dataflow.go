@@ -505,8 +505,8 @@ func (m *Manager) onExchangeCandle(inst *StrategyInstance, redisBus *bus.RedisBu
 		if pubN == 1 {
 			emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle first ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
 		}
-		logRedis := getBool(inst.Config["log_redis"])
-		logEvery := int(getNumber(inst.Config["log_candle_every"]))
+		logRedis := getBool(inst.Config()["log_redis"])
+		logEvery := int(getNumber(inst.Config()["log_candle_every"]))
 		if logEvery <= 0 {
 			logEvery = 60
 		}

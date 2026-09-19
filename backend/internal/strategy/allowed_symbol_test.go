@@ -7,9 +7,9 @@ import "testing"
 // dropped by isAllowedSymbol — "择优胜出" in the strategy log but no order.
 func TestIsAllowedSymbolAcceptsRotatedInSymbols(t *testing.T) {
 	inst := &StrategyInstance{
-		Config:      map[string]interface{}{"symbols": "BTCUSDT,ETHUSDT"},
 		feedSymbols: []string{"BTCUSDT", "ETHUSDT", "ONUSDT"}, // ONUSDT rotated in at runtime
 	}
+	inst.setConfig(map[string]interface{}{"symbols": "BTCUSDT,ETHUSDT"})
 	if !isAllowedSymbol(inst, "BTCUSDT") {
 		t.Fatal("static seed symbol must be allowed")
 	}
@@ -22,9 +22,9 @@ func TestIsAllowedSymbolAcceptsRotatedInSymbols(t *testing.T) {
 
 	// Singular-symbol config variant.
 	inst2 := &StrategyInstance{
-		Config:      map[string]interface{}{"symbol": "BTCUSDT"},
 		feedSymbols: []string{"BTCUSDT", "ONUSDT"},
 	}
+	inst2.setConfig(map[string]interface{}{"symbol": "BTCUSDT"})
 	if !isAllowedSymbol(inst2, "ONUSDT") {
 		t.Fatal("rotated-in symbol must be allowed under singular-symbol config too")
 	}

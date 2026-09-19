@@ -2910,6 +2910,9 @@ type USDMIncomeEvent struct {
 
 // USDMIncomeHistory 拉 /fapi/v1/income，支持时间区间。
 // limit 上限是 1000；如果区间内事件超过 1000，会被截断。
+//
+// ⚠️ 区间内事件可能超过 1000 时，不要直接调本函数 —— 用 USDMIncomeHistoryAll。
+// 币安按时间**升序**返回，单页拿到的是最早那 1000 条，最新的成交被静默丢掉。
 func (b *BinanceExchange) USDMIncomeHistory(ownerID uint, startTime, endTime time.Time, limit int) ([]USDMIncomeEvent, error) {
 	if b.market != "usdm" {
 		return nil, fmt.Errorf("not usdm market")
@@ -2961,6 +2964,58 @@ func (b *BinanceExchange) USDMIncomeHistory(ownerID uint, startTime, endTime tim
 		})
 	}
 	return out, nil
+}
+
+// USDMIncomeHistoryAll 按时间游标翻页，把 [startTime,endTime] 的 income 事件拉全。
+//
+// 为什么必须有它：/fapi/v1/income 硬上限 1000 条，且按时间**升序**返回。单页调用在
+// 事件数 ≥1000 的窗口里拿到的是**最早**那 1000 条，最新的成交被静默丢掉 —— 恰恰是最
+// 该看的那些。这不是理论风险，2026-09-16 实测：hours=240 与 336 的窗口都恰好返回
+// 1000 条，于是同一个账户 30 天口径算出 REALIZED_PNL +3.56U，而 7 天口径是 −68.57U。
+// **子集比全集亏得多**，两者不可能同时为真 —— 说明大窗口读的是错误的时间切片。
+//
+// complete=false 表示翻到 maxPages 仍未拉完，数据仍不完整；调用方**必须显式降级**
+// （报错 / 退回 DB / 标记不可信），不能把返回值当真账用。
+//
+// throttle 是页与页之间的间隔：币安一旦 429 会设全局 ban 窗口，连累 2s 一次的持仓同步，
+// 所以宁可慢一点。events 即使 complete=false 也返回已拉到的部分，便于排查。
+func (b *BinanceExchange) USDMIncomeHistoryAll(ownerID uint, startTime, endTime time.Time, throttle time.Duration) (events []USDMIncomeEvent, complete bool, err error) {
+	const pageLimit = 1000
+	const maxPages = 50 // 5w 条。实测 30 天约 3k 条，正常 3-4 页就到底。
+
+	cursor := startTime
+	for page := 0; page < maxPages; page++ {
+		pageEvents, e := b.USDMIncomeHistory(ownerID, cursor, endTime, pageLimit)
+		if e != nil {
+			return events, false, e
+		}
+		if len(pageEvents) == 0 {
+			return events, true, nil
+		}
+		events = append(events, pageEvents...)
+		if len(pageEvents) < pageLimit {
+			return events, true, nil // 不满一页 = 已到区间末尾
+		}
+		var lastMs int64
+		for _, ev := range pageEvents {
+			if ev.Time > lastMs {
+				lastMs = ev.Time
+			}
+		}
+		next := time.UnixMilli(lastMs + 1)
+		if !next.After(cursor) {
+			// 游标没能前进（同一毫秒塞满一页）：再翻就是死循环，如实报不完整。
+			return events, false, nil
+		}
+		if next.After(endTime) {
+			return events, true, nil // 区间已耗尽
+		}
+		cursor = next
+		if throttle > 0 {
+			time.Sleep(throttle)
+		}
+	}
+	return events, false, nil
 }
 
 // USDMUserTrade 是 /fapi/v1/userTrades 返回的单条成交。
@@ -3053,6 +3108,90 @@ func (b *BinanceExchange) USDMUserTrades(ownerID uint, symbol string, startTime,
 		})
 	}
 	return out, nil
+}
+
+// USDMUserTradesAll 按「分段 + 段内翻页」把 [startTime,endTime] 的单个 symbol 成交流水拉全。
+//
+// 为什么必须有它：/fapi/v1/userTrades 有两条硬限制 ——
+//  1. startTime~endTime 跨度**不能超过 7 天**（官方文档原文），超过则整个请求失败；
+//  2. 单次最多 1000 条。
+//
+// 而 fetchBinanceContext 的调用点是 `if err != nil { continue }` —— 「拉失败」和「真的没
+// 有成交」在输出上长得一模一样。2026-09-16 实测：同一个账户 hours=168 得到 pair_count=246，
+// hours=336 得到 pair_count=0，且 net_pnl 恰好等于 FUNDING_FEE（证明一条成交都没进来）。
+// 这不是"没交易"，是静默失真。
+//
+// 所以这里既**分段**（每段 ≤7 天，绕开限制 1）又**翻页**（段内按时间游标推进，绕开限制 2）。
+//
+// complete=false 表示某段翻到 maxPages 仍未拉完。此时 trades 仍返回已拉到的部分，
+// 但调用方**必须显式标记不完整**，不能把 pair_count=0 当真账用。
+//
+// throttle 是请求之间的间隔：币安 429 会设全局 ban 窗口，连累 2s 一次的持仓同步，
+// 宁可慢一点。
+func (b *BinanceExchange) USDMUserTradesAll(ownerID uint, symbol string, startTime, endTime time.Time, throttle time.Duration) (trades []USDMUserTrade, complete bool, err error) {
+	const pageLimit = 1000
+	const maxPages = 50 // 单段 5w 条，实盘远达不到
+	const segDays = 7   // 币安硬限制：单次查询跨度上限
+
+	if !endTime.After(startTime) {
+		return nil, true, nil
+	}
+
+	for segStart := startTime; segStart.Before(endTime); {
+		segEnd := segStart.AddDate(0, 0, segDays)
+		if segEnd.After(endTime) {
+			segEnd = endTime
+		}
+
+		cursor := segStart
+		segDone := false
+		for page := 0; page < maxPages; page++ {
+			pageTrades, e := b.USDMUserTrades(ownerID, symbol, cursor, segEnd, pageLimit)
+			if e != nil {
+				return trades, false, e
+			}
+			if len(pageTrades) == 0 {
+				segDone = true
+				break
+			}
+			trades = append(trades, pageTrades...)
+			if len(pageTrades) < pageLimit {
+				segDone = true // 不满一页 = 该段已到末尾
+				break
+			}
+			var lastMs int64
+			for _, t := range pageTrades {
+				if t.Time > lastMs {
+					lastMs = t.Time
+				}
+			}
+			next := time.UnixMilli(lastMs + 1)
+			if !next.After(cursor) {
+				// 游标没能前进（同一毫秒塞满一页）：再翻就是死循环，如实报不完整。
+				return trades, false, nil
+			}
+			cursor = next
+			if !cursor.Before(segEnd) {
+				segDone = true // 该段区间已耗尽
+				break
+			}
+			if throttle > 0 {
+				time.Sleep(throttle)
+			}
+		}
+		if !segDone {
+			// 该段翻到页数上限仍未拉完，不能假装拉全了。
+			return trades, false, nil
+		}
+		// +1ms 让相邻两段成半开区间 [start, end]：币安的 endTime 是闭区间，
+		// 直接用 segEnd 当下段起点会把正好落在边界那一毫秒的成交**重复计一次**
+		// （实测：14 天窗口每段 1 笔，边界那笔被算了两遍 → 15 笔）。
+		segStart = segEnd.Add(time.Millisecond)
+		if throttle > 0 {
+			time.Sleep(throttle)
+		}
+	}
+	return trades, true, nil
 }
 
 func truncateForErr(body []byte) string {

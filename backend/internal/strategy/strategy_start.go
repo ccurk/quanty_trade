@@ -113,12 +113,12 @@ func (m *Manager) buildStrategyStartPlan(inst *StrategyInstance) (*strategyStart
 	}
 	inst.mu.Unlock()
 
-	runCfg := make(map[string]interface{}, len(inst.Config)+8)
-	for k, v := range inst.Config {
+	runCfg := make(map[string]interface{}, len(inst.Config())+8)
+	for k, v := range inst.Config() {
 		runCfg[k] = v
 	}
-	debugOn := getBool(inst.Config["debug"])
-	logTrace := getBool(inst.Config["log_trace"]) || debugOn
+	debugOn := getBool(inst.Config()["debug"])
+	logTrace := getBool(inst.Config()["log_trace"]) || debugOn
 	if logTrace {
 		runCfg["log_trace"] = true
 		if _, ok := runCfg["log_every"]; !ok {
@@ -163,7 +163,7 @@ func (m *Manager) buildStrategyStartPlan(inst *StrategyInstance) (*strategyStart
 	// log_level 翻译：把人类可读的等级展开成 Python 实际用的细粒度 flags。
 	// 用户显式设的 log_every / log_decisions 等如果已经在 inst.Config 里有了，
 	// 这里【不】覆盖（让显式配置生效优先），只填补未指定的字段。
-	applyLogLevelPreset(inst.Config, runCfg)
+	applyLogLevelPreset(inst.Config(), runCfg)
 
 	return &strategyStartPlan{
 		redisBus:    rb,
@@ -222,19 +222,19 @@ func applyLogLevelPreset(cfg map[string]interface{}, runCfg map[string]interface
 }
 
 func (m *Manager) resolveFeedSymbols(inst *StrategyInstance, logTrace bool) ([]string, error) {
-	fixedSymbol := strings.TrimSpace(getString(inst.Config["symbol"]))
-	feedSymbols := parseSymbolsValue(inst.Config["symbols"])
+	fixedSymbol := strings.TrimSpace(getString(inst.Config()["symbol"]))
+	feedSymbols := parseSymbolsValue(inst.Config()["symbols"])
 	if len(feedSymbols) == 0 && fixedSymbol != "" {
 		feedSymbols = []string{fixedSymbol}
 	}
 
-	selectMode := strings.ToLower(strings.TrimSpace(getString(inst.Config["symbol_select_mode"])))
-	autoSymbols := getBool(inst.Config["auto_symbols"])
-	minPrice := getNumber(inst.Config["min_price"])
-	maxPrice := getNumber(inst.Config["max_price"])
-	minPrecision := int(getNumber(inst.Config["min_precision"]))
-	minVolatility := getNumber(inst.Config["min_volatility"])
-	limit := int(getNumber(inst.Config["select_limit"]))
+	selectMode := strings.ToLower(strings.TrimSpace(getString(inst.Config()["symbol_select_mode"])))
+	autoSymbols := getBool(inst.Config()["auto_symbols"])
+	minPrice := getNumber(inst.Config()["min_price"])
+	maxPrice := getNumber(inst.Config()["max_price"])
+	minPrecision := int(getNumber(inst.Config()["min_precision"]))
+	minVolatility := getNumber(inst.Config()["min_volatility"])
+	limit := int(getNumber(inst.Config()["select_limit"]))
 	if limit <= 0 {
 		limit = 20
 	}
@@ -369,17 +369,17 @@ func (m *Manager) activateStartedStrategy(inst *StrategyInstance, plan *strategy
 }
 
 func (m *Manager) syncStrategyDebugConfig(inst *StrategyInstance) {
-	if inst == nil || database.DB == nil || !getBool(inst.Config["debug"]) {
+	if inst == nil || database.DB == nil || !getBool(inst.Config()["debug"]) {
 		return
 	}
-	cfg := make(map[string]interface{}, len(inst.Config))
-	for k, v := range inst.Config {
+	cfg := make(map[string]interface{}, len(inst.Config()))
+	for k, v := range inst.Config() {
 		cfg[k] = v
 	}
 	cfg["debug"] = false
 	if b, err := json.Marshal(cfg); err == nil {
 		_ = database.DB.Model(&models.StrategyInstance{}).Where("id = ?", inst.ID).
 			Updates(map[string]interface{}{"config": string(b), "updated_at": time.Now()}).Error
-		inst.Config["debug"] = false
+		inst.setConfig(cfg)
 	}
 }

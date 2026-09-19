@@ -281,6 +281,20 @@ func (t *gateWSTrader) request(channel string, reqParam json.RawMessage) (ack ga
 		return got, true, nil
 	case <-time.After(gateWSAckTimeout):
 		t.dropPending(reqID)
+		// ⚠️ 超时必须按「连接已死」处理 —— 这是 2026-09-16「做市整晚零报价」的根因。
+		//
+		// 现场数据(20 分钟窗口):connected+logged in 只出现 1 次、cancel WS failed
+		// 234 次、mm-quote 成功 0 次,而 read loop exit 一次都没有。读循环 60s 读超时
+		// 由 spot.ping 的每 15s 回显持续喂着,所以 TCP 与心跳都是健康的,只有 api
+		// 请求的 ack 停摆了。ensureConn 又只看 t.conn != nil && t.loggedIn、不探活,
+		// 于是这条「心跳活着但 api 已死」的连接被无限复用,每一发请求都去等一个
+		// 永远不会到的 ack —— 故障因此永不收敛。
+		//
+		// 写失败那条分支早就 markBroken 了,超时这条漏了:同一个语义(这一发没做成)
+		// 两条分支待遇不一致。补上后超时 = 拆连接,下次调用惰性重连并重新登录,
+		// 会话级的失效(这正是 ack 全停最像的原因)随之被清掉。
+		// gateWSRedialMinGap=2s 兜住重连频率,且请求本身由引擎串行化,不构成风暴。
+		t.markBroken(conn)
 		return gateWSAck{}, true, fmt.Errorf("gatews: ack timeout on %s", channel)
 	}
 }

@@ -31,7 +31,8 @@ func TestMergeBacktestConfig(t *testing.T) {
 		t.Fatal("strategy_id must not be injectable via overrides")
 	}
 
-	simInst := &StrategyInstance{Config: merged}
+	simInst := &StrategyInstance{}
+	simInst.setConfig(merged)
 	_, _, tp, _ := resolveHungerMode(simInst)
 	if tp != 0.10 {
 		t.Fatalf("exit sim must read merged config, hunger_tp=%v", tp)

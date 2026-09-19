@@ -32,15 +32,16 @@ func TestMinHoldDurationDefaults(t *testing.T) {
 	if got := minHoldDuration(nil); got != 0 {
 		t.Fatalf("nil 实例应返回 0,得到 %v", got)
 	}
-	inst := &StrategyInstance{Config: map[string]interface{}{}}
+	inst := &StrategyInstance{}
+	inst.setConfig(map[string]interface{}{})
 	if got := minHoldDuration(inst); got != 0 {
 		t.Fatalf("未配置应返回 0(不启用),得到 %v", got)
 	}
-	inst.Config["min_hold_seconds"] = 0
+	inst.setConfig(map[string]interface{}{"min_hold_seconds": 0})
 	if got := minHoldDuration(inst); got != 0 {
 		t.Fatalf("配置 0 应表示不启用,得到 %v", got)
 	}
-	inst.Config["min_hold_seconds"] = 900
+	inst.setConfig(map[string]interface{}{"min_hold_seconds": 900})
 	if got := minHoldDuration(inst); got.Seconds() != 900 {
 		t.Fatalf("配置 900 应为 900s,得到 %v", got)
 	}

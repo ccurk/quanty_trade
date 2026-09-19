@@ -15,25 +15,25 @@ import (
 // conf<=conf_lo → min_mult，conf>=conf_hi → max_mult，中间线性。
 // conf_sizing_enabled 未开启或信号未带置信度时返回 (1, false)，行为与旧版完全一致。
 func confSizingMultiplier(inst *StrategyInstance, confidence float64) (float64, bool) {
-	if inst == nil || !getBool(inst.Config["conf_sizing_enabled"]) || confidence <= 0 {
+	if inst == nil || !getBool(inst.Config()["conf_sizing_enabled"]) || confidence <= 0 {
 		return 1, false
 	}
-	lo := getNumber(inst.Config["conf_sizing_conf_lo"])
+	lo := getNumber(inst.Config()["conf_sizing_conf_lo"])
 	if lo <= 0 {
-		lo = getNumber(inst.Config["min_confidence"])
+		lo = getNumber(inst.Config()["min_confidence"])
 	}
 	if lo <= 0 {
 		lo = 0.40
 	}
-	hi := getNumber(inst.Config["conf_sizing_conf_hi"])
+	hi := getNumber(inst.Config()["conf_sizing_conf_hi"])
 	if hi <= lo {
 		hi = lo + 0.15
 	}
-	minM := getNumber(inst.Config["conf_sizing_min_mult"])
+	minM := getNumber(inst.Config()["conf_sizing_min_mult"])
 	if minM <= 0 {
 		minM = 0.60
 	}
-	maxM := getNumber(inst.Config["conf_sizing_max_mult"])
+	maxM := getNumber(inst.Config()["conf_sizing_max_mult"])
 	if maxM <= 0 {
 		maxM = 1.40
 	}
@@ -64,15 +64,15 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 	if inst == nil || bx == nil {
 		return 0, nil
 	}
-	lev := int(getNumber(inst.Config["leverage"]))
+	lev := int(getNumber(inst.Config()["leverage"]))
 	if lev <= 0 {
 		lev = 1
 	}
-	mode := strings.ToLower(strings.TrimSpace(getString(inst.Config["order_amount_mode"])))
+	mode := strings.ToLower(strings.TrimSpace(getString(inst.Config()["order_amount_mode"])))
 	if mode == "" {
 		mode = "notional"
 	}
-	minNotional := getNumber(inst.Config["min_order_notional"])
+	minNotional := getNumber(inst.Config()["min_order_notional"])
 	if minNotional <= 0 {
 		minNotional = 5
 	}
@@ -104,7 +104,7 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 	}
 	desiredNotional := amount * px
 	if mode == "percent_balance" {
-		pct := getNumber(inst.Config["order_amount_pct"])
+		pct := getNumber(inst.Config()["order_amount_pct"])
 		if pct <= 0 {
 			pct = amount / 100
 		}
@@ -124,8 +124,8 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 			}
 			emitStrategyLog(inst, "info", fmt.Sprintf("置信度动态仓位 symbol=%s conf=%.4f mult=%.2f pct=%.4f→%.4f", symbol, confidence, mult, basePct, pct))
 		}
-		maxInit := getNumber(inst.Config["max_initial_margin_usdt"])
-		if getBool(inst.Config["order_pct_exclude_leverage"]) {
+		maxInit := getNumber(inst.Config()["max_initial_margin_usdt"])
+		if getBool(inst.Config()["order_pct_exclude_leverage"]) {
 			// 保守开关：名义 = 余额×pct，不乘杠杆；杠杆只决定保证金占用（= 名义/杠杆）。
 			notional := avail * pct
 			if maxInit > 0 && notional > maxInit*float64(lev) {
@@ -151,7 +151,7 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 		}
 		if confSized {
 			// 缩量不得击穿单笔名义下限（默认 20U）：低置信度是少开，不是开出无意义的粉尘单。
-			floorN := getNumber(inst.Config["conf_sizing_min_notional_usdt"])
+			floorN := getNumber(inst.Config()["conf_sizing_min_notional_usdt"])
 			if floorN <= 0 {
 				floorN = 20
 			}
@@ -264,7 +264,7 @@ func normalizedTPSLPct(inst *StrategyInstance, key string) float64 {
 	if inst == nil {
 		return 0
 	}
-	pct := getNumber(inst.Config[key])
+	pct := getNumber(inst.Config()[key])
 	if pct > 1 {
 		pct = pct / 100
 	}
@@ -285,7 +285,7 @@ func resolveTPSLFromROI(inst *StrategyInstance, side string, entryPrice float64,
 	if inst == nil || entryPrice <= 0 {
 		return takeProfit, stopLoss
 	}
-	lev := int(getNumber(inst.Config["leverage"]))
+	lev := int(getNumber(inst.Config()["leverage"]))
 	if lev <= 0 {
 		lev = 1
 	}
@@ -335,10 +335,10 @@ func resolveHungerMode(inst *StrategyInstance) (bool, time.Duration, float64, fl
 		return false, 0, 0, 0
 	}
 	enabled := true
-	if _, ok := inst.Config["hunger_mode_enabled"]; ok {
-		enabled = getBool(inst.Config["hunger_mode_enabled"])
+	if _, ok := inst.Config()["hunger_mode_enabled"]; ok {
+		enabled = getBool(inst.Config()["hunger_mode_enabled"])
 	}
-	afterMinutes := int(getNumber(inst.Config["hunger_after_minutes"]))
+	afterMinutes := int(getNumber(inst.Config()["hunger_after_minutes"]))
 	if afterMinutes <= 0 {
 		afterMinutes = 30
 	}
@@ -369,7 +369,7 @@ func resolveMaxHoldTimeout(inst *StrategyInstance) time.Duration {
 	if inst == nil {
 		return 0
 	}
-	minutes := int(getNumber(inst.Config["max_hold_minutes"]))
+	minutes := int(getNumber(inst.Config()["max_hold_minutes"]))
 	if minutes <= 0 {
 		return 0
 	}

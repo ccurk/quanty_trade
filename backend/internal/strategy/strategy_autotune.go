@@ -185,11 +185,11 @@ func (m *Manager) runAutoOptimizeWorker() {
 			if inst == nil {
 				continue
 			}
-			if !getBool(inst.Config["auto_optimize_enabled"]) {
+			if !getBool(inst.Config()["auto_optimize_enabled"]) {
 				logger.Infof("[AI OPT] skip id=%s name=%s reason=disabled", inst.ID, inst.Name)
 				continue
 			}
-			interval := time.Duration(getNumber(inst.Config["auto_optimize_interval_minutes"])) * time.Minute
+			interval := time.Duration(getNumber(inst.Config()["auto_optimize_interval_minutes"])) * time.Minute
 			if interval <= 0 {
 				interval = 180 * time.Minute
 			}
@@ -221,13 +221,13 @@ func (m *Manager) optimizeStrategyInstance(inst *StrategyInstance, trigger strin
 		inst.mu.Unlock()
 	}()
 
-	lookback := time.Duration(getNumber(inst.Config["auto_optimize_lookback_minutes"])) * time.Minute
+	lookback := time.Duration(getNumber(inst.Config()["auto_optimize_lookback_minutes"])) * time.Minute
 	if lookback <= 0 {
 		lookback = 180 * time.Minute
 	}
 	windowStart := now.Add(-lookback)
 	model := firstNonEmpty(
-		strings.TrimSpace(getString(inst.Config["auto_optimize_model"])),
+		strings.TrimSpace(getString(inst.Config()["auto_optimize_model"])),
 		strings.TrimSpace(conf.C().AI.Optimizer.Model),
 		strings.TrimSpace(os.Getenv("AI_OPTIMIZER_MODEL")),
 	)
@@ -249,7 +249,7 @@ func (m *Manager) optimizeStrategyInstance(inst *StrategyInstance, trigger strin
 
 	emitAIOptimizationLog(inst, "info", "START", "trigger=%s lookback=%s", trigger, lookback)
 	m.notifyAIOptimization(inst, "running", trigger, fmt.Sprintf("lookback=%s model=%s", lookback, firstNonEmpty(model, "unknown")), "")
-	logger.Infof("[AI OPT] start id=%s name=%s trigger=%s lookback=%s model=%s auto_apply=%t dry_run=%t", inst.ID, inst.Name, trigger, lookback, firstNonEmpty(model, "unknown"), getBool(inst.Config["auto_optimize_apply"]), getBool(inst.Config["auto_optimize_dry_run"]))
+	logger.Infof("[AI OPT] start id=%s name=%s trigger=%s lookback=%s model=%s auto_apply=%t dry_run=%t", inst.ID, inst.Name, trigger, lookback, firstNonEmpty(model, "unknown"), getBool(inst.Config()["auto_optimize_apply"]), getBool(inst.Config()["auto_optimize_dry_run"]))
 
 	input, err := m.prepareOptimizationInput(inst, windowStart, now)
 	if err != nil {
@@ -282,7 +282,7 @@ func (m *Manager) optimizeStrategyInstance(inst *StrategyInstance, trigger strin
 	}
 	emitAIOptimizationLog(inst, "info", "VALIDATE", "candidate_hash=%s", run.CandidateCodeHash)
 
-	if getBool(inst.Config["auto_optimize_dry_run"]) || !getBool(inst.Config["auto_optimize_apply"]) {
+	if getBool(inst.Config()["auto_optimize_dry_run"]) || !getBool(inst.Config()["auto_optimize_apply"]) {
 		emitAIOptimizationLog(inst, "info", "DRY_RUN", "dry-run or auto-apply disabled")
 		m.finishOptimizationRun(inst, &run, "completed", false, summary, "dry-run", nil)
 		return
@@ -354,11 +354,11 @@ func (m *Manager) prepareOptimizationInput(inst *StrategyInstance, start, end ti
 	symbolScore := map[string]int{}
 	symbolSummaryMap := map[string]*optimizationSymbolTradeSummary{}
 	windowSummary := optimizationWindowSummary{}
-	maxPositions := int(getNumber(inst.Config["auto_optimize_max_positions"]))
+	maxPositions := int(getNumber(inst.Config()["auto_optimize_max_positions"]))
 	if maxPositions <= 0 {
 		maxPositions = 24
 	}
-	maxOrders := int(getNumber(inst.Config["auto_optimize_max_orders"]))
+	maxOrders := int(getNumber(inst.Config()["auto_optimize_max_orders"]))
 	if maxOrders <= 0 {
 		maxOrders = 48
 	}
@@ -446,10 +446,10 @@ func (m *Manager) prepareOptimizationInput(inst *StrategyInstance, start, end ti
 			windowSummary.FailedOrders++
 		}
 	}
-	for _, s := range parseSymbolsValue(inst.Config["symbols"]) {
+	for _, s := range parseSymbolsValue(inst.Config()["symbols"]) {
 		symbolScore[s] += 1
 	}
-	if raw := strings.TrimSpace(getString(inst.Config["symbol"])); raw != "" {
+	if raw := strings.TrimSpace(getString(inst.Config()["symbol"])); raw != "" {
 		symbolScore[raw] += 1
 	}
 
@@ -471,7 +471,7 @@ func (m *Manager) prepareOptimizationInput(inst *StrategyInstance, start, end ti
 		return symbols[i].score > symbols[j].score
 	})
 
-	maxSymbols := int(getNumber(inst.Config["auto_optimize_max_symbols"]))
+	maxSymbols := int(getNumber(inst.Config()["auto_optimize_max_symbols"]))
 	if maxSymbols <= 0 {
 		maxSymbols = 6
 	}
@@ -520,7 +520,7 @@ func (m *Manager) prepareOptimizationInput(inst *StrategyInstance, start, end ti
 		StrategyName:    inst.Name,
 		WindowStart:     start,
 		WindowEnd:       end,
-		Config:          inst.Config,
+		Config:          inst.Config(),
 		Summary:         windowSummary,
 		Symbols:         symbolsSummary,
 		RecentPositions: positions,
@@ -541,19 +541,19 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 	}
 	provider := "openrouter"
 	apiURL := firstNonEmpty(
-		sanitizeOptimizerURL(getString(inst.Config["auto_optimize_api_url"])),
+		sanitizeOptimizerURL(getString(inst.Config()["auto_optimize_api_url"])),
 		sanitizeOptimizerURL(conf.C().AI.Optimizer.APIURL),
 		"https://openrouter.ai/api/v1/chat/completions",
 	)
 	apiKeyCandidates := []string{
-		strings.TrimSpace(getString(inst.Config["auto_optimize_api_key"])),
+		strings.TrimSpace(getString(inst.Config()["auto_optimize_api_key"])),
 		strings.TrimSpace(conf.C().AI.Optimizer.APIKey),
 		strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")),
 		strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_KEY")),
 	}
 	apiKey := firstNonEmpty(apiKeyCandidates...)
 	model := firstNonEmpty(
-		strings.TrimSpace(getString(inst.Config["auto_optimize_model"])),
+		strings.TrimSpace(getString(inst.Config()["auto_optimize_model"])),
 		strings.TrimSpace(conf.C().AI.Optimizer.Model),
 		strings.TrimSpace(os.Getenv("AI_OPTIMIZER_MODEL")),
 		"anthropic/claude-opus-4.8-fast",
@@ -565,14 +565,14 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 		return "", "", fmt.Errorf("未配置 AI 优化模型名称")
 	}
 	sessionID := buildOptimizerSessionID(inst)
-	emitAIOptimizationLog(inst, "info", "REQUEST", "provider=%s model=%s api_url=%s session_id=%s inst_key=%t conf_key=%t env_openrouter_key=%t env_ai_key=%t", provider, model, apiURL, firstNonEmpty(sessionID, "-"), strings.TrimSpace(getString(inst.Config["auto_optimize_api_key"])) != "", strings.TrimSpace(conf.C().AI.Optimizer.APIKey) != "", strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "", strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_KEY")) != "")
+	emitAIOptimizationLog(inst, "info", "REQUEST", "provider=%s model=%s api_url=%s session_id=%s inst_key=%t conf_key=%t env_openrouter_key=%t env_ai_key=%t", provider, model, apiURL, firstNonEmpty(sessionID, "-"), strings.TrimSpace(getString(inst.Config()["auto_optimize_api_key"])) != "", strings.TrimSpace(conf.C().AI.Optimizer.APIKey) != "", strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "", strings.TrimSpace(os.Getenv("AI_OPTIMIZER_API_KEY")) != "")
 
 	ctxJSON, err := json.MarshalIndent(buildOptimizationPromptPayload(input.payload), "", "  ")
 	if err != nil {
 		return "", "", err
 	}
 	systemPrompt := firstNonEmpty(
-		sanitizeOptionalPromptString(getString(inst.Config["auto_optimize_system_prompt"])),
+		sanitizeOptionalPromptString(getString(inst.Config()["auto_optimize_system_prompt"])),
 		sanitizeOptionalPromptString(conf.C().AI.Optimizer.SystemPrompt),
 		sanitizeOptionalPromptString(os.Getenv("AI_OPTIMIZER_SYSTEM_PROMPT")),
 		"你是资深量化交易策略工程师。请基于最近3小时的持仓、订单和合约行情摘要，优化现有Python策略代码。必须保留现有项目的 websocket/redis 运行协议、run() 入口、信号输出格式和风险控制接口。优先调整参数、过滤逻辑、仓位控制和评分机制，避免破坏项目集成。优先做最小必要修改，不要重写框架。只返回完整 Python 代码，不要解释。",
@@ -604,13 +604,13 @@ func (m *Manager) requestOptimizedStrategyCode(inst *StrategyInstance, input *op
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 		if provider == "openrouter" || strings.Contains(strings.ToLower(apiURL), "openrouter.ai") {
 			httpReferer := firstNonEmpty(
-				sanitizeOptionalPromptString(getString(inst.Config["auto_optimize_http_referer"])),
+				sanitizeOptionalPromptString(getString(inst.Config()["auto_optimize_http_referer"])),
 				sanitizeOptionalPromptString(conf.C().AI.Optimizer.HTTPReferer),
 				sanitizeOptionalPromptString(os.Getenv("OPENROUTER_HTTP_REFERER")),
 				sanitizeOptionalPromptString(os.Getenv("AI_OPTIMIZER_HTTP_REFERER")),
 			)
 			xTitle := firstNonEmpty(
-				sanitizeOptionalPromptString(getString(inst.Config["auto_optimize_app_name"])),
+				sanitizeOptionalPromptString(getString(inst.Config()["auto_optimize_app_name"])),
 				sanitizeOptionalPromptString(conf.C().AI.Optimizer.AppName),
 				sanitizeOptionalPromptString(os.Getenv("OPENROUTER_APP_NAME")),
 				sanitizeOptionalPromptString(os.Getenv("AI_OPTIMIZER_APP_NAME")),
@@ -910,7 +910,7 @@ func buildOptimizerSessionID(inst *StrategyInstance) string {
 	if inst == nil {
 		return ""
 	}
-	if raw := sanitizeOptionalPromptString(getString(inst.Config["auto_optimize_session_id"])); raw != "" {
+	if raw := sanitizeOptionalPromptString(getString(inst.Config()["auto_optimize_session_id"])); raw != "" {
 		return raw
 	}
 	return "aiopt-" + strings.TrimSpace(inst.ID)

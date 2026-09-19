@@ -30,8 +30,8 @@ func TestPerSymbolCooldownSurvivesNewerOtherSymbolEntry(t *testing.T) {
 	inst := &StrategyInstance{
 		ID:      "cd-test",
 		OwnerID: 1,
-		Config:  map[string]interface{}{"symbol_reentry_cooldown_minutes": float64(30)},
 	}
+	inst.setConfig(map[string]interface{}{"symbol_reentry_cooldown_minutes": float64(30)})
 	now := time.Now()
 	// A entered 5 minutes ago, then B entered 1 minute ago (B is globally newest).
 	db.Create(&models.StrategyOrder{StrategyID: inst.ID, OwnerID: 1, Symbol: "AAAUSDT", Side: "buy", Purpose: "entry", Status: "filled", ClientOrderID: "a1", RequestedAt: now.Add(-5 * time.Minute)})

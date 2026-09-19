@@ -31,7 +31,7 @@ const breakevenFeeBuffer = 0.0010
 func exitATR(inst *StrategyInstance, row models.StrategyPosition, entry float64) float64 {
 	atr := row.AtrAbs
 	if atr <= 0 {
-		slMult := getNumber(inst.Config["atr_sl_mult"])
+		slMult := getNumber(inst.Config()["atr_sl_mult"])
 		if slMult <= 0 {
 			slMult = 1.0
 		}
@@ -168,7 +168,7 @@ func (m *Manager) maybeMoveBreakeven(inst *StrategyInstance, uid uint, row model
 	if inst == nil || row.BreakevenMoved {
 		return
 	}
-	trig := getNumber(inst.Config["breakeven_trigger_atr"])
+	trig := getNumber(inst.Config()["breakeven_trigger_atr"])
 	if trig <= 0 {
 		return
 	}
@@ -199,11 +199,11 @@ func (m *Manager) maybeMoveBreakeven(inst *StrategyInstance, uid uint, row model
 // cancel/replace path; it delivers the same "lock in profit on a pullback"
 // behaviour as a native TRAILING_STOP_MARKET without a new exchange order type.
 func (m *Manager) maybeTrail(inst *StrategyInstance, uid uint, row models.StrategyPosition, pos exchange.Position, side string, currentPrice, tpResolved float64) {
-	if inst == nil || !getBool(inst.Config["trailing_enabled"]) {
+	if inst == nil || !getBool(inst.Config()["trailing_enabled"]) {
 		return
 	}
-	cb := getNumber(inst.Config["trailing_callback_pct"])
-	act := getNumber(inst.Config["trailing_activation_atr"])
+	cb := getNumber(inst.Config()["trailing_callback_pct"])
+	act := getNumber(inst.Config()["trailing_activation_atr"])
 	entry := pos.Price
 	if entry <= 0 {
 		entry = row.AvgPrice

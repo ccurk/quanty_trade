@@ -26,7 +26,7 @@ func (m *Manager) resolveBacktestMarket(id string, reqSymbol, reqTimeframe strin
 	}
 	symbol := reqSymbol
 	if symbol == "" {
-		symbol, _ = inst.Config["symbol"].(string)
+		symbol, _ = inst.Config()["symbol"].(string)
 	}
 	if symbol == "" {
 		return "", "", fmt.Errorf("strategy has no fixed symbol (auto_symbols mode): pass \"symbol\" (e.g. \"BTC/USDT\") in the backtest request body")
@@ -207,7 +207,7 @@ func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, sta
 	// Mirror the live start path (strategy_start.go): strategies abort with
 	// "missing strategy_id" unless it is injected into the runtime config.
 	// inst.Config holds only user params (symbol/windows/...), not identity.
-	runCfg := mergeBacktestConfig(inst.Config, overrides)
+	runCfg := mergeBacktestConfig(inst.Config(), overrides)
 	runCfg["strategy_id"] = id
 	runCfg["owner_id"] = inst.OwnerID
 	runCfg["redis_addr"] = fake.addr
@@ -270,17 +270,18 @@ func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, sta
 	// bleed (the live strategy lost ~23%, almost all of it fees).
 	// Shadow instance carrying the merged (base+overrides) config so the exit
 	// simulation and sizing read exactly what the strategy subprocess reads.
-	simInst := &StrategyInstance{ID: inst.ID, OwnerID: inst.OwnerID, Config: runCfg}
+	simInst := &StrategyInstance{ID: inst.ID, OwnerID: inst.OwnerID}
+	simInst.setConfig(runCfg)
 
 	takerFee := 0.0004
-	if raw, ok := simInst.Config["taker_fee"]; ok {
+	if raw, ok := simInst.Config()["taker_fee"]; ok {
 		if v, ok := raw.(float64); ok && v >= 0 {
 			takerFee = v
 		}
 	}
 
 	lev := 1
-	if raw, ok := simInst.Config["leverage"]; ok {
+	if raw, ok := simInst.Config()["leverage"]; ok {
 		if v, ok := raw.(float64); ok && int(v) > 0 {
 			lev = int(v)
 		}
@@ -288,7 +289,7 @@ func (m *Manager) runBacktestSimulation(id string, symbol, timeframe string, sta
 	// Engine-style sizing: the live order path sizes by avail×pct×lev (the
 	// strategy's signal "amount" is a placeholder the engine overrides), so the
 	// simulation does the same whenever order_amount_pct is configured.
-	sizingPct := getNumber(simInst.Config["order_amount_pct"])
+	sizingPct := getNumber(simInst.Config()["order_amount_pct"])
 
 	// Hold-based exits, mirroring the live engine's three exit layers
 	// (quick_trade_monitor.go): the platform TP/SL bracket, the hunger-mode

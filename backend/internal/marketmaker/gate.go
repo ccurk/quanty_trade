@@ -6,6 +6,7 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -153,6 +154,35 @@ func (e *GateExchange) signed(budget gateBudget, class gateReqClass, method, pat
 	return nil, lastErr
 }
 
+// gateHTTPError 让 HTTP 状态码脱离错误字符串,成为调用方能判别的【数据】。
+//
+// 改之前这里只 fmt.Errorf 一个串,调用方除了匹配字符串没有任何办法知道
+// "这一次是 404 订单已不存在"还是"真的撤不动"。撤单恰恰需要这个区分:
+// 404 ORDER_NOT_FOUND 意味着这张单已经不在盘口上了 —— 那正是撤单要的结果,
+// 不是失败。cancelAll 把两者一视同仁地计成 failed,于是"已经撤掉"被读成
+// "没撤掉",记成撤单欠账,pair 就再也不恢复报价。
+//
+// Error() 的格式与原先的 fmt.Errorf 逐字节一致 —— 日志输出不变。
+type gateHTTPError struct {
+	Status int
+	Method string
+	Path   string
+	Body   string
+}
+
+func (e *gateHTTPError) Error() string {
+	return fmt.Sprintf("gate %s %s -> %d: %s", e.Method, e.Path, e.Status, e.Body)
+}
+
+// cancelIsAlreadyGone 判定一次撤单失败是否等价于「这张单已经不在盘口上了」。
+//
+// 是的话,撤单的目标状态已经达成 —— 调用方必须按成功处理,否则"已经撤掉"会被
+// 读成"没撤掉",进而记成撤单欠账、把 pair 永久锁在停报价状态(2026-09-16 现场)。
+func cancelIsAlreadyGone(err error) bool {
+	var he *gateHTTPError
+	return errors.As(err, &he) && he.Status == http.StatusNotFound
+}
+
 // signedOnce 发一发签名请求,把 HTTP 状态码、Retry-After 和限流档位提示一并交回上层。
 // 原来的实现把状态码折进 error 字符串里,导致调用方无法区分"被限流"和"参数错" ——
 // 这正是 gate 这条腿此前没有任何 429 处理的直接原因。
@@ -208,7 +238,7 @@ func (e *GateExchange) signedOnce(method, path string, q url.Values, body []byte
 	)
 	if resp.StatusCode >= 300 {
 		return rb, resp.StatusCode, retryAfter, hint,
-			fmt.Errorf("gate %s %s -> %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(rb)))
+			&gateHTTPError{Status: resp.StatusCode, Method: method, Path: path, Body: strings.TrimSpace(string(rb))}
 	}
 	return rb, resp.StatusCode, retryAfter, hint, nil
 }
@@ -340,6 +370,19 @@ func (e *GateExchange) CancelOrder(symbol, orderID string) error {
 		}
 	}
 	_, err := e.signed(gateBudgetCancel, gateClassCritical, http.MethodDelete, "/spot/orders/"+orderID, url.Values{"currency_pair": {gateSym(symbol)}}, nil)
+	if err != nil {
+		// 404 ORDER_NOT_FOUND = 这张单已经不在盘口上了,撤单的目标状态已达成。
+		// 撤单是幂等的,"不存在"不是失败(本函数上方那句注释早就写了这半条,
+		// 只是错误一路裸传到了 cancelAll,被计成 failed → 撤单欠账 → 永久停报价)。
+		//
+		// 安全性:cancelAll 只撤它【刚刚】用同一个 symbol 从挂单档读到的 ID,
+		// 所以这里的 404 不可能是"symbol 传错导致撤错了别处",只可能是这张单
+		// 在"读挂单"与"撤单"之间成交或被撤了 —— 两种情况盘口都是干净的。
+		if cancelIsAlreadyGone(err) {
+			logger.Infof("[mm-gatews] cancel %s: 404 订单已不存在,视为撤单成功", orderID)
+			return nil
+		}
+	}
 	return err
 }
 

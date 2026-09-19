@@ -182,7 +182,7 @@ func (m *Manager) notifyTradeClosed(inst *StrategyInstance, symbol string, side 
 		return
 	}
 	if metrics != nil {
-		EnrichMetricsWithLeverage(metrics, getNumber(inst.Config["leverage"]))
+		EnrichMetricsWithLeverage(metrics, getNumber(inst.Config()["leverage"]))
 	}
 	notifier.NotifyTradeClosed(inst.OwnerID, inst.ID, inst.Name, inst.exchange.GetName(), symbol, side, qty, price, status, reason, metrics)
 }
@@ -199,7 +199,7 @@ func (m *Manager) NotifyExternalTradeClosed(ownerID uint, strategyID string, str
 		return
 	}
 	if metrics != nil && inst != nil {
-		EnrichMetricsWithLeverage(metrics, getNumber(inst.Config["leverage"]))
+		EnrichMetricsWithLeverage(metrics, getNumber(inst.Config()["leverage"]))
 	}
 	notifier.NotifyTradeClosed(ownerID, strategyID, strategyName, exchangeName, symbol, side, qty, price, status, reason, metrics)
 }

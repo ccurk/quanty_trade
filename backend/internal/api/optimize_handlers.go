@@ -86,17 +86,23 @@ type optimizeBinanceHoldBucket struct {
 // optimizeBinanceContext 是从币安 API 拉的真实账户成交诊断。
 // 远端 cron 拿这块数据就够做参数优化（不需要 IP 白名单）。
 type optimizeBinanceContext struct {
-	WindowHours      int                          `json:"window_hours"`
-	Balance          float64                      `json:"balance_usdt"`
-	AvailableBalance float64                      `json:"available_balance_usdt"`
-	OpenPositions    []optimizeOpenPosition       `json:"open_positions"`
-	IncomeTotals     map[string]float64           `json:"income_totals"` // type -> sum
-	IncomeCounts     map[string]int               `json:"income_counts"` // type -> n
-	BySymbol         []optimizeBinanceSymbolStats `json:"by_symbol"`     // realized pnl 排序
-	PairedTrades     optimizePairedSummary        `json:"paired_trades"` // 开-平 配对统计
-	HoldDistribution []optimizeBinanceHoldBucket  `json:"hold_distribution"`
-	FetchedAt        time.Time                    `json:"fetched_at"`
-	FetchError       string                       `json:"fetch_error,omitempty"`
+	WindowHours      int                    `json:"window_hours"`
+	Balance          float64                `json:"balance_usdt"`
+	AvailableBalance float64                `json:"available_balance_usdt"`
+	OpenPositions    []optimizeOpenPosition `json:"open_positions"`
+	IncomeTotals     map[string]float64     `json:"income_totals"` // type -> sum
+	IncomeCounts     map[string]int         `json:"income_counts"` // type -> n
+	// IncomeComplete=false 表示翻页没拉全（异常），上面两个 map 只覆盖了部分窗口，
+	// 不能当完整账用。正常路径恒为 true。
+	IncomeComplete bool                         `json:"income_complete"`
+	BySymbol       []optimizeBinanceSymbolStats `json:"by_symbol"`     // realized pnl 排序
+	PairedTrades   optimizePairedSummary        `json:"paired_trades"` // 开-平 配对统计
+	// UserTradesIncomplete=true 表示至少一个 symbol 的成交流水没拉全，上面 PairedTrades
+	// 只覆盖部分成交、pair_count 偏小。正常路径恒为 false。
+	UserTradesIncomplete bool                        `json:"user_trades_incomplete"`
+	HoldDistribution     []optimizeBinanceHoldBucket `json:"hold_distribution"`
+	FetchedAt            time.Time                   `json:"fetched_at"`
+	FetchError           string                      `json:"fetch_error,omitempty"`
 }
 
 type optimizeOpenPosition struct {
@@ -148,9 +154,12 @@ type optimizeContextResponse struct {
 	Account           optimizeAccountSnapshot `json:"account"`
 	TradesWindow      optimizeTradesSummary   `json:"trades_window"`
 	DailyPnL7d        []DailyPnLEntry         `json:"daily_pnl_7d"`
-	Binance           *optimizeBinanceContext `json:"binance,omitempty"`
-	WindowHours       int                     `json:"window_hours"`
-	GeneratedAt       time.Time               `json:"generated_at"`
+	// DailyPnL7d 的来源："binance" = 币安真账；"db" = 币安拉失败后退回的本地
+	// daily_pnls 表（会少记交易所侧平仓的亏损）。没有这个标记，下游 LLM 无法分辨。
+	DailyPnL7dSource string                  `json:"daily_pnl_7d_source"`
+	Binance          *optimizeBinanceContext `json:"binance,omitempty"`
+	WindowHours      int                     `json:"window_hours"`
+	GeneratedAt      time.Time               `json:"generated_at"`
 }
 
 // GetOptimizeContext returns the full context the cron-side LLM needs to
@@ -188,10 +197,24 @@ func GetOptimizeContext(c *gin.Context) {
 	}
 
 	// Trades in window
+	//
+	// closed_qty > 0 是必须的过滤，不是保险:台账 §1「DB StrategyPosition 行=空壳+重复」
+	// 记过，交易所侧平仓(TP/SL 触发/强平/手工平)拉不到 REALIZED_PNL 时，manager.go 只写
+	// status/amount/close_time，closed_qty 与 realized_pn_l 一个字不写 —— 它的 0 是
+	// "没查到"，不是"打平"。实测(2026-09-16)全史 2,976 行 closed 里 2,006 行是这种空壳。
+	//
+	// 少了这个过滤，下面 trades.Count++ 会把空壳计进分母，而 WinCount 只数 pnl>0
+	// (空壳 pnl=0，两边都不进)，于是 WinRatePct = WinCount/Count 被稀释约 3 倍:
+	// 真实 51.2%(496胜/472负) 会被算成 16.7%。by_symbol[].count 同样被撑大，
+	// 会让 R1 黑名单规则(net_pnl<-1 且 trade_count>=3)在从未真成交的 symbol 上误触发。
+	//
+	// 同一份诊断在 strategy_autotune.go:383 已经落地(那里用的是 Wins/(Wins+Losses)，
+	// 所以没被稀释) —— 这里补上同一道，口径与 dashboard_builder.go:129、
+	// modules_pnl.go:53、handlers.go:392 一致。
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
 	var positions []models.StrategyPosition
 	_ = database.DB.Where(
-		"owner_id = ? AND strategy_id = ? AND status = ? AND close_time >= ?",
+		"owner_id = ? AND strategy_id = ? AND status = ? AND closed_qty > 0 AND close_time >= ?",
 		row.OwnerID, strategyID, "closed", since,
 	).Find(&positions).Error
 
@@ -257,6 +280,7 @@ func GetOptimizeContext(c *gin.Context) {
 		Account:           acct,
 		TradesWindow:      trades,
 		DailyPnL7d:        loadDailyPnLCalendar(row.OwnerID, 7),
+		DailyPnL7dSource:  "db",
 		WindowHours:       hours,
 		GeneratedAt:       time.Now(),
 	}
@@ -275,8 +299,9 @@ func GetOptimizeContext(c *gin.Context) {
 		// 部分平仓累计逻辑等）。币安那边是 source of truth。
 		if resp.Binance != nil && strings.TrimSpace(resp.Binance.FetchError) == "" {
 			resp.TradesWindow = buildTradesWindowFromBinance(resp.Binance)
-			if daily := fetchBinanceDailyPnL(row.OwnerID, 7); len(daily) > 0 {
+			if daily, ok := fetchBinanceDailyPnL(row.OwnerID, 7); ok {
 				resp.DailyPnL7d = daily
+				resp.DailyPnL7dSource = "binance"
 			}
 		}
 	}
@@ -317,24 +342,30 @@ func buildTradesWindowFromBinance(b *optimizeBinanceContext) optimizeTradesSumma
 // fetchBinanceDailyPnL 从币安 income 接口按"日"聚合最近 N 天 PnL。
 // 替代 loadDailyPnLCalendar（那个从 DB 的 daily_pnls 表读，依赖 StrategyPosition 是否完整）。
 // 返回字段格式跟 DailyPnLEntry 兼容，前端/routine 无感知。
-func fetchBinanceDailyPnL(ownerID uint, days int) []DailyPnLEntry {
+// 返回值 ok=false 表示币安这条路没走通（拉失败 / 无数据 / 翻页没拉全）。调用方据此
+// 决定是否退回 DB 日历，并且**必须把来源标出来** —— 否则 LLM 分不清自己看的是交易所
+// 真账还是残缺的 DB 账（2026-09-16 实测：日历里出现过 `pnl=-1.07 而 trades=0`，而
+// fetchBinanceDailyPnL 里 pnl 非零必然 trades≥1，所以那几行铁定来自 DB 回退）。
+func fetchBinanceDailyPnL(ownerID uint, days int) ([]DailyPnLEntry, bool) {
 	if days <= 0 {
-		return nil
+		return nil, false
 	}
 	if stratMgr == nil || stratMgr.GetExchange() == nil {
-		return nil
+		return nil, false
 	}
 	bx, ok := stratMgr.GetExchange().(*exchange.BinanceExchange)
 	if !ok || bx.Market() != "usdm" {
-		return nil
+		return nil, false
 	}
 
 	// 拉 days+1 天的事件，最早一天可能被时区/边界裁掉，所以多拉 1 天兜底
 	now := time.Now()
 	since := now.AddDate(0, 0, -(days + 1))
-	events, err := bx.USDMIncomeHistory(ownerID, since, now, 1000)
-	if err != nil || len(events) == 0 {
-		return nil
+	// 8 天窗口实测 ~800 条，逼近 1000 上限 —— 必须翻页，否则拿到的是最早那批、
+	// 丢掉最近的（最该看的）成交。
+	events, complete, err := bx.USDMIncomeHistoryAll(ownerID, since, now, binanceLiveThrottle)
+	if err != nil || len(events) == 0 || !complete {
+		return nil, false
 	}
 
 	// 按本地 day 聚合
@@ -385,7 +416,7 @@ func fetchBinanceDailyPnL(ownerID uint, days int) []DailyPnLEntry {
 		}
 		out = append(out, entry)
 	}
-	return out
+	return out, true
 }
 
 // roundMoney2 给 PnL 字段限定 2 位小数，避免 float64 拖尾。
@@ -441,13 +472,17 @@ func fetchBinanceContext(ownerID uint, hours int) *optimizeBinanceContext {
 	}
 
 	// 3) 收益事件（REALIZED_PNL / COMMISSION / FUNDING_FEE）
+	//
+	// 必须翻页：单页 1000 条上限 + 币安按时间升序返回 ⇒ 窗口内事件 ≥1000 时拿到的是
+	// 最早那批，最近的成交被静默丢掉。窗口参数最大 720h，实测 240h 起就会触顶。
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
 	now := time.Now()
-	events, err := bx.USDMIncomeHistory(ownerID, since, now, 1000)
+	events, complete, err := bx.USDMIncomeHistoryAll(ownerID, since, now, binanceLiveThrottle)
 	if err != nil {
 		out.FetchError = "income: " + err.Error()
 		return out
 	}
+	out.IncomeComplete = complete
 	symbolSet := map[string]struct{}{}
 	symbolStats := map[string]*optimizeBinanceSymbolStats{}
 	for _, e := range events {
@@ -496,11 +531,21 @@ func fetchBinanceContext(ownerID uint, hours int) *optimizeBinanceContext {
 	}
 	allFills := map[string][]fillRow{}
 	var totalCommission float64
+	// userTradesIncomplete=true 表示至少一个 symbol 的流水没拉全（拉失败，或翻页到顶）。
+	// 此时配对统计只覆盖部分成交、pair_count 偏小 —— 必须显式标出来。否则「拉失败」和
+	// 「真的没交易」在输出上完全一样：2026-09-16 实测 hours=168 得 pair_count=246，
+	// hours=336 得 pair_count=0（且 net_pnl 恰好等于 FUNDING_FEE，证明一条都没进来）。
+	// 根因是 /fapi/v1/userTrades 跨度不能超过 7 天，而这里过去直接传了 >7 天的窗口。
+	var userTradesIncomplete bool
 	for sym := range symbolSet {
-		trades, err := bx.USDMUserTrades(ownerID, sym, since, now, 1000)
+		trades, complete, err := bx.USDMUserTradesAll(ownerID, sym, since, now, binanceLiveThrottle)
 		if err != nil {
-			// 单 symbol 失败不影响整体（很可能是参数受限，例如 symbol 已下线）
+			// 单 symbol 失败不影响整体（很可能 symbol 已下线），但账不完整要说出来。
+			userTradesIncomplete = true
 			continue
+		}
+		if !complete {
+			userTradesIncomplete = true
 		}
 		for _, t := range trades {
 			c := math.Abs(t.Commission)
@@ -600,6 +645,7 @@ func fetchBinanceContext(ownerID uint, hours int) *optimizeBinanceContext {
 	if shortCnt > 0 {
 		p.ShortWinRatePct = float64(shortWin) / float64(shortCnt) * 100
 	}
+	out.UserTradesIncomplete = userTradesIncomplete
 
 	// 5) 持仓时长分布：按 symbol 跟踪净持仓 qty。position 从 0 离开记开仓时刻，
 	//    回到 0 或反向穿越 0 记一段完整持仓，用该平仓 fill 的 realizedPnl 判定输赢。

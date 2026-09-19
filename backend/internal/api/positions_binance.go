@@ -40,9 +40,14 @@ func closedPositionsFromBinance(uid uint, hours int) ([]exchange.Position, strin
 	since := now.Add(-time.Duration(hours) * time.Hour)
 
 	// 1. 先用 income 锁定 24h 内有过平仓的 symbol（比直接遍历所有 symbol 快得多）
-	events, err := bx.USDMIncomeHistory(uid, since, now, 1000)
+	//    必须翻页：单页 1000 条上限 + 币安按时间升序返回 ⇒ 事件 ≥1000 时拿到的是最早
+	//    那批，最近的平仓被丢掉，symbolSet 漏币，下面的已平仓列表就凭空少掉最近的单子。
+	events, complete, err := bx.USDMIncomeHistoryAll(uid, since, now, binanceLiveThrottle)
 	if err != nil {
 		return nil, "income: " + err.Error()
+	}
+	if !complete {
+		return nil, "income: incomplete (paging hit its page cap)"
 	}
 	symbolSet := map[string]struct{}{}
 	for _, e := range events {

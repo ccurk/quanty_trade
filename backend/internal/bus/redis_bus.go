@@ -78,6 +78,13 @@ type SignalMessage struct {
 	Amount      float64   `json:"amount"`
 	TakeProfit  float64   `json:"take_profit"`
 	StopLoss    float64   `json:"stop_loss"`
+	// Price 是【信号生成那一刻策略用的评估价】(v40 里是当根 K 线收盘价 P)。
+	// 策略的 tp/sl 是相对 P 算出来的绝对价,锚在 P 上、不随成交漂 ⇒ 市价单成交价一偏离
+	// P,两段距离就同向缩水(实测四笔真实开仓:成交价高出评估价 +0.0978%/+0.2210%/
+	// +0.0930%/−0.0107%,设计 1.25:1 落到实盘变成 0.44~1.29:1)。Go 用它把 tp/sl 的
+	// 【相对距离】原样搬到实际成交价上,见 strategy.reanchorTPSLToFill。
+	// 0 = 该策略没发这个字段,此时不重锚(与引入本字段之前的行为完全一致)。
+	Price       float64   `json:"price"`
 	AtrAbs      float64   `json:"atr_abs"`    // absolute ATR at signal time, for exit engineering (breakeven/trailing); 0 if strategy omits it
 	Confidence  float64   `json:"confidence"` // strategy-reported signal confidence in [0,1]; 0 if strategy omits it
 	SignalID    string    `json:"signal_id"`

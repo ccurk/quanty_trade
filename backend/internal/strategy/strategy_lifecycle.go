@@ -165,7 +165,7 @@ func (m *Manager) startStrategyNow(id string) error {
 	m.attachUserDataStream(inst)
 	_ = m.attachMarketData(inst, plan.redisBus, plan.feedSymbols, plan.runCfg)
 	maxPos := 1
-	if v := int(getNumber(inst.Config["max_concurrent_positions"])); v > 0 {
+	if v := int(getNumber(inst.Config()["max_concurrent_positions"])); v > 0 {
 		maxPos = v
 	}
 	emitStrategyLog(inst, "info", fmt.Sprintf("策略启动完成：max_concurrent_positions=%d symbols=%v", maxPos, plan.feedSymbols))
@@ -251,9 +251,9 @@ func (m *Manager) validateStrategyCanStop(inst *StrategyInstance) error {
 	if !ok || bx.Market() != "usdm" {
 		return nil
 	}
-	syms := parseSymbolsValue(inst.Config["symbols"])
+	syms := parseSymbolsValue(inst.Config()["symbols"])
 	if len(syms) == 0 {
-		if sym, ok := inst.Config["symbol"].(string); ok && strings.TrimSpace(sym) != "" {
+		if sym, ok := inst.Config()["symbol"].(string); ok && strings.TrimSpace(sym) != "" {
 			syms = []string{strings.TrimSpace(sym)}
 		}
 	}

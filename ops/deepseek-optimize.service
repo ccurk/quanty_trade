@@ -1,0 +1,19 @@
+[Unit]
+Description=DeepSeek 策略参数优化器（默认 dry-run：只出建议，不改配置）
+Documentation=file:/root/work/quanty_trade/ops/deepseek_optimize.py
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 窗口必须撑得起最小样本量：脚本内 MIN_TRADES=30，实测开仓约 16 单/小时，
+# 6h ≈ 96 笔。窗口开太小脚本会自己跳过（这是设计，不是故障）。
+Environment=QT_WINDOW_HOURS=6
+Environment=QT_MODEL=deepseek-v4-pro
+# ↓ 没有 --apply 就是 dry-run。要真落配置才在这里追加 --apply，且必须清楚：
+#   config 改动需要 stop+start 才生效（实测滞后可达 9h07m），
+#   而 stop 要求先平掉全部持仓 —— 自动化路径无法保证这一点。
+ExecStart=/usr/bin/python3 /root/work/quanty_trade/ops/deepseek_optimize.py
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300

@@ -55,25 +55,25 @@ func (m *Manager) prunePyramidCounters(watched map[string]struct{}) {
 // maybePyramid 在 5s 守护的逐仓循环里被调用（决策与执行同路径，不走 WS 快扫，
 // 加仓不需要亚秒级）。
 func (m *Manager) maybePyramid(inst *StrategyInstance, uid uint, row models.StrategyPosition, pos exchange.Position, side string, currentPrice float64) {
-	if inst == nil || !getBool(inst.Config["pyramid_enabled"]) {
+	if inst == nil || !getBool(inst.Config()["pyramid_enabled"]) {
 		return
 	}
 	roi := pos.ReturnRate
 	if roi <= 0 {
 		return // 硬规则：亏损仓永不加仓（马丁禁区），先于一切配置判断
 	}
-	trigger := getNumber(inst.Config["pyramid_trigger_roi"])
+	trigger := getNumber(inst.Config()["pyramid_trigger_roi"])
 	if trigger <= 0 {
 		trigger = pyramidDefaultTriggerROI
 	}
 	if roi < trigger {
 		return
 	}
-	maxAdds := int(getNumber(inst.Config["pyramid_max_adds"]))
+	maxAdds := int(getNumber(inst.Config()["pyramid_max_adds"]))
 	if maxAdds <= 0 {
 		maxAdds = pyramidDefaultMaxAdds
 	}
-	frac := getNumber(inst.Config["pyramid_add_frac"])
+	frac := getNumber(inst.Config()["pyramid_add_frac"])
 	if frac <= 0 || frac > 1 {
 		frac = pyramidDefaultAddFrac
 	}
