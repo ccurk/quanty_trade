@@ -1,0 +1,51 @@
+{
+  "_note": "极小额首测配置。observe_only:true=只观测不下单(安全)。改成 false + 重启后端才真实做市。",
+  "enabled": true,
+  "observe_only": false,
+  "feed": "binance",
+  "exec": [
+    {
+      "name": "gate",
+      "ws_trade": true
+    }
+  ],
+  "pairs": [
+    {
+      "feed_symbol": "SOLUSDT",
+      "exec": "gate",
+      "exec_symbol": "SOL_USDT",
+      "spread_bps": 10,
+      "order_qty": 0.05,
+      "max_position": 0.1,
+      "refresh_ms": 1000
+    },
+    {
+      "feed_symbol": "PORTALUSDT",
+      "exec": "gate",
+      "exec_symbol": "PORTAL_USDT",
+      "spread_bps": 15,
+      "order_qty": 220,
+      "max_position": 220.0,
+      "refresh_ms": 1000
+    },
+    {
+      "feed_symbol": "MOVEUSDT",
+      "exec": "gate",
+      "exec_symbol": "MOVE_USDT",
+      "spread_bps": 15,
+      "order_qty": 450,
+      "max_position": 450.0,
+      "refresh_ms": 1000
+    },
+    {
+      "feed_symbol": "ONGUSDT",
+      "exec": "gate",
+      "exec_symbol": "ONG_USDT",
+      "spread_bps": 15,
+      "order_qty": 48,
+      "max_position": 48.0,
+      "refresh_ms": 1000
+    }
+  ],
+  "max_daily_loss_usd": 3
+}

@@ -1,0 +1,52 @@
+{
+  "_note": "极小额首测配置。observe_only:true=只观测不下单(安全)。改成 false + 重启后端才真实做市。",
+  "_stopped_2026_09_09": "gate 现货做市整条停止。enabled=false → marketmaker.Start() 在 engine.go:27 直接 return (nil,nil) 并打 `[mm] disabled (config)`,四个 pair 一张单都不挂、一次 gate 请求都不发。pairs 数组原样保留只作存档,不生效。理由:老徐 949,534 条 mm-observe + 66,083 张真实挂单实测,八条腿 30s markout 扣 20bps/腿后全负;保本 maker 费只有 4.5~15.5bps/腿而 gate 现货是 20 —— 悲观口径下费率为零也亏(台账 #7/待办 #2)。回滚:把 marketmaker.rollback-to-live-2026-09-09.json 拷回本文件名再 docker restart quanty-backend。复活前置条件:待办 #6 抄回的 gate 账号级现货 maker 费 <= 4bps。",
+  "enabled": false,
+  "observe_only": false,
+  "feed": "binance",
+  "exec": [
+    {
+      "name": "gate",
+      "ws_trade": true
+    }
+  ],
+  "pairs": [
+    {
+      "feed_symbol": "SOLUSDT",
+      "exec": "gate",
+      "exec_symbol": "SOL_USDT",
+      "spread_bps": 10,
+      "order_qty": 0.05,
+      "max_position": 0.2,
+      "refresh_ms": 1000
+    },
+    {
+      "feed_symbol": "PORTALUSDT",
+      "exec": "gate",
+      "exec_symbol": "PORTAL_USDT",
+      "spread_bps": 15,
+      "order_qty": 220,
+      "max_position": 440,
+      "refresh_ms": 1000
+    },
+    {
+      "feed_symbol": "MOVEUSDT",
+      "exec": "gate",
+      "exec_symbol": "MOVE_USDT",
+      "spread_bps": 15,
+      "order_qty": 450,
+      "max_position": 900,
+      "refresh_ms": 1000
+    },
+    {
+      "feed_symbol": "ONGUSDT",
+      "exec": "gate",
+      "exec_symbol": "ONG_USDT",
+      "spread_bps": 15,
+      "order_qty": 48,
+      "max_position": 96,
+      "refresh_ms": 1000
+    }
+  ],
+  "max_daily_loss_usd": 3
+}

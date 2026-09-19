@@ -5,3 +5,11 @@ logs/
 .env.*
 !.env.example
 conf/marketmaker.json
+
+# ops 运行时状态与备份：源码入库，状态不入库
+# (.qt_breaker.state.json 记 last_trip_ts/last_lock_until，入库会让"回滚代码"顺带回滚熔断状态)
+ops/__pycache__/
+ops/.qt_breaker.state.json
+ops/.qt_breaker.state.json.preverify
+ops/*.bak-*
+ops/*.bak

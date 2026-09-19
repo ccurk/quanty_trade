@@ -1,0 +1,17 @@
+# 再平衡起步配置(我建来验证余额拉取用;band 数值/资产请你按实际调整)。
+# recommend + dryRun = 只监控+给建议, 绝不执行提现。
+enable: false
+execExchange: gate
+reservoirExchange: binance
+dryRun: true
+mode: recommend
+cooldownMinutes: 30
+maxPerTransferUsdt: 2000
+maxPerDayUsdt: 5000
+assets:
+  - asset: USDT
+    network: TRC20
+    opt: 1000
+    min: 500
+    max: 1500
+    minTransfer: 50
