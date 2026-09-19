@@ -1,0 +1,78 @@
+{
+ "archived_at": "2026-09-19T18:27:35Z",
+ "note": "main _exp_cc 全文归档(14:3x-17:2x 读数/h0919g-h-i/deploy_1702/cc33/prev_seg_300/watch_ds 原文); 由 18:2x 轮封段时折出",
+ "_exp_cc": {
+  "action": "EVAL v40 @14:3xZ: main 代码被换为 Meme_v40_crypto_perp_20260919-133457(tpl1057, hash 13e56f4c; 13:34:57Z 建模板, 13:42:49/14:04:47/14:11:22 三次 apply 重启, 零 audit, 疑 DS 作/owner 委托 07:2x'我让 deepseek 在做,一会你检查一下'); S 谱系 0 锚点(S4..S33 全无, _init_symbol_state/_purge_idle_symbols 无); Python 侧 symbol_blacklist 过滤消失 + 部署版 Go 无下单口黑名单闸('跳过开仓:交易对在黑名单' 日志史 0) ⇒ 隔离币 USELESS 14:11:49/LSK 14:23:02 实开(硬边界#9 破) → ROUTE rotate remove bl∩feed 32(LSK has_open_position 拒, 下轮补); 未回滚(非紧急: 腿 6/6, 敞口在界, 429 静), 候 owner 认领+拍板",
+  "carry": "11:4x-13:2x OBS/ROUTE 全文=ops/exp_archive/exp_cc_20260919T1326Z.json; 更早指针见该文件 carry 字段",
+  "cc33": "Go 排序 rr=(tp-px)/(px-sl)=1.25 恒定(v40 tp=1.25×sl) ⇒ score 全同, 置信度不参与槽位分配; 候 v40 EVAL 封段后作为下一档(tp 倍率随 conf 或每批 top-k)预注册 ‖ @16:3x 部署后排序=score=rr(×1.25 若上一笔盈利), rr 仍恒 1.25 ⇒ 非'上一笔盈利'币之间仍平局(兜底按 symbol 名=确定性但与 conf 无关) ⇒ CC-33 仍成立, 候 EVAL 封段",
+  "deploy_1702": "17:01:58Z 两实例再重启=owner 部署 fd01fae..f0f8a62(author black; 谱系=claude/hopeful-lamport-k1ytj4): ①S42 真实 PnL 连亏熔断 strategy_loss_streak.go: 某 symbol 最近连续 ≥threshold(3) 笔真实平仓亏损且末笔在 48h 内 ⇒ 开仓侧三闸(信号闸/下单口/收养闸)拒开; 无状态不落库不写 symbol_blacklist; 16:47:02 admin 两实例同秒 PATCH loss_streak_*(enabled/3/48)=owner 归属; 日志已见 '跳过信号：交易对连亏熔断中 symbol=APT/USDT 连亏=3 隔离至 2026-09-21T06:35:25Z' ②历史预热限流 f0f8a62(manager.go)=CC-23 局部根修: 重启后 429 仅 1 vs 16:04 重启首 12min 洪峰 ③日志清理(WS 链路逐 symbol 流水静音). 重启重播种 300 含 bl 31 → 17:2x rotate remove 31 复读 feed 269 bl∩feed=∅ ∩majors=∅",
+  "eval_after": "2026-09-20T02:00:00Z 或 n≥30 先到",
+  "expect": "n≥30: 费后均净≥0 ∧ wr≥60% ∧ 隔离币成交=0(rotate 后) ∧ 429 不升",
+  "h0919g": "隔离执行链断裂: 黑名单唯一有效层曾是 tpl998 Python 过滤('黑名单拦截' 日志 09-16); Go 下单口闸(strategy_position.go:72, 仓库 8669ea1@09-08)部署版无; symbols \"\" ⇒ 每次重启重播种 300 含 bl 币 ⇒ 每次 apply/重启后须 rotate; 根修=①v40 读 symbol_blacklist ②部署含闸后端 ③owner 显式 symbols 列表",
+  "h0919h": "LSK SL 腿在触发前消失(-2011); 假说=STOP_MARKET priceProtect=TRUE(binance.go:2730) 触发时 mark/last 偏离超阈→EXPIRED; 今日'止损失效' 8 例; 证据待 owner 查 algo 历史",
+  "h0919i": "两闸口径不一致+批次竞态(源码+实证, 修正 17:26 初稿'超配 mcp'): 信号闸 strategy_signal.go:614-680 的 openCount=本策略 DB open+2min pending+交易所 FetchPositions 经 isAllowedSymbol(symbols \"\"⇒恒 true ⇒ 计入 majors ETH); 下单口闸 strategy_position.go:150-268 只数本策略 DB open+pending+Redis AcquireOpenSlot(inst.ID,maxPos) ⇒ 不含 majors. processSignalBatch 由首信号后 500ms goroutine 触发(manager.go:1118)无每实例串行锁 ⇒ 17:18:00 两批: BCH '已预留 3/3'(17:18:01) 与 WLD '已占用 3/3'(17:18:02) 同底数 2(COTI+ETH), WLD 批快照未见 BCH ⇒ 信号闸被竞态绕过, 下单口闸按本策略 3/3 放行 ⇒ 交易所 4 仓=main 3(COTI/BCH/WLD)+majors ETH, main 自身=mcp3 未超. 结论: main 平时有效并发=mcp−majors 持仓数(CC-30), 仅在批次竞态时拿满 mcp; WLD 17:23 SL 腿 −0.48 仅 income(DB 行未生成). 修(低优先, 候 owner): 信号闸改为只数本策略仓(与下单口一致) 或 main 写显式 symbols 列表(重启键) 或 mcp 回 owner 10; 批次串行化非必需(下单口 Redis 槽已兜底)",
+  "hypothesis": "v40 三论据论证: ①'funding/ls 是常量' 不成立—backend strategy_dataflow.go:479-480 把 bx.FundingRate/LSRatio(binance.go:1031/1038, premiumIndex+globalLongShortAccountRatio) 注入 candle extra, tpl998 :1743-1744 读 extra 非 config(作者查错了地方) ②tpl998 无外部行情调用 属实但数据由 Go 供 ③LONG_BIAS_FACTOR 1.15/SHORT_RESTRICTION_FACTOR 0.7/MIN_SHORT_CONFIDENCE 0.68 在 tpl998 grep 0 命中=不存在; 48h DB 多 n187 −0.109/笔 vs 空 n127 −0.120/笔 ⇒ 无多头偏置证据 ⇒ 重写动机 2/3 不成立. 实际差异=成本闸(1.25×ATR14≥0.2% ⇔ ATR≥0.16%, 替代 min_atr_pct 0.5)+括号 sl=2×ATR14(1m) tp=1.25×sl(实测 SL 0.33-0.63% TP 0.27-0.79%, 盈亏平衡 wr≈sl/(sl+tp)+费≈67%)+外部 OI/LS/taker 因子+无 S18-S22 veto/无 S31 regime/无黑名单/无 min_atr/max_atr/volume_ratio/breadth 门",
+  "last_round": "2026-09-19T17:26:00Z",
+  "metric": "段(open≥2026-09-19T14:11:22Z, main): n ‖ 毛/费后均净 ‖ wr ‖ SL 距中位 ‖ hold<5m 亏单占比 ‖ 笔/日 ‖ Rate limited/h ‖ tpsl_setup_failed ‖ 隔离币成交数",
+  "metric_note": "n/净 以 DB closed ∪ income by_symbol 计(DB 行懒生成会丢交易所腿平仓行: ENA 14:20/ZAMA 11:1x 仅 income 有)",
+  "namespace_note": "_exp 归 DeepSeek(未改); _exp_cc/_standby_cc/_ai_task_cc 归 claude_cron",
+  "owner": "claude_cron",
+  "owner_no_autocut": "owner 直令 09-18 13:15:56Z: CC 不得自动降 pct/lev/mcp/sides; 保留 TG 报警(6h≥8%/24h≥20%)+24h≥30% TG🆘+avail<1U cancel-orders",
+  "prev_seg_300": "OBS 300 池/tpl998 段(11:08:43→14:11:22) 封段(被 v40 换码, n14<30 未公平检验): 毛 −2.34 wr43% 多 9/−3.32 空 5/+0.98; 死法 SL<5m 3/−2.17, SL 5-43m 2/−3.66, 45m 超时 3/−3.12, 赢 6/+6.60; hold<5m 亏单 3/8; 费后≈−3.4(−0.25/笔); worsen 未触; 全文=quanty-ledger ops/exp_archive/exp_cc_20260919T1326Z.json",
+  "reads_1720": "v40 段(14:11 起; DB 现已补齐此前 income-only 行) n28 毛 −1.90 wr57% 多 20/−2.89 空 8/+0.99; 死法 SL<2m 0, SL2-5m 3/−1.82, SL5-44m 9/−6.81, 45m 超时 2/+0.28(MITO/XMR 微盈), 赢 16/+6.72; 费≈−2.1(3h income 0.076/笔) ⇒ 费后≈−4.0(−0.14/笔); 最大失血 LSK −1.52(隔离币, 已 rotate)/RONIN −1.12/IOST −0.97; 腿: 16:28 后 opens 8/8✓ 锚到成交价 8/8(滑点 |≤0.05%|); 429 重启后 1(17:16 守护跳过) tpsl_setup_failed 0; 止损失效 0 新例; 成交 conf n59 0.45-1.0 中位 0.82; 重启后 n10 中位 1.00 mult 全 1.0; worsen 未触(−1.90>−4, wr57%, 裸奔 0, rotate 后隔离币成交 0); n28<30 未封段; 预判: expect(费后≥0∧wr≥60%) 现 −0.14/笔·57% ⇒ 若 n=30 仍未达=不达标但非劣化(优于前段 tpl998 300 池 −0.25/笔 wr43% 与 24h −0.144/笔 wr44%) → 呈 owner 拍板 CC-32 A/B, 不自动 rollback(owner 委托代码; 段被 lev5→4/mcp3/5 次重启/loss_streak 污染)",
+  "reads_prior": "14:30/15:30/16:30 读数+16:04 部署条全文=quanty-ledger ops/exp_archive/exp_cc_20260919T1720Z.json",
+  "rollback": "POST /api/strategies/8eb182b6/rollback → tpl998(hash 3e311e8b; 归档 confident-fermi strategies/quicktrade-8eb182b6/tpl998.py) + 空仓窗优先 + 复核 bl∩feed=∅ ∧ 6 符号",
+  "status": "open",
+  "ts": "2026-09-19T14:31:29Z",
+  "watch_ds": {
+   "breakeven_trigger_atr": {
+    "status": "现值 0(关); owner 第一波直令 trailing/BE 关"
+   },
+   "hunger_stop_loss_pct": {
+    "status": "closed@11:06Z: hunger_mode_enabled=false(admin 批=owner 归属), 刀退场; 0.04 键值仍在但无效"
+   },
+   "leverage": {
+    "actor": "admin optimizer 16:09:14Z(裸改, 无 _exp 登记; owner 值 10; 史 10→5 10:09 closed-verdict 不执行)",
+    "eval_after": "2026-09-19T22:00:00Z 或 n≥10 先到",
+    "line": "post 段(open≥2026-09-19T16:09Z, main, DB∪income) n≥10: 段净≤−4U ∨ 费后均净劣于 v40 前段 −0.19/笔 → DS-ROLLBACK 5 + TG(不回 10: RECOVER 门关 6h/24h 双负)",
+    "new": 4,
+    "old": 5,
+    "prior_5": "10→5 10:09 线破(形式)不执行, 全文 ops/exp_archive/exp_cc_20260919T1326Z.json",
+    "status": "@17:2x post 段(open≥16:09Z) n8 毛 +0.63 wr62% 费后≈+0.0/笔(未劣于 −0.19); n<10 未到期; open; 不硬抢(降敞口不问); 与 v40 EVAL 段重叠=读数污染已标注; 单笔 SL 亏=名义×ATR 距, lev4 名义≈66U(4→5 差 20%)",
+    "ts": "2026-09-19T16:09:14Z"
+   },
+   "loss_streak_1647": {
+    "actor": "admin 16:47:02Z main+majors 同秒",
+    "new": "loss_streak_blacklist_enabled=true/threshold=3/quarantine_hours=48",
+    "status": "=owner 部署 fd01fae 自带直令('连续 3 次亏损直接拉黑 48h')同批 ⇒ owner 归属, 合规(隔离类, 降敞口不问), 不评判; 观察=频率影响(APT 已隔离; 源码注释称 16:37Z Meme 数据 13 币命中)"
+   },
+   "majors_bl_1623": {
+    "actor": "admin 16:23:48Z majors",
+    "change": "symbol_blacklist [] → [BNB/USDT,SOL/USDT,XRP/USDT] ⇒ majors 有效池=BTC/ETH",
+    "status": "合规(缩池); 归属候认领(owner/DS); 对 main 无撞车(main bl 含 SOL/XRP/BNB; feed∩majors=∅)"
+   },
+   "max_concurrent_positions": {
+    "actor": "admin breaker 09:37(未声明, 协议7#3 第 7 次; owner 令 10)",
+    "new": 3,
+    "old": 6,
+    "status": "绑定; v40 信号洪流下 14:11-14:20 跳过 96 次/9min=频率上限=mcp3; 不硬抢; owner 一字令候(3 留至 REST 预算部署 / 5 试探 / 10)",
+    "ts": "2026-09-19T09:37:15Z"
+   },
+   "order_amount_pct": {
+    "status": "0.125=DS 07:08 砍(owner 值 0.25), lock-1789810634 冻结至 09-20 09:37Z; 不硬抢"
+   },
+   "symbol_blacklist_1620": {
+    "actor": "admin 16:20:15Z",
+    "change": "+BNB/USDT (45→46)",
+    "status": "合规(隔离/防撞 majors); 归属候认领(owner live 会话?); BTC/ETH 未加=靠 strategy_signal.go 组内互斥兜底"
+   },
+   "symbol_reentry_cooldown_minutes": {
+    "actor": "admin 15:36:18Z main+majors",
+    "new": 0,
+    "old": "3(main)/15(majors)",
+    "status": "=owner 直令('不再冷却', e07f3d7 提交正文自述) 非 DS; Go 热键 strategy_signal.go:264; 不评判"
+   }
+  },
+  "worsen": "段净≤−4U ∨ (n≥10∧wr<45%) ∨ 429→tpsl_setup_failed 裸奔≥2 ∨ rotate 后隔离币再成交 → TG + ROLLBACK→tpl998"
+ }
+}
