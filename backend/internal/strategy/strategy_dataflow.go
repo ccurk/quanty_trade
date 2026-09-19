@@ -169,15 +169,18 @@ func (m *Manager) attachMarketData(inst *StrategyInstance, redisBus *bus.RedisBu
 		runCfg["symbol"] = symbols[0]
 	}
 
-	emitStrategyLog(inst, "info", fmt.Sprintf("Dataflow candles: exchange->redis ch=%s", redisBus.CandleChannel(inst.ID)))
-
 	go func(syms []string) {
 		time.Sleep(20 * time.Second)
+		// 汇总成一行：逐个 symbol 打「还没收到首根闭合K线」在 Meme(~300 币) 上
+		// 24h 能刷 2213 行，而它要表达的只有「喂价链路是否通了」这一件事。
+		waiting := 0
 		for _, s := range syms {
-			n, reason := candleWaitReason(inst, s)
-			if n == 0 {
-				emitStrategyLog(inst, "info", fmt.Sprintf("Waiting first closed kline symbol=%s reason=%s", s, reason))
+			if n, _ := candleWaitReason(inst, s); n == 0 {
+				waiting++
 			}
+		}
+		if waiting > 0 {
+			emitStrategyLog(inst, "info", fmt.Sprintf("等待首根闭合K线 symbol数=%d/%d", waiting, len(syms)))
 		}
 	}(append([]string(nil), symbols...))
 
@@ -202,7 +205,6 @@ func (m *Manager) subscribeOneSymbol(inst *StrategyInstance, redisBus *bus.Redis
 		if startDelay > 0 {
 			time.Sleep(startDelay)
 		}
-		emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles start symbol=%s (after %s stagger)", sym, startDelay))
 		pollCtx, pollCancel := context.WithCancel(context.Background())
 		go m.latestClosedCandleFallbackLoop(pollCtx, inst, redisBus, sym)
 
@@ -278,7 +280,6 @@ func (m *Manager) subscribeOneSymbol(inst *StrategyInstance, redisBus *bus.Redis
 		}
 		subscribeStop = ws
 		stopMu.Unlock()
-		emitStrategyLog(inst, "info", fmt.Sprintf("SubscribeCandles ok symbol=%s", sym))
 	}()
 }
 
@@ -428,7 +429,6 @@ func (m *Manager) latestClosedCandleFallbackLoop(ctx context.Context, inst *Stra
 		if !lastClosedAt.IsZero() && !candle.Timestamp.After(lastClosedAt) {
 			continue
 		}
-		emitStrategyLog(inst, "info", fmt.Sprintf("Fallback latest closed kline symbol=%s ts=%s close=%v reason=%s", sym, candle.Timestamp.Format(time.RFC3339), candle.Close, reason))
 		m.onExchangeCandle(inst, redisBus, sym, candle)
 	}
 }
@@ -457,11 +457,7 @@ func (m *Manager) onExchangeCandle(inst *StrategyInstance, redisBus *bus.RedisBu
 	inst.lastCandleClose[sym] = candle.Close
 	inst.lastCandleAt[sym] = candle.Timestamp
 	inst.lastCandleSeenAt[sym] = time.Now()
-	rxN := inst.candleRxCount[sym]
 	inst.mu.Unlock()
-	if rxN == 1 {
-		emitStrategyLog(inst, "info", fmt.Sprintf("Exchange candle first symbol=%s ts=%s close=%v", sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
-	}
 
 	payload := map[string]interface{}{
 		"symbol":    sym,
@@ -502,9 +498,6 @@ func (m *Manager) onExchangeCandle(inst *StrategyInstance, redisBus *bus.RedisBu
 		inst.candlePubCount[sym]++
 		pubN := inst.candlePubCount[sym]
 		inst.mu.Unlock()
-		if pubN == 1 {
-			emitStrategyLog(inst, "info", fmt.Sprintf("Redis publish candle first ch=%s symbol=%s ts=%s close=%v", redisBus.CandleChannel(inst.ID), sym, candle.Timestamp.Format(time.RFC3339), candle.Close))
-		}
 		logRedis := getBool(inst.Config()["log_redis"])
 		logEvery := int(getNumber(inst.Config()["log_candle_every"]))
 		if logEvery <= 0 {
@@ -544,10 +537,9 @@ func (m *Manager) onCandleStreamEvent(inst *StrategyInstance, sym string, event 
 	inst.candleEventAt[sym] = time.Now()
 	inst.mu.Unlock()
 	switch event {
-	case "dialing":
-		emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS dialing symbol=%s url=%s", sym, detail))
-	case "connected":
-		emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS connected symbol=%s url=%s", sym, detail))
+	// dialing / connected / rx_*_first 是每个 symbol 每次订阅/重连都刷一遍的链路
+	// 流水（Meme ~300 币，24h 合计上万行），不是关键步骤 —— 不落库。
+	// 链路是否真的通了由「等待首根闭合K线 symbol数=N/M」那一行汇总表达。
 	// WS 重连类事件（connect_failed / disconnected / silent_disconnect）都有指数退避
 	// 自愈，属于可恢复的运维 churn，记 warn 不告警，避免刷爆 Lark 群。
 	// 真正可操作的故障（unmarshal=数据格式变了；unknown=代码缺口）才保留 error。
@@ -557,12 +549,6 @@ func (m *Manager) onCandleStreamEvent(inst *StrategyInstance, sym string, event 
 		emitStrategyLog(inst, "warn", fmt.Sprintf("Binance WS disconnected symbol=%s url=%s err=%v", sym, detail, err))
 	case "silent_disconnect":
 		emitStrategyLog(inst, "warn", fmt.Sprintf("Binance WS silent disconnect symbol=%s %s（退避重连中，自愈）", sym, detail))
-	case "rx_raw_first":
-		emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS recv first raw symbol=%s %s", sym, detail))
-	case "rx_first":
-		emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS recv first kline symbol=%s %s", sym, detail))
-	case "rx_first_closed":
-		emitStrategyLog(inst, "info", fmt.Sprintf("Binance WS recv first closed kline symbol=%s %s", sym, detail))
 	case "unmarshal_failed":
 		emitStrategyLog(inst, "error", fmt.Sprintf("Binance WS unmarshal failed symbol=%s err=%s", sym, detail))
 	default:
