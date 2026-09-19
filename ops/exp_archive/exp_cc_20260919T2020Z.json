@@ -1,0 +1,47 @@
+{
+ "action": "EVAL v40(tpl1057 hash deb8795a, owner 委托代码 13:42 起) 封段@18:2x: expect 未达(费后 −0.17/笔<0, wr51%<60%) ∧ worsen 未触 ⇒ 按预注册呈 owner A/B; 本轮 0 交易键改动; ROUTE rotate remove 32(17:33 无 audit 重启重播种)",
+ "carry": "18:2x 全文(reads_1820/restarts_1727_1733)=ops/exp_archive/exp_cc_20260919T1920Z.json; 14:3x-17:2x=exp_cc_20260919T1820Z.json; 更早=exp_cc_20260919T1326Z.json",
+ "cc33": "槽位分配丢弃置信度(rr 恒 1.25) → v40 下一档候选(tp 倍率随 conf / 每批 top-k by conf); 预注册门=owner 拍板 A 后单独 _exp_cc",
+ "eval_after": "seg2: 2026-09-20T02:00:00Z 或 n≥30 或 owner 拍板 先到",
+ "expect": "n≥30: 费后均净≥0 ∧ wr≥60% ∧ 隔离币成交=0(rotate 后) ∧ 429 不升",
+ "hypothesis": "v40 三论据论证(2/3 不成立)+实际差异(成本闸/2×ATR 括号/外部因子/无 veto·regime·黑名单) 全文=ops/exp_archive/exp_cc_20260919T1820Z.json",
+ "last_round": "2026-09-19T19:24:17Z",
+ "metric": "段(open≥2026-09-19T14:11:22Z, main): n ‖ 毛/费后均净 ‖ wr ‖ SL 距中位 ‖ hold<5m 亏单占比 ‖ 笔/日 ‖ Rate limited/h ‖ tpsl_setup_failed ‖ 隔离币成交数",
+ "owner": "claude_cron",
+ "reads_1920": "seg2(open≥18:20Z, DB) n5 毛 −1.24 wr20% 全多头(SUPER +0.37/ETC −0.22/ZIL 1.3m −0.77/AVAX −0.37/PUMP −0.26) hold 中位 5.4m; 在飞 BB 空/VVV 空/TURBO 空/VTHO 多; worsen 未触(n<10 ∧ 净>−4); v40 全段(open≥14:11:22Z) n43 毛 −5.67 wr44% be58% 多 33/−7.08 wr36% 空 10/+1.41 wr70%; 死法 SL<2m 2/−1.37·SL2-5m 4/−2.08·SL5-44m 16/−9.44·45m 超时 2/−0.54·赢 19/+7.75; 腿 18:20 后 opens 9/9✓ 锚到成交价 9/9; 429 16(premiumIndex 7/查 TPSL 7/守护跳过 2) tpsl_setup_failed 0 裸奔 0; XMR 18:37 guard_sl 市价平(SL 腿 -2011 Unknown order, H-0919h +1); BANK 18:40 硬超时 45m; 成交 conf 18:20 后 n16 0.5-0.7:6/0.7-0.9:4/≥0.9:6 mult 恒 1.0(conf_sizing_max_mult=1); income 1h −3.43/3h −5.58/6h −10.27(≈−6.8%)/12h +2.81/24h −76.48(≈−50%)🆘; majors: ETH 15:46 多 19:08:30 交易所 SL 腿成交 −0.45(腿有效, 19:08:33 补设跳过=仓位已不存在), 现 0 仓, 17:31 后 0 新开(已持 ETH 时 2 次信号未开); S35 有效段 n4 +0.45 wr50%. DS: 16:47 后 0 PATCH(19:09 节拍无动作). 裁决: seg2 继续守同 worsen 线; owner A/B 仍候; 本轮 0 交易键; bl +VVV(48h n4/−5.05 规则; 注: −5.38 单笔为 09-18 13:51 429U 名义旧仓位制, 现制 3 笔 +0.33, owner 一字令可解).",
+ "rollback": "POST /api/strategies/8eb182b6/rollback → tpl998(hash 3e311e8b; 归档 confident-fermi strategies/quicktrade-8eb182b6/tpl998.py) + 空仓窗优先 + 复核 bl∩feed=∅ ∧ 6 符号",
+ "status": "sealed@2026-09-19T18:27:35Z: v40 段封段(n35) → owner A/B 候拍板(CC-32); seg2(open≥18:20Z) 同 worsen 线继续守(@19:2x n5 −1.24 未触), 不自动 rollback",
+ "ts": "2026-09-19T14:31:29Z",
+ "watch_ds": {
+  "archive": "各项 17:2x 原文=ops/exp_archive/exp_cc_20260919T1820Z.json",
+  "leverage": {
+   "actor": "admin optimizer 16:09:14Z(裸改, 无 _exp 登记; owner 值 10; 史 10→5 10:09 closed-verdict 不执行)",
+   "line": "post 段(open≥2026-09-19T16:09Z, main, DB∪income) n≥10: 段净≤−4U ∨ 费后均净劣于 v40 前段 −0.19/笔 → DS-ROLLBACK 5 + TG(不回 10: RECOVER 门关 6h/24h 双负)",
+   "new": 4,
+   "old": 5,
+   "verdict": "closed KEEP@18:2x: post 段(open≥16:09Z, DB) n15 毛 −0.72 wr47% be53% 多 12/−2.03 空 3/+1.31; 费≈15×0.08=1.2 ⇒ 费后≈−1.9(−0.13/笔) 未劣于 −0.19 ∧ 段净 −0.72>−4 ⇒ 线未破, 不回滚到 5; DS 仍未写 _exp.changed(第 2 次催)"
+  },
+  "loss_streak_1647": {
+   "status": "owner 归属(部署 fd01fae 直令同批), 不评判; APT 隔离至 09-21 06:35Z(跳过 10 次/1.5h)"
+  },
+  "majors_bl_1623": {
+   "status": "合规(有效池 BTC/ETH); 候认领 CC-34⑤"
+  },
+  "max_concurrent_positions": {
+   "actor": "admin breaker 09:37(未声明, 协议7#3 第 7 次; owner 令 10)",
+   "new": 3,
+   "old": 6,
+   "status": "绑定不硬抢; 候 owner 一字令(3/5/10); 18:18 '已持仓4个'=main 3+majors ETH ⇒ 平时有效并发=mcp−majors 仓数(CC-30)"
+  },
+  "order_amount_pct": {
+   "status": "0.125=DS 07:08 砍(owner 值 0.25), lock-1789833131 冻结至 09-20 15:52Z; 不硬抢"
+  },
+  "symbol_blacklist_1620": {
+   "status": "+BNB 合规; 候认领 CC-34③"
+  },
+  "symbol_reentry_cooldown_minutes": {
+   "status": "0=owner 15:36 直令; 候认领 CC-34②"
+  }
+ },
+ "worsen": "段净≤−4U ∨ (n≥10∧wr<45%) ∨ 429→tpsl_setup_failed 裸奔≥2 ∨ rotate 后隔离币再成交 → TG + ROLLBACK→tpl998"
+}
