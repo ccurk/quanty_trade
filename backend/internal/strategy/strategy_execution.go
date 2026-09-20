@@ -44,8 +44,8 @@ func confSizingMultiplier(inst *StrategyInstance, confidence float64) (float64, 
 	if minM > 1 {
 		minM = 1
 	}
-	if maxM < 1 {
-		maxM = 1
+	if maxM < minM {
+		maxM = minM
 	}
 	if maxM > 2 {
 		maxM = 2

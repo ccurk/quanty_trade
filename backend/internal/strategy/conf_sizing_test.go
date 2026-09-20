@@ -71,6 +71,29 @@ func TestConfSizingDefaultsFromMinConfidence(t *testing.T) {
 	}
 }
 
+func TestConfSizingMaxMultBelowOneHonored(t *testing.T) {
+	// max_mult 落在 [0.2,1) 是合法配置。曾经的 `if maxM < 1 { maxM = 1 }`
+	// 把这段整段销毁（配置的 0.8 被静默抬回 1.0），这里锁死修好后的行为。
+	cfg := map[string]interface{}{
+		"conf_sizing_enabled":  true,
+		"conf_sizing_conf_lo":  0.40,
+		"conf_sizing_conf_hi":  0.60,
+		"conf_sizing_min_mult": 0.60,
+		"conf_sizing_max_mult": 0.80,
+	}
+	hiM, _ := confSizingMultiplier(confInst(cfg), 0.90)
+	if math.Abs(hiM-0.80) > 1e-9 {
+		t.Fatalf("max_mult=0.8 应生效(0.8), got %v", hiM)
+	}
+	loM, _ := confSizingMultiplier(confInst(cfg), 0.10)
+	if math.Abs(loM-0.60) > 1e-9 {
+		t.Fatalf("min_mult=0.6 应生效(0.6), got %v", loM)
+	}
+	if hiM < loM {
+		t.Fatalf("乘数不应随置信度上升而下降: low=%v hi=%v", loM, hiM)
+	}
+}
+
 func TestConfSizingInsaneConfigClamped(t *testing.T) {
 	// 配置写反/越界时收敛到 [0.2,1]×[1,2] 带宽内。
 	cfg := map[string]interface{}{
