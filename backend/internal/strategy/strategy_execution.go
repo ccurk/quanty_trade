@@ -121,6 +121,12 @@ func confLeverage(inst *StrategyInstance, confidence float64) int {
 	return minL + int(t*float64(maxL-minL)+0.5)
 }
 
+// usdmAvailableUSDT 是可注入接缝：单测替换它即可喂入确定的可用余额，从而覆盖
+// 「可用余额被吃到初始保证金不足下限 → 拒单」这条只在低余额下才走到的分支。
+var usdmAvailableUSDT = func(bx *exchange.BinanceExchange, ownerID uint) (float64, error) {
+	return bx.USDMAvailableUSDT(ownerID)
+}
+
 func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange, symbol string, amount float64, price float64, confidence float64) (float64, error) {
 	if inst == nil || bx == nil {
 		return 0, nil
@@ -157,7 +163,7 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 		return 0, fmt.Errorf("price unavailable")
 	}
 	avail := 0.0
-	if v, err := bx.USDMAvailableUSDT(inst.OwnerID); err == nil && v > 0 {
+	if v, err := usdmAvailableUSDT(bx, inst.OwnerID); err == nil && v > 0 {
 		avail = v
 	}
 	desiredNotional := amount * px
@@ -183,6 +189,7 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 			emitStrategyLog(inst, "info", fmt.Sprintf("置信度动态仓位 symbol=%s conf=%.4f mult=%.2f pct=%.4f→%.4f", symbol, confidence, mult, basePct, pct))
 		}
 		maxInit := getNumber(inst.Config()["max_initial_margin_usdt"])
+		initialMargin := 0.0
 		if getBool(inst.Config()["order_pct_exclude_leverage"]) {
 			// 保守开关：名义 = 余额×pct，不乘杠杆；杠杆只决定保证金占用（= 名义/杠杆）。
 			notional := avail * pct
@@ -193,6 +200,7 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 				emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：按余额百分比计算后的名义<=0 symbol=%s", symbol))
 				return 0, nil
 			}
+			initialMargin = notional / float64(lev)
 			desiredNotional = notional
 		} else {
 			// 默认（2026-07-20 用户直令）：与币安百分比滑杆同语义——
@@ -205,7 +213,18 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 				emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：按余额百分比计算后的初始保证金<=0 symbol=%s", symbol))
 				return 0, nil
 			}
+			initialMargin = initial
 			desiredNotional = initial * float64(lev)
+		}
+		// 初始保证金下限（默认 20U，2026-09-21 用户直令）：可用余额被吃到算出来的保证金
+		// 不足下限时宁可不做——不靠"抬量到交易所最小值"把单子凑出来。
+		minInit := getNumber(inst.Config()["min_initial_margin_usdt"])
+		if minInit <= 0 {
+			minInit = 20
+		}
+		if initialMargin < minInit {
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：初始保证金低于下限 symbol=%s margin=%.4f min=%.2f avail=%.2f pct=%.4f lev=%d", symbol, initialMargin, minInit, avail, pct, lev))
+			return 0, nil
 		}
 		if confSized {
 			// 缩量不得击穿单笔名义下限（默认 20U）：低置信度是少开，不是开出无意义的粉尘单。
