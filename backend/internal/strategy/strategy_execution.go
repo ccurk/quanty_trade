@@ -60,14 +60,72 @@ func confSizingMultiplier(inst *StrategyInstance, confidence float64) (float64, 
 	return minM + t*(maxM-minM), true
 }
 
-func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange, symbol string, amount float64, price float64, confidence float64) (float64, error) {
-	if inst == nil || bx == nil {
-		return 0, nil
+// confLeverage 按信号置信度在 [conf_leverage_min, conf_leverage_max] 之间线性插值杠杆：
+// conf<=conf_lo → min，conf>=conf_hi → max，中间线性取整（四舍五入）。
+// 带宽 conf_leverage_conf_lo/hi 未配时回落到 conf_sizing 的同一带宽，最后回落到 min_confidence。
+// conf_leverage_enabled 未开启或信号未带置信度时返回 config 里的固定 leverage，行为与旧版完全一致。
+// 注意：返回的是【目标上限】——下方按档位/可用额度选 levChosen 时仍可能被下调。
+func confLeverage(inst *StrategyInstance, confidence float64) int {
+	if inst == nil {
+		return 1
 	}
 	lev := int(getNumber(inst.Config()["leverage"]))
 	if lev <= 0 {
 		lev = 1
 	}
+	if !getBool(inst.Config()["conf_leverage_enabled"]) || confidence <= 0 {
+		return lev
+	}
+	lo := getNumber(inst.Config()["conf_leverage_conf_lo"])
+	if lo <= 0 {
+		lo = getNumber(inst.Config()["conf_sizing_conf_lo"])
+	}
+	if lo <= 0 {
+		lo = getNumber(inst.Config()["min_confidence"])
+	}
+	if lo <= 0 {
+		lo = 0.40
+	}
+	hi := getNumber(inst.Config()["conf_leverage_conf_hi"])
+	if hi <= 0 {
+		hi = getNumber(inst.Config()["conf_sizing_conf_hi"])
+	}
+	if hi <= lo {
+		hi = lo + 0.15
+	}
+	minL := int(getNumber(inst.Config()["conf_leverage_min"]))
+	if minL <= 0 {
+		minL = 3
+	}
+	maxL := int(getNumber(inst.Config()["conf_leverage_max"]))
+	if maxL <= 0 {
+		maxL = 20
+	}
+	// 1 是 SetLeverage 的下界、125 是交易所上限（binance.go 同界）；配置写反时按保守方向收敛。
+	if minL < 1 {
+		minL = 1
+	}
+	if maxL < minL {
+		maxL = minL
+	}
+	if maxL > 125 {
+		maxL = 125
+	}
+	t := (confidence - lo) / (hi - lo)
+	if t < 0 {
+		t = 0
+	}
+	if t > 1 {
+		t = 1
+	}
+	return minL + int(t*float64(maxL-minL)+0.5)
+}
+
+func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange, symbol string, amount float64, price float64, confidence float64) (float64, error) {
+	if inst == nil || bx == nil {
+		return 0, nil
+	}
+	lev := confLeverage(inst, confidence)
 	mode := strings.ToLower(strings.TrimSpace(getString(inst.Config()["order_amount_mode"])))
 	if mode == "" {
 		mode = "notional"
