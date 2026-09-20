@@ -32,6 +32,16 @@ import (
 //	落在 quarantine 窗口内 ⇒ 该 symbol 禁止开仓，直到「最后一笔平仓 + 窗口」到期。
 //	到期后重新放行；再亏则连亏串变长、末笔时间刷新，重新隔离一个窗口；盈利则清零。
 //
+// 2026-09-20 owner 追加直令（原话：「如果一个币对上次是盈利的，最新的仓位可以开，
+// 如果是亏损的，不能开，需要冷却 30min，如果连续失败，就是冷却 48h」）后，
+// 隔离期变成【两档】，同一 symbol 同时满足两档时取**更晚**的那个截止时间：
+//
+//	① 短冷却 loss_cooldown_minutes（默认 30 分钟）：连亏 ≥1 笔，即「最近一笔平仓是亏的」。
+//	② 长隔离 loss_streak_quarantine_hours（默认 48h）：连亏 ≥ threshold 笔。
+//
+// 一笔盈利把连亏串清零 ⇒ 两档在同一次扫描里同时解除，就是 owner 说的
+// 「上次是盈利的就可以开」。两档共用 loss_streak_blacklist_enabled 这一个总开关。
+//
 // 为什么不写成落库的 TTL 状态：部署/重启会把它清空（本系统一天要重启好几次），
 // 而「最后一笔亏损的平仓时间」本身就是持久事实，从它直接推导隔离期更可靠，也让
 // 这个功能天然跨重启存活。
@@ -42,6 +52,9 @@ import (
 const (
 	lossStreakDefaultThreshold = 3
 	lossStreakDefaultHours     = 48.0
+	// lossCooldownDefaultMinutes 是短冷却档的默认值：单笔亏损后冷却 30 分钟
+	// （owner 2026-09-20 直令）。键缺失时按这个走，也就是这个规则【默认开】。
+	lossCooldownDefaultMinutes = 30.0
 	// lossStreakScanLimit 是回溯扫描的已平仓行数上限。连亏串本身很短（阈值默认 3），
 	// 但行是按 close_time 全局倒序取的、多个 symbol 交错在一起，所以要留足余量让
 	// 每个 symbol 都能定位到自己那几笔。
@@ -110,6 +123,18 @@ func lossStreakQuarantine(inst *StrategyInstance) time.Duration {
 		return time.Duration(h * float64(time.Hour))
 	}
 	return time.Duration(lossStreakDefaultHours * float64(time.Hour))
+}
+
+// lossCooldown 读 config:loss_cooldown_minutes，默认 30 分钟。
+// 返回 <=0 表示短冷却档关闭（此时只剩 48h 那一档）。
+func lossCooldown(inst *StrategyInstance) time.Duration {
+	if inst == nil {
+		return 0
+	}
+	if m := getNumber(inst.Config()["loss_cooldown_minutes"]); m > 0 {
+		return time.Duration(m * float64(time.Minute))
+	}
+	return time.Duration(lossCooldownDefaultMinutes * float64(time.Minute))
 }
 
 // pnlSourceRank 是记账来源的可信度排序（见 models.StrategyPosition.PnLSource 注释）：
@@ -304,7 +329,9 @@ func symbolLossStreakBan(inst *StrategyInstance, symbol string) (bool, time.Time
 		return false, time.Time{}, 0
 	}
 	threshold := lossStreakThreshold(inst)
-	if threshold <= 0 {
+	cooldown := lossCooldown(inst)
+	// 两档都关了才免去这次 DB 扫描。
+	if threshold <= 0 && cooldown <= 0 {
 		return false, time.Time{}, 0
 	}
 	sym := exchange.NormalizeSymbol(symbol)
@@ -315,9 +342,17 @@ func symbolLossStreakBan(inst *StrategyInstance, symbol string) (bool, time.Time
 	if !ok {
 		return false, time.Time{}, 0
 	}
-	until, banned := lossStreakBanUntil(run, threshold, lossStreakQuarantine(inst), time.Now())
-	if !banned {
+	now := time.Now()
+	shortUntil, shortBan := lossCooldownBanUntil(run, cooldown, now)
+	longUntil, longBan := lossStreakBanUntil(run, threshold, lossStreakQuarantine(inst), now)
+	if !shortBan && !longBan {
 		return false, time.Time{}, 0
+	}
+	// 两档同时命中时取【更晚】的截止时间。按时间比而不是按档位选：窗口都是配置项，
+	// 长隔离的窗口被调得比短冷却还短时，档位名会骗人。
+	until := shortUntil
+	if longBan && (!shortBan || longUntil.After(until)) {
+		until = longUntil
 	}
 	return true, until, run.Streak
 }
@@ -336,7 +371,26 @@ func lossStreakBanUntil(run symbolLossRun, threshold int, window time.Duration, 
 	return until, true
 }
 
+// lossCooldownBanUntil 是短冷却档的纯函数内核（不碰 DB、不读时钟），便于单测。
+// 连亏 ≥1 笔（= 最近一笔平仓是亏损）即命中；返回 (截止时间, 是否在冷却中)。
+func lossCooldownBanUntil(run symbolLossRun, window time.Duration, now time.Time) (time.Time, bool) {
+	if window <= 0 || run.Streak < 1 || run.LastClose.IsZero() {
+		return time.Time{}, false
+	}
+	until := run.LastClose.Add(window)
+	if !now.Before(until) {
+		return time.Time{}, false
+	}
+	return until, true
+}
+
 // lossStreakBanReason 给日志用的一行说明（监控按这行 grep 熔断拦截）。
-func lossStreakBanReason(streak int, until time.Time) string {
-	return fmt.Sprintf("连亏=%d 隔离至=%s", streak, until.UTC().Format(time.RFC3339))
+// 「隔离至=」这个子串是监控侧 grep 的锚点，不要改掉。
+// 档位按连亏笔数相对阈值判定：达阈值=长隔离，否则=单笔亏损短冷却。
+func lossStreakBanReason(inst *StrategyInstance, streak int, until time.Time) string {
+	tier := fmt.Sprintf("短冷却%s", lossCooldown(inst).Truncate(time.Minute))
+	if streak >= lossStreakThreshold(inst) {
+		tier = fmt.Sprintf("连亏隔离%s", lossStreakQuarantine(inst).Truncate(time.Hour))
+	}
+	return fmt.Sprintf("连亏=%d %s 隔离至=%s", streak, tier, until.UTC().Format(time.RFC3339))
 }

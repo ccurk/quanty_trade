@@ -865,7 +865,7 @@ func (m *Manager) handleRedisSignal(inst *StrategyInstance, s bus.SignalMessage)
 	// 无状态，隔离期由「最后一笔亏损的平仓时间 + 窗口」推导，跨重启存活。
 	if banned, until, streak := symbolLossStreakBan(inst, symbol); banned {
 		emitStrategyLog(inst, "info", fmt.Sprintf("跳过信号：交易对连亏熔断中 symbol=%s %s",
-			symbol, lossStreakBanReason(streak, until)))
+			symbol, lossStreakBanReason(inst, streak, until)))
 		return
 	}
 	action := strings.ToLower(strings.TrimSpace(s.Action))

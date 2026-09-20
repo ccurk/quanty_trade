@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -203,6 +204,137 @@ func TestLossStreakConfigAccessors(t *testing.T) {
 	inst.setConfig(map[string]interface{}{"loss_streak_blacklist_enabled": "true"})
 	if !lossStreakBlacklistEnabled(inst) {
 		t.Fatal(`"true" string must enable`)
+	}
+}
+
+// 短冷却档（owner 2026-09-20 直令）：连亏 ≥1 笔 ⇒ 隔离 loss_cooldown_minutes。
+func TestLossCooldownBanUntil(t *testing.T) {
+	window := 30 * time.Minute
+	now := lossT0.Add(100 * time.Hour)
+
+	cases := []struct {
+		name    string
+		run     symbolLossRun
+		win     time.Duration
+		wantBan bool
+	}{
+		{"单笔亏损、末笔在窗口内", symbolLossRun{Streak: 1, LastClose: now.Add(-1 * time.Minute)}, window, true},
+		{"连亏 3 笔、末笔在窗口内", symbolLossRun{Streak: 3, LastClose: now.Add(-29 * time.Minute)}, window, true},
+		{"末笔刚好超过窗口 ⇒ 放行", symbolLossRun{Streak: 1, LastClose: now.Add(-30*time.Minute - time.Second)}, window, false},
+		{"恰好在窗口边界上（应放行，与长隔离档同口径）", symbolLossRun{Streak: 1, LastClose: now.Add(-window)}, window, false},
+		{"连亏串为 0（上一笔是盈利）⇒ 不冷却", symbolLossRun{Streak: 0, LastClose: now.Add(-1 * time.Minute)}, window, false},
+		{"无平仓记录", symbolLossRun{Streak: 1}, window, false},
+		{"窗口 <=0 视为关闭", symbolLossRun{Streak: 5, LastClose: now}, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			until, banned := lossCooldownBanUntil(tc.run, tc.win, now)
+			if banned != tc.wantBan {
+				t.Fatalf("banned = %v, want %v", banned, tc.wantBan)
+			}
+			if banned {
+				if want := tc.run.LastClose.Add(window); !until.Equal(want) {
+					t.Fatalf("until = %v, want %v", until, want)
+				}
+			}
+		})
+	}
+}
+
+// 短冷却的配置读取：缺键默认 30 分钟；显式给值按键走；<=0 或 "0" 关闭这一档。
+func TestLossCooldownConfigAccessor(t *testing.T) {
+	inst := &StrategyInstance{ID: "t"}
+
+	inst.setConfig(map[string]interface{}{})
+	if got := lossCooldown(inst); got != 30*time.Minute {
+		t.Fatalf("default cooldown = %v, want 30m (owner 2026-09-20 直令)", got)
+	}
+
+	inst.setConfig(map[string]interface{}{"loss_cooldown_minutes": float64(45)})
+	if got := lossCooldown(inst); got != 45*time.Minute {
+		t.Fatalf("cooldown = %v, want 45m", got)
+	}
+
+	// PATCH 走 JSON merge patch，值可能是字符串。
+	inst.setConfig(map[string]interface{}{"loss_cooldown_minutes": "15"})
+	if got := lossCooldown(inst); got != 15*time.Minute {
+		t.Fatalf(`cooldown("15") = %v, want 15m`, got)
+	}
+
+	// 0 ⇒ 关掉短冷却档（此时只剩 48h 那一档）。注意这会落回默认值 ——
+	// 本档的总开关是 loss_streak_blacklist_enabled，要整体关闭就动那个键。
+	inst.setConfig(map[string]interface{}{"loss_cooldown_minutes": float64(0)})
+	if got := lossCooldown(inst); got != 30*time.Minute {
+		t.Fatalf("cooldown(0) 应落回默认 30m，得 %v", got)
+	}
+	inst.setConfig(map[string]interface{}{"loss_cooldown_minutes": float64(-1)})
+	if got := lossCooldown(inst); got != 30*time.Minute {
+		t.Fatalf("cooldown(-1) 应落回默认 30m，得 %v", got)
+	}
+}
+
+// owner 原话的端到端锁死：「上次是盈利的 ⇒ 可以开；上次是亏损的 ⇒ 30min 内不能开；
+// 连续失败 ⇒ 48h」。这里把两档合起来按真实时间轴跑一遍。
+func TestLossCooldownEndToEnd(t *testing.T) {
+	inst := &StrategyInstance{ID: "t"}
+	inst.setConfig(map[string]interface{}{}) // 全默认：开关开 / 阈值 3 / 48h / 冷却 30m
+	cooldown := lossCooldown(inst)
+	quarantine := lossStreakQuarantine(inst)
+	threshold := lossStreakThreshold(inst)
+	sym := "SUI/USDT"
+
+	ban := func(rows []models.StrategyPosition, now time.Time) bool {
+		runs := computeSymbolLossRuns(rows)
+		run := runs[exchange.NormalizeSymbol(sym)]
+		_, shortBan := lossCooldownBanUntil(run, cooldown, now)
+		_, longBan := lossStreakBanUntil(run, threshold, quarantine, now)
+		return shortBan || longBan
+	}
+
+	// 上一笔是盈利 ⇒ 任何时刻都可开。
+	won := []models.StrategyPosition{lp(sym, 0, 10*time.Minute, +0.4, "exchange_income")}
+	if ban(won, lossT0.Add(11*time.Minute)) {
+		t.Fatal("上次盈利不该被拦")
+	}
+
+	// 上一笔是亏损 ⇒ 10 分钟后仍拦着，31 分钟后放行。
+	lost := []models.StrategyPosition{lp(sym, 0, 10*time.Minute, -0.4, "exchange_income")}
+	if !ban(lost, lossT0.Add(20*time.Minute)) {
+		t.Fatal("上次亏损、10 分钟后应仍在 30min 冷却内")
+	}
+	if ban(lost, lossT0.Add(41*time.Minute)) {
+		t.Fatal("上次亏损、31 分钟后应已放行")
+	}
+
+	// 连亏 3 笔 ⇒ 走 48h 档：31 分钟后仍在隔离中，49 小时后放行。
+	streak3 := []models.StrategyPosition{
+		lp(sym, 0, 10*time.Minute, -0.4, "exchange_income"),
+		lp(sym, 30*time.Minute, 40*time.Minute, -0.4, "exchange_income"),
+		lp(sym, 60*time.Minute, 70*time.Minute, -0.4, "exchange_income"),
+	}
+	if !ban(streak3, lossT0.Add(101*time.Minute)) {
+		t.Fatal("连亏 3 笔后 31 分钟应仍在 48h 隔离内")
+	}
+	if ban(streak3, lossT0.Add(70*time.Minute+49*time.Hour)) {
+		t.Fatal("连亏 3 笔后超过 48h 应放行")
+	}
+}
+
+// 日志档位标注：达阈值说「连亏隔离48h0m0s」，未达阈值说「短冷却30m0s」。
+func TestLossStreakBanReasonTier(t *testing.T) {
+	inst := &StrategyInstance{ID: "t"}
+	inst.setConfig(map[string]interface{}{})
+	until := lossT0.Add(48 * time.Hour)
+
+	if got := lossStreakBanReason(inst, 1, until); !strings.Contains(got, "短冷却30m0s") {
+		t.Fatalf("streak=1 应标注短冷却，得 %q", got)
+	}
+	if got := lossStreakBanReason(inst, 3, until); !strings.Contains(got, "连亏隔离48h0m0s") {
+		t.Fatalf("streak=3 应标注长隔离，得 %q", got)
+	}
+	// 监控侧 grep 的锚点，不能被改掉。
+	if got := lossStreakBanReason(inst, 1, until); !strings.Contains(got, "隔离至=") {
+		t.Fatalf("必须保留「隔离至=」锚点，得 %q", got)
 	}
 }
 
