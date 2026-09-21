@@ -19,6 +19,7 @@ import (
 	"quanty_trade/internal/exchange"
 	"quanty_trade/internal/logger"
 	"quanty_trade/internal/models"
+	"quanty_trade/internal/strategy"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -35,6 +36,7 @@ import (
 type optimizeContextSymbolSummary struct {
 	Count    int     `json:"count"`
 	Wins     int     `json:"wins"`
+	Fails    int     `json:"fails"`
 	PnL      float64 `json:"pnl"`
 	Notional float64 `json:"notional"`
 }
@@ -43,7 +45,9 @@ type optimizeTradesSummary struct {
 	Count       int                                     `json:"count"`
 	WinCount    int                                     `json:"win_count"`
 	LossCount   int                                     `json:"loss_count"`
+	FailCount   int                                     `json:"fail_count"`
 	WinRatePct  float64                                 `json:"win_rate_pct"`
+	FailRatePct float64                                 `json:"fail_rate_pct"`
 	RealizedPnL float64                                 `json:"realized_pnl"`
 	BySymbol    map[string]optimizeContextSymbolSummary `json:"by_symbol"`
 	LongCount   int                                     `json:"long_count"`
@@ -219,6 +223,9 @@ func GetOptimizeContext(c *gin.Context) {
 	).Find(&positions).Error
 
 	trades := optimizeTradesSummary{BySymbol: map[string]optimizeContextSymbolSummary{}, DataSource: "db"}
+	// 「仓位损失」线：per-strategy 覆盖(config 键 failure_pnl_threshold_usdt)，
+	// 缺键回落包默认 0.5U。见 strategy/failure_threshold.go。
+	failThreshold := strategy.FailureThresholdUSDT(cfg)
 	for _, p := range positions {
 		trades.Count++
 		trades.RealizedPnL += p.RealizedPnL
@@ -232,6 +239,12 @@ func GetOptimizeContext(c *gin.Context) {
 		} else if p.RealizedPnL < 0 {
 			trades.LossCount++
 		}
+		// 与上面两个 if 并列、不互斥：亏损单两边都进，+0.30U 的单只进 Fails。
+		// 这是**独立**口径 —— LossCount/WinCount 与 RealizedPnL 一分钱都没被改。
+		if strategy.IsPositionFailure(p.RealizedPnL, failThreshold) {
+			ss.Fails++
+			trades.FailCount++
+		}
 		trades.BySymbol[p.Symbol] = ss
 		if strings.EqualFold(p.Direction, "long") {
 			trades.LongCount++
@@ -243,6 +256,8 @@ func GetOptimizeContext(c *gin.Context) {
 	}
 	if trades.Count > 0 {
 		trades.WinRatePct = float64(trades.WinCount) / float64(trades.Count) * 100
+		// 分母与 WinRatePct 保持一致(本函数一律用 Count，含 pnl 恰为 0 的行)。
+		trades.FailRatePct = float64(trades.FailCount) / float64(trades.Count) * 100
 	}
 
 	// Account snapshot

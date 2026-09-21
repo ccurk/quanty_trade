@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -56,6 +57,10 @@ type AttributionRow struct {
 	Trades int64 `json:"trades"`
 	Wins   int64 `json:"wins"`
 	Losses int64 `json:"losses"`
+	// Fails is the 「仓位损失」count: positions that closed at or below the failure
+	// line, INCLUDING the ones that closed at a small profit. It is an independent
+	// third number, not a subset of Losses — see the 口径 note above attributionSQL.
+	Fails int64 `json:"fails"`
 
 	// GrossPnL is realized PnL BEFORE fees. This is the number the Telegram card
 	// labels 已实现收益（毛）and the number the position ledger stores; it is not
@@ -90,6 +95,10 @@ type AttributionRow struct {
 	AvgPnL    float64 `json:"avg_pnl"`
 	NetAvgPnL float64 `json:"net_avg_pnl"`
 	WinRate   float64 `json:"win_rate"`
+	// FailRate shares WinRate's denominator (Trades), so the two are directly
+	// comparable: FailRate - (1 - WinRate) is exactly the share of trades that
+	// closed positive but did not clear the failure line.
+	FailRate  float64 `json:"fail_rate"`
 	ReturnPct float64 `json:"return_pct"`
 }
 
@@ -101,10 +110,15 @@ type AttributionResponse struct {
 	// with the payload on purpose: the last headline figure this system produced
 	// was repeated four times without anyone recording which filter produced it,
 	// and nobody could tell afterwards whether it was gross or net.
-	Scope string           `json:"scope"`
-	From  *time.Time       `json:"from,omitempty"`
-	To    *time.Time       `json:"to,omitempty"`
-	Rows  []AttributionRow `json:"rows"`
+	Scope string     `json:"scope"`
+	From  *time.Time `json:"from,omitempty"`
+	To    *time.Time `json:"to,omitempty"`
+	// FailureThresholdUSDT is the line every row's `fails` used. It ships with the
+	// payload because `fails` is unreadable without it, and it is NOT always the
+	// package default: a query scoped to one strategy uses that strategy's own
+	// override (config key failure_pnl_threshold_usdt).
+	FailureThresholdUSDT float64          `json:"failure_threshold_usdt"`
+	Rows                 []AttributionRow `json:"rows"`
 }
 
 // attributionSQL buckets every closed position by parameter version and attaches
@@ -127,6 +141,17 @@ type AttributionResponse struct {
 // closed_qty=0 and are empty shells, so counting them would inflate the trade
 // count several fold and divide expectancy down by the same factor.
 //
+// 「仓位损失」(fails) 是**独立于** wins/losses 的第三个数，不是它们的子集调整:
+// pnl <= 阈值(默认 0.5U，见 strategy/failure_threshold.go) 即失败，含不赚钱的与只赚了
+// 0.几U 的。亏损单 wins 不进、losses 进、fails 也进；+0.30U 的单旧口径进 wins，
+// 新口径进 fails。金额列(gross_pn_l/gross_profit/gross_loss)一律仍是**符号**口径 ——
+// 把 +0.30U 塞进 gross_loss 会让「亏损总额」变成假的，所以钱一分没动。
+//
+// 阈值是绑进来的标量(`?`)，不是从 config 里读的:这条 SQL 要在 SQLite(测试)与 MySQL
+// 上同样能跑，用不了 JSON_EXTRACT 这类库专有函数；而 GROUP BY 里一个 `?` 只能绑一个值，
+// 跨策略聚合时无法逐组取各自的覆盖值。所以处理函数在 Go 侧解析:查单策略时用该策略的
+// 覆盖值，跨策略时用包默认值，并把实际用的线回写在响应的 failure_threshold_usdt 里。
+//
 // WHY FEE IS JOINED THROUGH ORDERS AND NOT THROUGH position_id:
 // the obvious join, strategy_orders.position_id -> strategy_positions.id, is a
 // trap here. Measured on the live database: of the filled orders, every single
@@ -146,6 +171,7 @@ SELECT
     COUNT(*)                                                     AS trades,
     SUM(CASE WHEN t.realized_pn_l > 0 THEN 1 ELSE 0 END)         AS wins,
     SUM(CASE WHEN t.realized_pn_l < 0 THEN 1 ELSE 0 END)         AS losses,
+    SUM(CASE WHEN t.realized_pn_l <= ? THEN 1 ELSE 0 END)        AS fails,
     COALESCE(SUM(t.realized_pn_l), 0)                            AS gross_pn_l,
     COALESCE(SUM(CASE WHEN t.realized_pn_l > 0 THEN t.realized_pn_l ELSE 0 END), 0) AS gross_profit,
     COALESCE(SUM(CASE WHEN t.realized_pn_l < 0 THEN t.realized_pn_l ELSE 0 END), 0) AS gross_loss,
@@ -236,6 +262,21 @@ func GetStrategyAttribution(c *gin.Context) {
 		toFlag, toVal = 1, *to
 	}
 
+	// 「仓位损失」线。查单策略时用该策略的覆盖值；跨策略聚合时用包默认值 ——
+	// 理由见 attributionSQL 上方那段注释（SQL 要同时跑 SQLite/MySQL，且一个 `?`
+	// 只能绑一个标量，做不到逐组取各自的值）。实际用了哪条线回写在响应里。
+	failThreshold := strategy.FailurePnLThresholdUSDT
+	if strategyID != "" {
+		var inst models.StrategyInstance
+		if err := database.DB.Where("id = ? AND owner_id = ?", strategyID, uid).First(&inst).Error; err == nil {
+			var instCfg map[string]interface{}
+			if strings.TrimSpace(inst.Config) != "" {
+				_ = json.Unmarshal([]byte(inst.Config), &instCfg)
+			}
+			failThreshold = strategy.FailureThresholdUSDT(instCfg)
+		}
+	}
+
 	var raw []struct {
 		StrategyID         string
 		StrategyName       string
@@ -243,6 +284,7 @@ func GetStrategyAttribution(c *gin.Context) {
 		Trades             int64
 		Wins               int64
 		Losses             int64
+		Fails              int64
 		GrossPnL           float64 `gorm:"column:gross_pn_l"`
 		GrossProfit        float64
 		GrossLoss          float64
@@ -253,6 +295,7 @@ func GetStrategyAttribution(c *gin.Context) {
 		MakerFills         int64
 	}
 	if err := database.DB.Raw(attributionSQL,
+		failThreshold,
 		uid,
 		fromFlag, fromVal,
 		toFlag, toVal,
@@ -295,6 +338,7 @@ func GetStrategyAttribution(c *gin.Context) {
 			Trades:             r.Trades,
 			Wins:               r.Wins,
 			Losses:             r.Losses,
+			Fails:              r.Fails,
 			GrossPnL:           r.GrossPnL,
 			GrossProfit:        r.GrossProfit,
 			GrossLoss:          r.GrossLoss,
@@ -318,6 +362,7 @@ func GetStrategyAttribution(c *gin.Context) {
 			row.AvgPnL = r.GrossPnL / float64(r.Trades)
 			row.NetAvgPnL = row.NetPnL / float64(r.Trades)
 			row.WinRate = float64(r.Wins) / float64(r.Trades)
+			row.FailRate = float64(r.Fails) / float64(r.Trades)
 		}
 		if r.Notional > 0 {
 			row.ReturnPct = row.NetPnL / r.Notional
@@ -330,10 +375,13 @@ func GetStrategyAttribution(c *gin.Context) {
 		Scope: "positions: status='closed' AND closed_qty>0 AND owner_id=<caller>; " +
 			"fee: SUM(exchange_fills.commission WHERE commission_asset='USDT') joined via " +
 			"strategy_orders.exchange_order_id, bucketed by the order's own param version; " +
-			"net_pnl = gross_pnl - fee_usdt, derived here and never stored",
-		From: from,
-		To:   to,
-		Rows: rows,
+			"net_pnl = gross_pnl - fee_usdt, derived here and never stored; " +
+			"fails = COUNT(realized_pn_l <= failure_threshold_usdt) — an independent third " +
+			"count, wins/losses and every money column stay sign-based",
+		From:                 from,
+		To:                   to,
+		FailureThresholdUSDT: failThreshold,
+		Rows:                 rows,
 	})
 }
 

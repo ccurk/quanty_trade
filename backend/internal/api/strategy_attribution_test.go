@@ -356,3 +356,134 @@ func TestAttributionWindowFiltersOnCloseTime(t *testing.T) {
 		t.Fatalf("rows = %+v, want the single trade closed inside the window", resp.Rows)
 	}
 }
+
+func fetchAttribution(t *testing.T, uid uint, strategyID string) AttributionResponse {
+	t.Helper()
+	url := "/stats/strategy-attribution"
+	if strategyID != "" {
+		url += "?strategy_id=" + strategyID
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, url, nil)
+	c.Set("user_id", uid)
+	GetStrategyAttribution(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var resp AttributionResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, w.Body.String())
+	}
+	return resp
+}
+
+// 「仓位损失」：平仓毛盈亏 ≤ 阈值即失败 —— 包括那些【赚了钱】但只赚了 0.几U 的。
+// 这是独立的第三个数，不是 Losses 的子集：亏损单两边都进，+0.25U 的单只进 fails。
+//
+// 判别力：阈值是本次新加进 SQL 的绑定参数，且它在 SELECT 子句里 —— 也就是整条语句
+// **第一个** `?`（排在 WHERE 的 owner_id 之前）。若绑定顺序错位（把 uid=7 绑到阈值上），
+// fails 会变成 4；若错得更远（把 0.5 绑到 owner_id 上），这里会一行都查不到。两种都必红。
+func TestAttributionCountsSmallProfitsAsPositionFailures(t *testing.T) {
+	db := newAttributionTestDB(t)
+	gin.SetMode(gin.TestMode)
+
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.Local)
+	v1 := models.StrategyParamVersion{
+		StrategyID: "sid-1", OwnerID: 7, Seq: 1, Label: "v1",
+		EffectiveFrom: base, IsCurrent: true,
+	}
+	if err := db.Create(&v1).Error; err != nil {
+		t.Fatalf("create v1: %v", err)
+	}
+	// +2.50 真赢 / +0.25 旧口径算赢、新口径算失败 / 0.00 不赚不亏 / -1.25 亏
+	for i, pnl := range []float64{2.5, 0.25, 0.0, -1.25} {
+		p := models.StrategyPosition{
+			StrategyID: "sid-1", OwnerID: 7, Status: "closed", ClosedQty: 1,
+			ParamVersionID: &v1.ID, RealizedPnL: pnl, RealizedNotional: 100,
+			OpenTime:  base.Add(time.Duration(i+1) * time.Hour),
+			CloseTime: base.Add(time.Duration(i+2) * time.Hour),
+		}
+		if err := db.Create(&p).Error; err != nil {
+			t.Fatalf("create position: %v", err)
+		}
+	}
+
+	got := fetchAttribution(t, 7, "")
+	if len(got.Rows) != 1 {
+		t.Fatalf("rows = %+v, want 1 bucket", got.Rows)
+	}
+	r := got.Rows[0]
+
+	if got.FailureThresholdUSDT != 0.5 {
+		t.Errorf("failure_threshold_usdt = %v, want the package default 0.5", got.FailureThresholdUSDT)
+	}
+	// 旧口径一个数都不许动 —— 这是「增加概念」不是「改写概念」。
+	// 注意 wins=2：+2.50 与 +0.25 的 pnl 都 > 0，旧口径两笔都算赢。
+	if r.Wins != 2 || r.Losses != 1 || r.Trades != 4 {
+		t.Errorf("wins/losses/trades = %d/%d/%d, want 2/1/4 (旧口径必须原样)",
+			r.Wins, r.Losses, r.Trades)
+	}
+	// 新口径：+0.25 / 0.00 / -1.25 三笔失败
+	if r.Fails != 3 {
+		t.Errorf("fails = %d, want 3 (+0.25 / 0.00 / -1.25 都算失败)", r.Fails)
+	}
+	if r.FailRate != 0.75 {
+		t.Errorf("fail_rate = %v, want 0.75", r.FailRate)
+	}
+	// 这就是整件事的意义：同一批仓位，旧口径报「胜率 50%」，新口径报「失败率 75%」。
+	// 两个数都对，问的不是同一个问题 —— 差的那 25% 正是「赚了、但没赚回自己」那一笔。
+	if r.WinRate != 0.5 {
+		t.Errorf("win_rate = %v, want 0.5 (旧口径：+0.25 也算赢)", r.WinRate)
+	}
+	if r.FailRate <= 1-r.WinRate {
+		t.Errorf("fail_rate(%v) 没有超过 1-win_rate(%v) — 说明没有任何一笔小额盈利被算成失败",
+			r.FailRate, 1-r.WinRate)
+	}
+	// 金额口径不被失败计数污染：毛额 = 2.5+0.25+0-1.25
+	if r.GrossPnL != 1.5 {
+		t.Errorf("gross_pnl = %v, want 1.5 — 失败计数不该动金额列", r.GrossPnL)
+	}
+}
+
+// 反向控制组：同一批仓位，只把该策略的 failure_pnl_threshold_usdt 覆盖成 0，
+// fails 必须从 3 掉到 2（+0.25 不再算失败）。
+// 没有这一组，上面那个 3 无法排除「阈值根本没从配置来、只是在 SQL 里写死了某个值」。
+func TestAttributionFailureThresholdHonoursStrategyOverride(t *testing.T) {
+	db := newAttributionTestDB(t)
+	gin.SetMode(gin.TestMode)
+	if err := db.AutoMigrate(&models.StrategyInstance{}); err != nil {
+		t.Fatalf("migrate strategy_instances: %v", err)
+	}
+
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.Local)
+	inst := models.StrategyInstance{
+		ID: "sid-1", Name: "趋势A", OwnerID: 7,
+		Config: `{"failure_pnl_threshold_usdt":0}`,
+	}
+	if err := db.Create(&inst).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	for i, pnl := range []float64{2.5, 0.25, 0.0, -1.25} {
+		p := models.StrategyPosition{
+			StrategyID: "sid-1", OwnerID: 7, Status: "closed", ClosedQty: 1,
+			RealizedPnL: pnl, RealizedNotional: 100,
+			OpenTime:  base.Add(time.Duration(i+1) * time.Hour),
+			CloseTime: base.Add(time.Duration(i+2) * time.Hour),
+		}
+		if err := db.Create(&p).Error; err != nil {
+			t.Fatalf("create position: %v", err)
+		}
+	}
+
+	got := fetchAttribution(t, 7, "sid-1")
+	if got.FailureThresholdUSDT != 0 {
+		t.Fatalf("failure_threshold_usdt = %v, want the strategy's override 0", got.FailureThresholdUSDT)
+	}
+	if len(got.Rows) != 1 {
+		t.Fatalf("rows = %+v, want 1 bucket", got.Rows)
+	}
+	if got.Rows[0].Fails != 2 {
+		t.Errorf("fails = %d, want 2 — 阈值降到 0 后 +0.25 不该再算失败", got.Rows[0].Fails)
+	}
+}

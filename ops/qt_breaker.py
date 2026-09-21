@@ -42,6 +42,13 @@ DB_NAME = os.environ.get("QT_DB_NAME", "quanty_trade")
 WINDOW_HOURS = int(os.environ.get("QT_BREAKER_WINDOW_H", "6"))
 NET_TRIP = float(os.environ.get("QT_BREAKER_NET", "-4.0"))      # 来自 _exp.rollback_if 原文
 WIN_TRIP = float(os.environ.get("QT_BREAKER_WIN", "45.0"))
+# 「仓位损失」线（独立口径，见 backend/internal/strategy/failure_threshold.go）：
+# realized_pn_l <= 此值即失败，含不赚钱的与只赚了 0.几U 的。
+# ⚠️ 口径注意：本文件的 wins/losses/fails 全部是**逐成交腿**（exchange_fills），
+# 不是逐仓位 —— 一笔仓位会落成 1~2+ 条腿。这是本文件既有的选择（见文件头 docstring：
+# 权威账本用 exchange_fills，不用有重复行的 strategy_positions），fails 只是沿用同一层。
+# 要读「仓位级失败率」请看 /stats/strategy-attribution 的 fails，不是这里的。
+FAIL_PNL = float(os.environ.get("QT_FAIL_PNL", "0.5"))
 PCT_FLOOR = 0.25          # owner order 2026-09-19: 0.25 is the floor (was 0.05)
 EXPO_MAX = 0.75           # §8：Σ(pct × mcp) ≤ 0.75
 TRIP_COOLDOWN_S = 6 * 3600
@@ -124,16 +131,25 @@ def metrics(db):
                COALESCE(SUM(commission),0) fee,
                COALESCE(SUM(realized_pn_l),0)-COALESCE(SUM(commission),0) net,
                COALESCE(SUM(realized_pn_l > 0),0) wins,
-               COALESCE(SUM(realized_pn_l < 0),0) losses
+               COALESCE(SUM(realized_pn_l < 0),0) losses,
+               -- `<> 0` 不是保险，是必须的：exchange_fills 里含**开仓腿**(realized_pn_l=0)，
+               -- 少了它这些腿会被算成「失败」，fails 会大于 closed(实测 164 > 131)。
+               -- 开仓腿不是一笔平仓，谈不上失败——分母必须与 wins/losses 同为 closed。
+               COALESCE(SUM(realized_pn_l <> 0 AND realized_pn_l <= %s),0) fails
         FROM exchange_fills
         WHERE trade_time >= UTC_TIMESTAMP() - INTERVAL %s HOUR
-    """, (WINDOW_HOURS,))
-    n, gross, fee, net, wins, losses = cur.fetchone()
+    """, (FAIL_PNL, WINDOW_HOURS))
+    n, gross, fee, net, wins, losses, fails = cur.fetchone()
     # SUM(expr) 在 MySQL 侧回的是 Decimal，必须先转 int —— 先除后转会 TypeError。
-    wins, losses = int(wins or 0), int(losses or 0)
+    wins, losses, fails = int(wins or 0), int(losses or 0), int(fails or 0)
     closed = wins + losses
+    # 不变量：fails ⊆ (wins ∪ losses)，所以 fails <= closed 恒成立。
+    # 实测证伪过一次（fails=164 > closed=131，开仓腿被算进失败），故留此哨兵。
+    if fails > closed:
+        print("[warn] 口径自检失败：fails=%d > closed=%d —— fails 的 SQL 条件可能把开仓腿算进来了"
+              % (fails, closed))
     return {"fills": int(n or 0), "gross": float(gross or 0), "fee": float(fee or 0),
-            "net": float(net or 0), "wins": wins, "losses": losses,
+            "net": float(net or 0), "wins": wins, "losses": losses, "fails": fails,
             "closed": closed,
             "win_rate": (100.0 * wins / closed) if closed else None}
 
@@ -191,8 +207,10 @@ def main():
     cfg = json.loads(row[0]) if isinstance(row[0], str) else (row[0] or {})
 
     m = metrics(db)
-    print("[info] window=%dh fills=%d closed=%d win_rate=%s net=%.3f gross=%.3f fee=%.3f"
-          % (WINDOW_HOURS, m["fills"], m["closed"],
+    # fails 与 losses 是包含关系(亏损腿两边都进)，印出来是为了看「有多少腿赚了却没赚头」：
+    # fails - losses 就是 pnl 落在 (0, FAIL_PNL] 那一档的腿数。
+    print("[info] window=%dh fills=%d closed=%d fails=%d(腿级,<=%.2fU) win_rate=%s net=%.3f gross=%.3f fee=%.3f"
+          % (WINDOW_HOURS, m["fills"], m["closed"], m["fails"], FAIL_PNL,
              ("%.1f%%" % m["win_rate"]) if m["win_rate"] is not None else "n/a",
              m["net"], m["gross"], m["fee"]))
 
@@ -236,9 +254,10 @@ def main():
     lock = build_lock(cfg, cur_pct, patch.get("order_amount_pct", cur_pct), reasons)
 
     lines = ["🛑 熔断触发 | %s" % time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime()),
-             "窗口 %dh | 成交 %d | 平仓 %d | 胜率 %s"
+             "窗口 %dh | 成交 %d | 平仓 %d | 胜率 %s | 失败 %d"
              % (WINDOW_HOURS, m["fills"], m["closed"],
-                ("%.1f%%" % m["win_rate"]) if m["win_rate"] is not None else "n/a"),
+                ("%.1f%%" % m["win_rate"]) if m["win_rate"] is not None else "n/a",
+                m["fails"]),
              "净利 %.2fU（毛 %.2f − 费 %.2f）" % (m["net"], m["gross"], m["fee"]),
              "", "命中:"] + ["  • " + r for r in reasons] + [""]
 

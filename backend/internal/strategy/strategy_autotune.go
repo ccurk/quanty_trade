@@ -80,11 +80,16 @@ type optimizationSymbolTradeSummary struct {
 	OpenPositions         int     `json:"open_positions"`
 	Wins                  int     `json:"wins"`
 	Losses                int     `json:"losses"`
+	// Fails 是「仓位损失」计数(独立口径，见 failure_threshold.go):pnl<=阈值即失败，
+	// 含不赚钱的与只赚了 0.几U 的。它与 Losses 是包含关系而非并列 —— 亏损单两边都进，
+	// +0.30U 的单只进 Fails。金额口径(RealizedPnL 等)一律不受它影响。
+	Fails                 int     `json:"fails"`
 	RealizedPnL           float64 `json:"realized_pnl"`
 	RealizedNotional      float64 `json:"realized_notional"`
 	RealizedReturnPct     float64 `json:"realized_return_pct"`
 	AverageHoldingMinutes float64 `json:"average_holding_minutes"`
 	WinRatePct            float64 `json:"win_rate_pct"`
+	FailRatePct           float64 `json:"fail_rate_pct"`
 }
 
 type optimizationWindowSummary struct {
@@ -362,6 +367,8 @@ func (m *Manager) prepareOptimizationInput(inst *StrategyInstance, start, end ti
 	if maxOrders <= 0 {
 		maxOrders = 48
 	}
+	// 「仓位损失」线，每个策略可覆盖(config 键 failure_pnl_threshold_usdt)。
+	failThreshold := FailureThresholdUSDT(inst.Config())
 	for _, p := range posRows {
 		if len(positions) < maxPositions {
 			positions = append(positions, optimizationPositionView{
@@ -406,6 +413,11 @@ func (m *Manager) prepareOptimizationInput(inst *StrategyInstance, start, end ti
 				ss.Wins++
 			} else if p.RealizedPnL < 0 {
 				ss.Losses++
+			}
+			// 与上面两个 if 并列、不互斥：亏损单同时是失败单，而 +0.30U 的单
+			// 只进 Fails(旧口径把它算赢)。三条口径各管各的，谁也不改谁。
+			if IsPositionFailure(p.RealizedPnL, failThreshold) {
+				ss.Fails++
 			}
 			if !p.CloseTime.IsZero() && !p.OpenTime.IsZero() && p.CloseTime.After(p.OpenTime) {
 				ss.AverageHoldingMinutes += p.CloseTime.Sub(p.OpenTime).Minutes()
@@ -504,6 +516,9 @@ func (m *Manager) prepareOptimizationInput(inst *StrategyInstance, start, end ti
 		decisions := symbolsSummary[i].Wins + symbolsSummary[i].Losses
 		if decisions > 0 {
 			symbolsSummary[i].WinRatePct = (float64(symbolsSummary[i].Wins) / float64(decisions)) * 100
+			// 失败率与胜率共用同一个分母 decisions：Fails ⊇ Losses，
+			// 而「Wins 里那些 pnl>阈值的」正好把差额补回来，两边总数相等。
+			symbolsSummary[i].FailRatePct = (float64(symbolsSummary[i].Fails) / float64(decisions)) * 100
 		}
 		if symbolsSummary[i].ClosedPositions > 0 && symbolsSummary[i].AverageHoldingMinutes > 0 {
 			symbolsSummary[i].AverageHoldingMinutes = symbolsSummary[i].AverageHoldingMinutes / float64(symbolsSummary[i].ClosedPositions)
