@@ -113,7 +113,7 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			emitStrategyLog(inst, "error", fmt.Sprintf("跳过开仓：当前市场不支持该交易对 symbol=%s err=%v", symbol, err))
 			return
 		}
-		resolvedAmount, err := resolveUSDMOrderAmount(inst, bx, symbol, amount, price, confidence)
+		resolvedAmount, err := resolveUSDMOrderAmount(inst, bx, symbol, amount, price, stopLoss, confidence)
 		if err != nil || resolvedAmount <= 0 {
 			return
 		}

@@ -135,7 +135,7 @@ var usdmWalletEquity = func(bx *exchange.BinanceExchange, ownerID uint) (exchang
 	return bx.USDMWalletEquity(ownerID)
 }
 
-func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange, symbol string, amount float64, price float64, confidence float64) (float64, error) {
+func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange, symbol string, amount float64, price float64, stopLoss float64, confidence float64) (float64, error) {
 	if inst == nil || bx == nil {
 		return 0, nil
 	}
@@ -169,6 +169,45 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 	if err != nil || px <= 0 {
 		emitStrategyLog(inst, "error", fmt.Sprintf("跳过开仓：获取价格失败 symbol=%s err=%v", symbol, err))
 		return 0, fmt.Errorf("price unavailable")
+	}
+	// 杠杆按【止损宽度】封顶 —— 让止损夹永不咬合。
+	//
+	// 止损夹在 strategy_position.go:508（`minSL := entryPx * (1 - 0.3/levUsed)`）只保证
+	// 「单笔止损 ≤ 该仓保证金的 30%」，但它【靠收紧止损】做到：ATR 止损比 0.3/levUsed 宽时，
+	// 止损被拉近到 0.3/levUsed。实测 2026-09-21 的 4015 条 long 信号：ATR 止损距离中位
+	// 1.954%、p90 3.662%；而 lev=20（conf=1.0，占信号 31%）时夹=1.500% ⇒ 75.8% 的入场
+	// 止损被压到 1.500%，p90 那档等于把止损砍掉 59% —— 止损落进币自己的噪声带里，
+	// 于是「先破刀」成为常态（实测 76%），而 R:R 仍是 1.250（止盈没跟着动）。
+	//
+	// 修法不是放宽夹（那样单笔风险就不封顶了），而是【降杠杆】使 0.3/lev ≥ ATR 止损距离：
+	//   · 止损留在策略设计的宽度上（不再被噪声打掉）
+	//   · 单笔止损金额 = 名义×止损宽 = (权益×pct×lev)×止损宽 = 权益×pct×0.3 —— 逐笔恒定
+	//     （这正是 risk-budget 口径：风险由 pct 决定，与杠杆和波动率都解耦）
+	//   · max_initial_margin_usdt / min_initial_margin_usdt / avail 可行性闸门全部照旧
+	// 窄止损的币不受影响：capLev 高于 confLeverage 时不生效，杠杆仍按置信度浮动。
+	// 下限取 conf_leverage_min（默认 3，与 owner「杠杆 3~20x」口径一致）；ATR 止损宽于
+	// 0.3/3=10% 的极少数信号仍会被夹，这是为尊重杠杆下限付的代价（实测约 0.7% 的信号）。
+	if stopLoss > 0 && px > 0 {
+		d := stopLoss - px
+		if d < 0 {
+			d = -d
+		}
+		if d > 0 {
+			capLev := int(0.3 / (d / px))
+			floorLev := int(getNumber(inst.Config()["conf_leverage_min"]))
+			if floorLev < 1 {
+				floorLev = 3
+			}
+			if capLev < floorLev {
+				capLev = floorLev
+			}
+			if capLev < lev {
+				emitStrategyLog(inst, "info", fmt.Sprintf(
+					"杠杆按止损宽度封顶 symbol=%s confLev=%d→%d 止损宽=%.4f%% 夹=%.4f%%",
+					symbol, lev, capLev, 100*d/px, 100*0.3/float64(capLev)))
+				lev = capLev
+			}
+		}
 	}
 	// avail 与 equity 是两件事，别合并：
 	//   avail  = 可用余额，只用于【可行性上限】（下方 avail×lev×0.95：能不能下得出去）；
