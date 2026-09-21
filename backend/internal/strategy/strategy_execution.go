@@ -127,6 +127,14 @@ var usdmAvailableUSDT = func(bx *exchange.BinanceExchange, ownerID uint) (float6
 	return bx.USDMAvailableUSDT(ownerID)
 }
 
+// usdmWalletEquity 是同款可注入接缝，返回「权益」= Wallet + Unrealized
+// （即 /fapi/v2/balance 的 balance + crossUnPnl，与 /fapi/v2/account 的
+// totalMarginBalance 同值）。和 usdmAvailableUSDT 共用同一次 REST 与同一个
+// 5s 缓存，所以切乘基不增加任何请求。
+var usdmWalletEquity = func(bx *exchange.BinanceExchange, ownerID uint) (exchange.USDMBalance, error) {
+	return bx.USDMWalletEquity(ownerID)
+}
+
 func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange, symbol string, amount float64, price float64, confidence float64) (float64, error) {
 	if inst == nil || bx == nil {
 		return 0, nil
@@ -162,12 +170,35 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 		emitStrategyLog(inst, "error", fmt.Sprintf("跳过开仓：获取价格失败 symbol=%s err=%v", symbol, err))
 		return 0, fmt.Errorf("price unavailable")
 	}
+	// avail 与 equity 是两件事，别合并：
+	//   avail  = 可用余额，只用于【可行性上限】（下方 avail×lev×0.95：能不能下得出去）；
+	//   equity = 权益 = Wallet + Unrealized，用作【乘基】（下多大）。
+	// 2026-09-21 用户直令：乘基由 avail 换成 equity。理由是 avail = 钱包 − 已占用保证金，
+	// 于是同一个 pct 在空仓时给出大单、满仓时给出小单 —— 尺寸随占用度漂移，且每次换手都
+	// 重新定一次基（平掉一仓→avail 变大→下一仓更大）。equity 不含占用度，只随净值变。
 	avail := 0.0
 	if v, err := usdmAvailableUSDT(bx, inst.OwnerID); err == nil && v > 0 {
 		avail = v
 	}
+	equity := 0.0
+	var equityErr error
+	if bal, err := usdmWalletEquity(bx, inst.OwnerID); err == nil {
+		equity = bal.Wallet + bal.Unrealized
+	} else {
+		equityErr = err
+	}
 	desiredNotional := amount * px
 	if mode == "percent_balance" {
+		// 乘基取不到时要说清是【取数失败】还是【权益真的<=0】—— 两者在日志里长得一样
+		// 会让人去查错方向（旧代码只打一句"计算后<=0"）。
+		if equity <= 0 {
+			if equityErr != nil {
+				emitStrategyLog(inst, "error", fmt.Sprintf("跳过开仓：读取权益失败 symbol=%s err=%v", symbol, equityErr))
+			} else {
+				emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：权益<=0 symbol=%s equity=%.4f", symbol, equity))
+			}
+			return 0, nil
+		}
 		pct := getNumber(inst.Config()["order_amount_pct"])
 		if pct <= 0 {
 			pct = amount / 100
@@ -191,39 +222,39 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 		maxInit := getNumber(inst.Config()["max_initial_margin_usdt"])
 		initialMargin := 0.0
 		if getBool(inst.Config()["order_pct_exclude_leverage"]) {
-			// 保守开关：名义 = 余额×pct，不乘杠杆；杠杆只决定保证金占用（= 名义/杠杆）。
-			notional := avail * pct
+			// 保守开关：名义 = 权益×pct，不乘杠杆；杠杆只决定保证金占用（= 名义/杠杆）。
+			notional := equity * pct
 			if maxInit > 0 && notional > maxInit*float64(lev) {
 				notional = maxInit * float64(lev)
 			}
 			if notional <= 0 {
-				emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：按余额百分比计算后的名义<=0 symbol=%s", symbol))
+				emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：按权益百分比计算后的名义<=0 symbol=%s equity=%.4f pct=%.4f", symbol, equity, pct))
 				return 0, nil
 			}
 			initialMargin = notional / float64(lev)
 			desiredNotional = notional
 		} else {
 			// 默认（2026-07-20 用户直令）：与币安百分比滑杆同语义——
-			// pct 视为初始保证金占比，名义 = 保证金×杠杆，后端算出最终币数量传给交易所。
-			initial := avail * pct
+			// pct 视为初始保证金占【权益】的比例，名义 = 保证金×杠杆，后端算出最终币数量传给交易所。
+			initial := equity * pct
 			if maxInit > 0 && initial > maxInit {
 				initial = maxInit
 			}
 			if initial <= 0 {
-				emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：按余额百分比计算后的初始保证金<=0 symbol=%s", symbol))
+				emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：按权益百分比计算后的初始保证金<=0 symbol=%s equity=%.4f pct=%.4f", symbol, equity, pct))
 				return 0, nil
 			}
 			initialMargin = initial
 			desiredNotional = initial * float64(lev)
 		}
-		// 初始保证金下限（默认 20U，2026-09-21 用户直令）：可用余额被吃到算出来的保证金
+		// 初始保证金下限（默认 20U，2026-09-21 用户直令）：权益被吃到算出来的保证金
 		// 不足下限时宁可不做——不靠"抬量到交易所最小值"把单子凑出来。
 		minInit := getNumber(inst.Config()["min_initial_margin_usdt"])
 		if minInit <= 0 {
 			minInit = 20
 		}
 		if initialMargin < minInit {
-			emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：初始保证金低于下限 symbol=%s margin=%.4f min=%.2f avail=%.2f pct=%.4f lev=%d", symbol, initialMargin, minInit, avail, pct, lev))
+			emitStrategyLog(inst, "info", fmt.Sprintf("跳过开仓：初始保证金低于下限 symbol=%s margin=%.4f min=%.2f equity=%.2f pct=%.4f lev=%d", symbol, initialMargin, minInit, equity, pct, lev))
 			return 0, nil
 		}
 		if confSized {
