@@ -2739,6 +2739,10 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 			msg := e.Error()
 			if strings.Contains(msg, "\"code\":-4120") || strings.Contains(msg, "Algo Order API") || strings.Contains(msg, "algoOrder") {
 				useAlgoFallback = true
+				// 主路被拒时必须留下真实错误码：切 fallback 原先是静默的，导致 24h 日志里
+				// 一个 -4120 都抓不到、根因无法定位。msg 出了这个作用域就没了，只能在这里记。
+				logger.Warnf("[BINANCE] 条件腿主路被拒转 algo fallback symbol=%s kind=%s type=%s side=%s stopPrice=%s err=%s",
+					sym, kind, orderType, closeSide, formatByStep(adj, filters.TickSize), msg)
 			} else if firstErr == nil {
 				firstErr = e
 				return
