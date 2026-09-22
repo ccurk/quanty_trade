@@ -2701,6 +2701,13 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		params.Set("clientAlgoId", clientID)
 		params.Set("quantity", formatByStep(closeQty, filters.StepSize))
 		adj := roundDownPrice(stopPrice, filters.TickSize)
+		// 「市价触发腿」的类型映射只此一处。同一个值要发去两个端点：主路发
+		// /fapi/v1/order（币安已整类废弃，必被 -4120 拒），fallback 发
+		// /fapi/v1/algoOrder（正确终点）。两处必须同源，否则改一处会静默漂移。
+		marketType := "STOP_MARKET"
+		if orderType == "TAKE_PROFIT" {
+			marketType = "TAKE_PROFIT_MARKET"
+		}
 		execPrice := adj
 		if orderType == "STOP" {
 			if closeSide == "BUY" {
@@ -2722,12 +2729,7 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 		orderParams.Set("symbol", sym)
 		orderParams.Set("side", closeSide)
 		orderParams.Set("positionSide", positionSide)
-		orderParams.Set("type", func() string {
-			if orderType == "TAKE_PROFIT" {
-				return "TAKE_PROFIT_MARKET"
-			}
-			return "STOP_MARKET"
-		}())
+		orderParams.Set("type", marketType)
 		orderParams.Set("stopPrice", formatByStep(adj, filters.TickSize))
 		orderParams.Set("closePosition", "true")
 		orderParams.Set("workingType", "MARK_PRICE")
@@ -2751,9 +2753,34 @@ func (b *BinanceExchange) PlaceUSDMTPStopOrders(ownerID uint, baseClientOrderID 
 			}
 		}
 		if useAlgoFallback {
-			params.Set("triggerPrice", formatByStep(adj, filters.TickSize))
-			params.Set("price", formatByStep(execPrice, filters.TickSize))
-			body, _, e = b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/algoOrder", params)
+			// 首选【市价全平】：algo 接口支持 STOP_MARKET / TAKE_PROFIT_MARKET +
+			// closePosition=true ⇒ 触发即市价平掉整仓。
+			// 旧的写法是 STOP/TAKE_PROFIT + price=trig×(1∓0.003) + quantity 的【带价限价单】，
+			// 它是 fill-or-naked：价格跳过去而没成交时，腿挂在半路、仓位继续裸奔。
+			// 止损的全部意义是保证出场 —— 出场不确定的止损严格劣于有滑点的止损
+			// （实测止损尾部按构造到 −30~−36% 保证金，缺的正是这一条保证）。
+			// ⛔ 参数互斥（官方参数表）：closePosition 不能与 quantity / reduceOnly 并用 ⇒ 此路不发。
+			algoParams := url.Values{}
+			algoParams.Set("algoType", "CONDITIONAL")
+			algoParams.Set("symbol", sym)
+			algoParams.Set("side", closeSide)
+			algoParams.Set("positionSide", positionSide)
+			algoParams.Set("type", marketType)
+			algoParams.Set("orderType", marketType)
+			algoParams.Set("triggerPrice", formatByStep(adj, filters.TickSize))
+			algoParams.Set("closePosition", "true")
+			algoParams.Set("workingType", "MARK_PRICE")
+			algoParams.Set("priceProtect", "TRUE")
+			algoParams.Set("clientAlgoId", clientID)
+			body, _, e = b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/algoOrder", algoParams)
+			if e != nil {
+				// 全平腿被拒时必须留痕再降级：静默降级正是 -4120 那个坑花 24h 才定位的原因。
+				logger.Warnf("[BINANCE] 条件腿 closePosition 全平被拒，退回带价限价单 symbol=%s kind=%s type=%s stopPrice=%s err=%s",
+					sym, kind, marketType, formatByStep(adj, filters.TickSize), e.Error())
+				params.Set("triggerPrice", formatByStep(adj, filters.TickSize))
+				params.Set("price", formatByStep(execPrice, filters.TickSize))
+				body, _, e = b.signedRequest(context.Background(), cred, http.MethodPost, "/fapi/v1/algoOrder", params)
+			}
 			if e != nil {
 				if firstErr == nil {
 					firstErr = e
