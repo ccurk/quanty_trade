@@ -36,7 +36,7 @@ func TestLeverageCappedByStopWidth(t *testing.T) {
 	t.Run("宽止损降杠杆", func(t *testing.T) {
 		stubBal(t, equity, equity, 0)
 		sl := px * (1 - 0.03)
-		amt, err := resolveUSDMOrderAmount(newInst(), &exchange.BinanceExchange{}, "TESTUSDT", 0, px, sl, 1.0)
+		amt, err := resolveUSDMOrderAmount(newInst(), &exchange.BinanceExchange{}, "TESTUSDT", 0, px, sl, 0, 1.0)
 		if err != nil || amt <= 0 {
 			t.Fatalf("应能下单, amt=%v err=%v", amt, err)
 		}
@@ -59,7 +59,7 @@ func TestLeverageCappedByStopWidth(t *testing.T) {
 	t.Run("窄止损不干预", func(t *testing.T) {
 		stubBal(t, equity, equity, 0)
 		sl := px * (1 - 0.01)
-		amt, err := resolveUSDMOrderAmount(newInst(), &exchange.BinanceExchange{}, "TESTUSDT", 0, px, sl, 1.0)
+		amt, err := resolveUSDMOrderAmount(newInst(), &exchange.BinanceExchange{}, "TESTUSDT", 0, px, sl, 0, 1.0)
 		if err != nil || amt <= 0 {
 			t.Fatalf("应能下单, amt=%v err=%v", amt, err)
 		}
@@ -72,7 +72,7 @@ func TestLeverageCappedByStopWidth(t *testing.T) {
 	// 无止损（stopLoss=0）：跳过封顶逻辑，行为与改动前完全一致
 	t.Run("无止损回退旧行为", func(t *testing.T) {
 		stubBal(t, equity, equity, 0)
-		amt, err := resolveUSDMOrderAmount(newInst(), &exchange.BinanceExchange{}, "TESTUSDT", 0, px, 0, 1.0)
+		amt, err := resolveUSDMOrderAmount(newInst(), &exchange.BinanceExchange{}, "TESTUSDT", 0, px, 0, 0, 1.0)
 		if err != nil || amt <= 0 {
 			t.Fatalf("应能下单, amt=%v err=%v", amt, err)
 		}
@@ -85,12 +85,42 @@ func TestLeverageCappedByStopWidth(t *testing.T) {
 	t.Run("极宽止损受 conf_leverage_min 托底", func(t *testing.T) {
 		stubBal(t, equity, equity, 0)
 		sl := px * (1 - 0.20)
-		amt, err := resolveUSDMOrderAmount(newInst(), &exchange.BinanceExchange{}, "TESTUSDT", 0, px, sl, 1.0)
+		amt, err := resolveUSDMOrderAmount(newInst(), &exchange.BinanceExchange{}, "TESTUSDT", 0, px, sl, 0, 1.0)
 		if err != nil || amt <= 0 {
 			t.Fatalf("应能下单, amt=%v err=%v", amt, err)
 		}
 		if notional := amt * px; math.Abs(notional-initial*3) > 1e-6 {
 			t.Fatalf("应被 conf_leverage_min=3 托底（名义应为 %.1f），实际 = %.4f", initial*3, notional)
+		}
+	})
+
+	// 宽度基准必须取【评估价】(refPrice)，不能取回落的缓存价 —— 活体实测 2026-09-22
+	// MUBARAKUSDT：缓存价 0.0454803 / 评估价 0.04564 / sl 0.044102857。真宽 3.3679%
+	// ⇒ cap=8；用缓存价只有 3.0280% ⇒ cap=9，止损夹多留 0.035pp 的咬合。
+	// 这组数字是实盘日志里的原值，正解 8 与 v1「让夹永不咬合」的设计意图一致。
+	t.Run("宽度基准取评估价而非缓存价", func(t *testing.T) {
+		const cachePx = 0.0454803
+		const evalPx = 0.04564
+		const sl = 0.044102857
+
+		stubBal(t, equity, equity, 0)
+		amt, err := resolveUSDMOrderAmount(newInst(), &exchange.BinanceExchange{}, "TESTUSDT", 0, cachePx, sl, evalPx, 1.0)
+		if err != nil || amt <= 0 {
+			t.Fatalf("应能下单, amt=%v err=%v", amt, err)
+		}
+		if notional := amt * cachePx; math.Abs(notional-initial*8) > 1e-6 {
+			t.Fatalf("真宽 3.3679%% ⇒ 应封顶到 8（名义应为 %.1f），实际 = %.4f", initial*8, notional)
+		}
+
+		// 反向对照：不传评估价（refPrice=0）时回落到缓存价 ⇒ 复现线上那个错值 9。
+		// 没有这一半，上一条断言分不清「修好了」和「碰巧」。
+		stubBal(t, equity, equity, 0)
+		amt2, err2 := resolveUSDMOrderAmount(newInst(), &exchange.BinanceExchange{}, "TESTUSDT", 0, cachePx, sl, 0, 1.0)
+		if err2 != nil || amt2 <= 0 {
+			t.Fatalf("应能下单, amt=%v err=%v", amt2, err2)
+		}
+		if notional := amt2 * cachePx; math.Abs(notional-initial*9) > 1e-6 {
+			t.Fatalf("回落缓存价应复现错值 9（名义应为 %.1f），实际 = %.4f", initial*9, notional)
 		}
 	})
 }

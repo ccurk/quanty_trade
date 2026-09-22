@@ -135,7 +135,7 @@ var usdmWalletEquity = func(bx *exchange.BinanceExchange, ownerID uint) (exchang
 	return bx.USDMWalletEquity(ownerID)
 }
 
-func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange, symbol string, amount float64, price float64, stopLoss float64, confidence float64) (float64, error) {
+func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange, symbol string, amount float64, price float64, stopLoss float64, refPrice float64, confidence float64) (float64, error) {
 	if inst == nil || bx == nil {
 		return 0, nil
 	}
@@ -188,12 +188,24 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 	// 下限取 conf_leverage_min（默认 3，与 owner「杠杆 3~20x」口径一致）；ATR 止损宽于
 	// 0.3/3=10% 的极少数信号仍会被夹，这是为尊重杠杆下限付的代价（实测约 0.7% 的信号）。
 	if stopLoss > 0 && px > 0 {
-		d := stopLoss - px
+		// 宽度的分母必须是【止损自己锚定的那个价】，不是取价回落拿到的缓存价。
+		// sl 由信号按评估价定（strategy_signal.go 的 signalPrice），成交后才重锚到成交价；
+		// 而 px 因为入队时 price 传 0 ⇒ 回落 inst.lastCandleClose[symbol]，是上一根 K 线
+		// 收盘价。两者在快行情里差出开仓滑点那一档：实测 2026-09-22 MUBARAKUSDT
+		// sl=0.044102857 评估价 0.04564（真宽 3.3679%），日志却报 3.0280% —— 反解基准价
+		// 0.0454803 既不是评估价也不是成交价，就是缓存价 ⇒ cap 取 lev=9（正解 8），
+		// 止损夹仍咬合 0.035pp。缓存更旧时算出的宽度更窄、杠杆放得更大，正好把上一版
+		// 「让夹永不咬合」的修法在快行情里抵消掉 —— 所以把评估价传进来当基准。
+		ref := refPrice
+		if ref <= 0 {
+			ref = px
+		}
+		d := stopLoss - ref
 		if d < 0 {
 			d = -d
 		}
 		if d > 0 {
-			capLev := int(0.3 / (d / px))
+			capLev := int(0.3 / (d / ref))
 			floorLev := int(getNumber(inst.Config()["conf_leverage_min"]))
 			if floorLev < 1 {
 				floorLev = 3
@@ -203,8 +215,8 @@ func resolveUSDMOrderAmount(inst *StrategyInstance, bx *exchange.BinanceExchange
 			}
 			if capLev < lev {
 				emitStrategyLog(inst, "info", fmt.Sprintf(
-					"杠杆按止损宽度封顶 symbol=%s confLev=%d→%d 止损宽=%.4f%% 夹=%.4f%%",
-					symbol, lev, capLev, 100*d/px, 100*0.3/float64(capLev)))
+					"杠杆按止损宽度封顶 symbol=%s confLev=%d→%d 止损宽=%.4f%% 夹=%.4f%% 基准价=%.8f 缓存价=%.8f",
+					symbol, lev, capLev, 100*d/ref, 100*0.3/float64(capLev), ref, px))
 				lev = capLev
 			}
 		}

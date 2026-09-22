@@ -113,7 +113,10 @@ func (m *Manager) placeOrderForInstance(inst *StrategyInstance, symbol string, s
 			emitStrategyLog(inst, "error", fmt.Sprintf("跳过开仓：当前市场不支持该交易对 symbol=%s err=%v", symbol, err))
 			return
 		}
-		resolvedAmount, err := resolveUSDMOrderAmount(inst, bx, symbol, amount, price, stopLoss, confidence)
+		// 第 7 个参数传 signalPrice（评估价）：它只喂「按止损宽度封顶」的宽度分母。
+		// 止损 sl 是按评估价定的，宽度就该拿评估价当基准；用回落的缓存价会把开仓
+		// 滑点从宽度里静默扣掉，快行情下把杠杆放得过大、让止损夹重新咬合。
+		resolvedAmount, err := resolveUSDMOrderAmount(inst, bx, symbol, amount, price, stopLoss, signalPrice, confidence)
 		if err != nil || resolvedAmount <= 0 {
 			return
 		}

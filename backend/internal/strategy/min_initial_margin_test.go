@@ -40,7 +40,7 @@ func pctInst(extra map[string]interface{}) *StrategyInstance {
 func TestMinInitialMarginRejectsBelowFloor(t *testing.T) {
 	stubBal(t, 50, 50, 0) // 权益 50 × 0.375 = 18.75 < 20
 	inst := pctInst(nil)
-	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0)
+	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("不应返回 error, got %v", err)
 	}
@@ -53,7 +53,7 @@ func TestMinInitialMarginRejectsBelowFloor(t *testing.T) {
 func TestMinInitialMarginConfigurableFloor(t *testing.T) {
 	stubBal(t, 70, 70, 0) // 70 × 0.375 = 26.25
 	inst := pctInst(map[string]interface{}{"min_initial_margin_usdt": 30})
-	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0)
+	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("不应返回 error, got %v", err)
 	}
@@ -66,7 +66,7 @@ func TestMinInitialMarginConfigurableFloor(t *testing.T) {
 func TestMinInitialMarginLowFloorPasses(t *testing.T) {
 	stubBal(t, 10, 10, 0) // 10 × 0.375 = 3.75
 	inst := pctInst(map[string]interface{}{"min_initial_margin_usdt": 1})
-	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0)
+	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("不应返回 error, got %v", err)
 	}
@@ -80,7 +80,7 @@ func TestMinInitialMarginLowFloorPasses(t *testing.T) {
 func TestMinInitialMarginPassesAboveFloor(t *testing.T) {
 	stubBal(t, 200, 200, 0) // 200 × 0.375 = 75 ≥ 20
 	inst := pctInst(nil)
-	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0)
+	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("不应返回 error, got %v", err)
 	}
@@ -98,7 +98,7 @@ func TestSizingBaseIsEquityNotAvail(t *testing.T) {
 		"order_amount_pct":        0.25,
 		"min_initial_margin_usdt": 1,
 	})
-	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0)
+	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("不应返回 error, got %v", err)
 	}
@@ -117,7 +117,7 @@ func TestSizingBaseIsEquityNotAvailControl(t *testing.T) {
 		"order_amount_pct":        0.25,
 		"min_initial_margin_usdt": 1,
 	})
-	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0)
+	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("不应返回 error, got %v", err)
 	}
@@ -134,7 +134,7 @@ func TestSizingEquityFetchErrorSkips(t *testing.T) {
 		return exchange.USDMBalance{}, errors.New("boom")
 	}
 	inst := pctInst(map[string]interface{}{"min_initial_margin_usdt": 1})
-	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0)
+	amt, err := resolveUSDMOrderAmount(inst, &exchange.BinanceExchange{}, "TESTUSDT", 0, 1.0, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("不应返回 error, got %v", err)
 	}
